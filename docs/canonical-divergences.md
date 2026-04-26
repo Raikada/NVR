@@ -156,6 +156,11 @@ Entries are grouped by severity:
 
 ### D6. Non-standard `Authorization: Bearer user:pass` accepted
 
+> **Status: resolved.** Closed by the D6 commit on 2026-04-26. The
+> code path is removed; the spec's `bearerUserPass` security scheme
+> is gone; clients that relied on the non-standard form must use
+> HTTP Basic. See the Resolved section.
+
 - **Where.** `internal/protocols/httpp/credentials.go`; spec
   security scheme `bearerUserPass`.
 - **What.** The recorder accepts `Authorization: Bearer user:pass`
@@ -359,6 +364,35 @@ on <date>**` line at the top of its body.
 ---
 
 ## Resolved
+
+### D6. Non-standard `Authorization: Bearer user:pass` removed
+
+**Resolved 2026-04-26.** Closed by the D6 commit on `main`.
+
+`internal/protocols/httpp/credentials.go` no longer interprets
+`Authorization: Bearer user:pass` as colon-separated credentials.
+Anything after `Bearer ` is now treated opaquely as a token (typically
+a JWT, validated downstream). Clients that previously relied on the
+non-standard form must switch to HTTP Basic — same primitive,
+standards-compliant.
+
+OpenAPI spec changes:
+- The `bearerUserPass` security scheme is removed from
+  `components.securitySchemes`.
+- Top-level `security` lists only `basicAuth` and `bearerJWT`.
+- The `bearerJWT` description gains a note explaining that a
+  colon-containing bearer is now opaque, with a back-reference to
+  this entry.
+
+The unit test `TestCredentials/user_and_pass_in_bearer` was renamed
+to `TestCredentials/colon-separated_bearer_is_now_opaque_(D6)` and
+flipped to assert the new behavior (the input becomes
+`Token: "myuser:mypass"`, not `User`/`Pass`).
+
+This closes step 1 of the three-step deprecation plan in the
+original D6 entry. Steps 2 and 3 (server-side log warnings and final
+removal coordinated with ADR 0002 OQ10) are now moot — the path is
+already gone.
 
 ### D4. `PathConf.source` userinfo leaked in cleartext on responses
 

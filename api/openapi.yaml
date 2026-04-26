@@ -85,7 +85,6 @@ tags:
 security:
   - basicAuth: []
   - bearerJWT: []
-  - bearerUserPass: []
 
 components:
   securitySchemes:
@@ -104,17 +103,13 @@ components:
         Standard JWT bearer token. Validated against JWKS held by the
         recorder's auth manager. Use `POST /v3/auth/jwks/refresh` to
         force a JWKS reload after key rotation.
-    bearerUserPass:
-      type: http
-      scheme: bearer
-      bearerFormat: user:pass
-      description: |
-        **Non-standard.** A `Bearer` token whose value is `user:pass`
-        (literal colon-separated credentials). Accepted by the
-        recorder's credential extractor for compatibility with the
-        upstream MediaMTX convention. New clients should prefer
-        `basicAuth` or `bearerJWT`. Tracked as a divergence in
-        `recorder/docs/canonical-divergences.md`.
+
+        Note: a `Bearer` token that happens to contain a colon (e.g.
+        the upstream MediaMTX `user:pass` convention) is treated
+        opaquely as a token here, not as colon-separated credentials.
+        Clients that need username+password authentication must use
+        `basicAuth`. See D6 in
+        `recorder/docs/canonical-divergences.md` for history.
 
   schemas:
     OKStatus:
