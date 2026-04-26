@@ -12,13 +12,13 @@ info:
     surface via the Cloud-brokered FRP tunnel.
 
     Schemas describe what the current implementation actually returns.
-    Per-field classifications follow `../platform/docs/data-classification.md`
-    (workspace-relative). **Operational is the default**: schemas and
-    fields without an explicit `x-classification` are Operational.
-    Only divergent classifications (PII, Sensitive, Credential,
-    Restricted) are annotated. Divergences from the canonical domain
-    model in `../platform/docs/domain-model.md` are tracked separately in
-    `recorder/docs/canonical-divergences.md`.
+    Per-field classifications follow `../../platform/docs/data-classification.md`.
+    **Operational is the default**: schemas and fields without an
+    explicit `x-classification` are Operational. Only divergent
+    classifications (PII, Sensitive, Credential, Restricted) are
+    annotated. Divergences from the canonical domain model in
+    `../../platform/docs/domain-model.md` are tracked separately in
+    `../docs/canonical-divergences.md`.
 
     **`tenantId` on responses.** Every detail-level response and every
     list item carries a `tenantId` field identifying the tenant the
