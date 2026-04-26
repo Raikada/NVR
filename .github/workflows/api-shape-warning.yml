@@ -1,0 +1,85 @@
+name: api-shape-warning
+
+# Posts a reminder PR comment when a pull request touches a public-API
+# wire-shape file (handlers in internal/api/api_*.go, JSON shapes in
+# internal/defs/api_*.go, or api/openapi.yaml). The reminder asks the
+# contributor to confirm that ../docs/domain-model.md and any relevant
+# ../docs/api-contracts/ doc are updated in the same PR. See root
+# AGENTS.md rules 1 and 3.
+#
+# Soft-fail: this workflow never fails the PR check. The platform docs
+# live outside this repo, so we cannot verify them — only nudge.
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  warn:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect public-API surface changes
+        id: detect
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          touched=$(echo "$changed" | grep -E '^(internal/defs/api_.*\.go|internal/api/api_.*\.go|api/openapi\.yaml)$' || true)
+          if [ -z "$touched" ]; then
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'list<<TOUCHED_EOF'
+              echo "$touched"
+              echo TOUCHED_EOF
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post or update reminder comment
+        if: steps.detect.outputs.touched == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- raikada:api-shape-warning -->';
+            const list = `${{ steps.detect.outputs.list }}`;
+            const body = [
+              marker,
+              '### Public-API surface change detected',
+              '',
+              'This PR touches one or more files defining a public wire shape:',
+              '',
+              '```',
+              list.trim(),
+              '```',
+              '',
+              'Confirm that the canonical entity in `../docs/domain-model.md`',
+              'and the relevant doc under `../docs/api-contracts/` are',
+              'updated in this same PR. See root `AGENTS.md` rules 1 and 3.',
+              '',
+              '_Soft warning, not a blocker. The platform docs live outside',
+              'this repo, so this workflow cannot verify them — only nudge._',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 },
+            );
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
