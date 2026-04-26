@@ -2,7 +2,7 @@
 # (.*DTO, .*Info, .*View, .*Record, .*Model) but predate the
 # canonicalnames linter. ADR 0001 forbids these as parallel shapes for
 # canonical entities; each entry below should eventually be renamed to
-# use a canonical entity name from ../../../docs/domain-model.md, or
+# use a canonical entity name from ../../../platform/docs/domain-model.md, or
 # removed.
 #
 # Format: <package>.<TypeName>     (one per line; # starts a comment)

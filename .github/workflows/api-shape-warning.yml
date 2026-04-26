@@ -3,8 +3,8 @@ name: api-shape-warning
 # Posts a reminder PR comment when a pull request touches a public-API
 # wire-shape file (handlers in internal/api/api_*.go, JSON shapes in
 # internal/defs/api_*.go, or api/openapi.yaml). The reminder asks the
-# contributor to confirm that ../docs/domain-model.md and any relevant
-# ../docs/api-contracts/ doc are updated in the same PR. See root
+# contributor to confirm that ../platform/docs/domain-model.md and any relevant
+# ../platform/docs/api-contracts/ doc are updated in the same PR. See root
 # AGENTS.md rules 1 and 3.
 #
 # Soft-fail: this workflow never fails the PR check. The platform docs
@@ -59,8 +59,8 @@ jobs:
               list.trim(),
               '```',
               '',
-              'Confirm that the canonical entity in `../docs/domain-model.md`',
-              'and the relevant doc under `../docs/api-contracts/` are',
+              'Confirm that the canonical entity in `../platform/docs/domain-model.md`',
+              'and the relevant doc under `../platform/docs/api-contracts/` are',
               'updated in this same PR. See root `AGENTS.md` rules 1 and 3.',
               '',
               '_Soft warning, not a blocker. The platform docs live outside',

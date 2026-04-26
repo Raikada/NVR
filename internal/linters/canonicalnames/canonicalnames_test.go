@@ -2,7 +2,7 @@
 
 // Package canonicalnames is a build-tagged lint that flags new exported
 // type declarations whose names match the parallel-shape pattern
-// forbidden by ADR 0001 (../../../../docs/adr/0001-canonical-domain-model.md).
+// forbidden by ADR 0001 (../../../../platform/docs/adr/0001-canonical-domain-model.md).
 //
 // Scope: internal/defs, internal/api, internal/conf — the wire-facing
 // and config-translation boundaries. Pre-existing matches are
@@ -125,7 +125,7 @@ func TestCanonicalNames(t *testing.T) {
 			"found %d new canonical-name violation(s) — see ADR 0001:\n"+
 				"  %s\n\n"+
 				"Either rename to use a canonical entity name from\n"+
-				"../../../docs/domain-model.md, or (if a rename is not yet\n"+
+				"../../../platform/docs/domain-model.md, or (if a rename is not yet\n"+
 				"possible) add the qualified name to grandfathered.txt with\n"+
 				"a one-line justification.",
 			len(violations), strings.Join(violations, "\n  "),

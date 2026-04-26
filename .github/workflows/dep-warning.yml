@@ -3,7 +3,7 @@ name: dep-warning
 # Posts a reminder PR comment when a pull request adds a new direct
 # Go module dependency to go.mod without also adding or modifying an
 # ADR under docs/adr/ (recorder-local) — and reminds the author that
-# workspace-level ADRs at ../docs/adr/ also count, but cannot be seen
+# workspace-level ADRs at ../platform/docs/adr/ also count, but cannot be seen
 # from inside this repo. See root AGENTS.md rule 7.
 #
 # Soft-fail: never fails the PR check. Indirect dependency changes
@@ -82,7 +82,7 @@ jobs:
               'maintenance status. The ADR can live at:',
               '',
               '- `docs/adr/` (recorder-local, visible to this workflow), or',
-              '- `../docs/adr/` (workspace-level, **not** visible to this',
+              '- `../platform/docs/adr/` (workspace-level, **not** visible to this',
               '  workflow — if you added one there, ignore this comment).',
               '',
               '_Soft warning, not a blocker._',

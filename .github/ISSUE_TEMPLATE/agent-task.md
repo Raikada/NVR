@@ -52,7 +52,7 @@ or visibly true on inspection. -->
 ## Relevant ADRs and canonical entities
 
 <!-- Which ADRs and which canonical entities (from
-../../docs/domain-model.md) does this task interact with? If the task
+../../platform/docs/domain-model.md) does this task interact with? If the task
 touches auth/pairing/trust, list the parent docs that may need updating
 in the same PR. -->
 

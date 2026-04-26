@@ -46,5 +46,5 @@ binds here in particular.
 Adding a route or changing a response shape is **not** an internal
 edit. It is a wire-format change. See root
 [`../../AGENTS.md`](../../AGENTS.md) §1, §3 and workspace
-[`../../../CLAUDE.md`](../../../CLAUDE.md). New endpoints default to
+[`../../../platform/CLAUDE.md`](../../../platform/CLAUDE.md). New endpoints default to
 authenticated access (root §9).

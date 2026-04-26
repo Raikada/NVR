@@ -25,7 +25,7 @@ becomes part of the wire contract the moment it is consumed by
 `internal/api/`. Renaming a field here renames it on every client.
 
 Many of these types correspond to canonical entities defined in
-[`../../../docs/domain-model.md`](../../../docs/domain-model.md):
+[`../../../platform/docs/domain-model.md`](../../../platform/docs/domain-model.md):
 
 - `APIRecording*` ↔ `RecordingSegment`
 - `APIPath*` ↔ today's MediaMTX `Path` (currently MediaMTX-internal;
@@ -50,8 +50,8 @@ shape in `domain-model.md` is the contract to honor.
 
 A rename here is a non-additive contract change. Per root
 [`../../AGENTS.md`](../../AGENTS.md) §1 and §3, that requires updating
-[`../../../docs/domain-model.md`](../../../docs/domain-model.md), and
+[`../../../platform/docs/domain-model.md`](../../../platform/docs/domain-model.md), and
 once API contracts exist, the relevant doc under
-[`../../../docs/api-contracts/`](../../../docs/api-contracts/) — in
+[`../../../platform/docs/api-contracts/`](../../../platform/docs/api-contracts/) — in
 the same change set. See workspace
-[`../../../CLAUDE.md`](../../../CLAUDE.md).
+[`../../../platform/CLAUDE.md`](../../../platform/CLAUDE.md).

@@ -27,17 +27,17 @@ Keep PRs small and focused: one concern per PR.
       message-queue / on-disk schema / config consumed by deployment
       automation).
 - [ ] **OR** this PR changes a public shape, and the platform doc
-      `../docs/domain-model.md` (and a new ADR under `../docs/adr/` if
+      `../platform/docs/domain-model.md` (and a new ADR under `../platform/docs/adr/` if
       non-additive) is updated in this same PR. Doc commits referenced:
       <!-- e.g. "see commit abc1234 / docs: add Foo to domain-model" -->
 
 ## AGENTS.md checklist
 
-- [ ] Read the parent workspace docs (`../CLAUDE.md`,
-      `../docs/system-blueprint.md`, `../docs/domain-model.md`,
-      `../docs/service-boundaries.md`) before starting?
+- [ ] Read the parent workspace docs (`../platform/CLAUDE.md`,
+      `../platform/docs/system-blueprint.md`, `../platform/docs/domain-model.md`,
+      `../platform/docs/service-boundaries.md`) before starting?
 - [ ] Does this change introduce a new entity or DTO? If so, is the
-      canonical shape in `../docs/domain-model.md` (or updated in
+      canonical shape in `../platform/docs/domain-model.md` (or updated in
       this PR)?
 - [ ] Does this change a public API shape? If so, is the platform doc
       updated?

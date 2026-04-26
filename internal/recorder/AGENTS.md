@@ -45,4 +45,4 @@ this package is wrong, footage is lost — see
 Part of the media pipeline — root [`../../AGENTS.md`](../../AGENTS.md)
 §6 applies. Do not change codec, container, or segment-format defaults
 without an ADR. See workspace
-[`../../../CLAUDE.md`](../../../CLAUDE.md).
+[`../../../platform/CLAUDE.md`](../../../platform/CLAUDE.md).
