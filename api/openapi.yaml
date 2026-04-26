@@ -2,18 +2,104 @@ openapi: 3.0.0
 
 info:
   version: 1.0.0
-  title: MediaMTX API
-  description: API of MediaMTX, a server and proxy that supports various protocols.
-  license:
-    name: MIT
-    url: https://opensource.org/licenses/MIT
+  title: Raikada Recording Server API
+  description: |
+    HTTP control API exposed by the Raikada Recording Server — the
+    on-prem appliance defined in this repository. This is the recorder's
+    local control surface. It is invoked by the Management Server over
+    the recorder-initiated WebSocket per ADR 0003 (Connectivity model),
+    and by LAN clients when authorized. Off-LAN clients reach this
+    surface via the Cloud-brokered FRP tunnel.
+
+    Schemas describe what the current implementation actually returns.
+    Per-field classifications follow `../docs/data-classification.md`
+    (workspace-relative). Divergences from the canonical domain model
+    in `../docs/domain-model.md` are tracked separately in
+    `recorder/docs/canonical-divergences.md`.
 
 servers:
   - url: http://localhost:9997
+    description: Default LAN-side listener.
 
-security: []
+tags:
+  - name: General
+    description: Top-level recorder identity and metadata.
+  - name: Authentication
+    description: |
+      Auth-system administration endpoints. Currently a single
+      JWKS-refresh hook. The recorder validates inbound credentials
+      via a global middleware on every endpoint; see the security
+      section for accepted credential types.
+  - name: Configuration
+    description: |
+      Persistent configuration of the recorder — global settings,
+      path defaults, and per-path entries. Bodies on these endpoints
+      use MediaMTX-internal `Path` shapes; the eventual mapping to
+      canonical `Camera` and `RecordingPolicy` entities is tracked in
+      `recorder/docs/canonical-divergences.md`.
+  - name: Paths
+    description: |
+      Runtime view of currently-known media paths (live state, not
+      configuration). In Raikada-canonical terms each path corresponds
+      loosely to a `Camera` plus its active `Stream`s; the alignment
+      is incomplete and is tracked in `canonical-divergences.md`.
+  - name: HLS
+    description: HLS muxers and active HLS playback sessions.
+  - name: RTSP
+    description: |
+      RTSP and RTSPS connections, sessions, and session-kick. Both
+      protocol variants share handlers; routes differ only in the
+      `rtspsconns` / `rtspssessions` prefix for the secure variant.
+  - name: RTMP
+    description: |
+      RTMP and RTMPS connections and connection-kick. Both protocol
+      variants share handlers; routes differ only in the `rtmpsconns`
+      prefix for the secure variant.
+  - name: SRT
+    description: SRT connections and connection-kick.
+  - name: WebRTC
+    description: WebRTC sessions and session-kick.
+  - name: Recordings
+    description: |
+      On-disk recording listings and per-segment delete. Each item
+      corresponds loosely to a `RecordingSegment` in the canonical
+      domain model; the current shape is a small subset and is tracked
+      in `canonical-divergences.md`.
+
+security:
+  - basicAuth: []
+  - bearerJWT: []
+  - bearerUserPass: []
 
 components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: |
+        HTTP Basic credentials. Validated against the recorder's
+        configured auth manager (internal, HTTP, or JWT-backed) on
+        every request.
+    bearerJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Standard JWT bearer token. Validated against JWKS held by the
+        recorder's auth manager. Use `POST /v3/auth/jwks/refresh` to
+        force a JWKS reload after key rotation.
+    bearerUserPass:
+      type: http
+      scheme: bearer
+      bearerFormat: user:pass
+      description: |
+        **Non-standard.** A `Bearer` token whose value is `user:pass`
+        (literal colon-separated credentials). Accepted by the
+        recorder's credential extractor for compatibility with the
+        upstream MediaMTX convention. New clients should prefer
+        `basicAuth` or `bearerJWT`. Tracked as a divergence in
+        `recorder/docs/canonical-divergences.md`.
+
   schemas:
     OKStatus:
       type: string
@@ -1912,7 +1998,7 @@ paths:
 
   /v3/config/global/patch:
     patch:
-      operationId: configGlobalSet
+      operationId: configGlobalPatch
       tags: [Configuration]
       summary: patches the global configuration.
       description: all fields are optional.
