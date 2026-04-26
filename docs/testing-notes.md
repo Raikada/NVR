@@ -21,6 +21,26 @@ gate is the single touched package run with `go test -count=1 -p 1
 ./internal/<pkg>`. Do not rely on a broad local run for green-light
 decisions; use Docker.
 
+## Per-commit gate vs full coverage — who runs what
+
+The Docker-based `make test` is the **authoritative** test target. It
+runs the suite in an isolated container that sidesteps every host-
+environment issue described below. It is the gate for human-driven
+workflows (local pre-merge runs, CI) and for release-readiness.
+
+When AI agents make code changes inside this repo, the per-commit
+gate they run is the **narrower** "touched-package(s) only,
+`-count=1 -p 1`" local check described in the Quick reference above.
+Agents do not gate on full local coverage because the host-environment
+issues below make full local runs unreliable; human-driven
+`make test` (Docker) is the broader gate that catches anything the
+narrower check misses.
+
+A change marked "passing the per-commit gate" by an agent has **not**
+been validated against `make test`. Run `make test` before merge. If
+`make test` fails on a change that passed the agent's narrower gate,
+the failure is the merge-blocker, not the gate split.
+
 ## Environmental issues observed on macOS
 
 Each is durable: every clean checkout exhibits the same pattern. None
