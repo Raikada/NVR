@@ -25,6 +25,11 @@ func (a *API) onWebRTCSessionsList(ctx *gin.Context) {
 	}
 	data.PageCount = pageCount
 
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -44,6 +49,8 @@ func (a *API) onWebRTCSessionsGet(ctx *gin.Context) {
 		}
 		return
 	}
+
+	data.TenantID = a.tenantID()
 
 	ctx.JSON(http.StatusOK, data)
 }

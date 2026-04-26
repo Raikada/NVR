@@ -63,6 +63,7 @@ type APIPathReader struct {
 
 // APIPath is a path.
 type APIPath struct {
+	TenantID             string              `json:"tenantId"`
 	Name                 string              `json:"name"`
 	ConfName             string              `json:"confName"`
 	Ready                bool                `json:"ready" deprecated:"true"`

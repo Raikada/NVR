@@ -24,6 +24,7 @@ type APIHLSSessionList struct {
 
 // APIHLSSession is an HLS session.
 type APIHLSSession struct {
+	TenantID      string    `json:"tenantId"`
 	ID            uuid.UUID `json:"id"`
 	Created       time.Time `json:"created"`
 	RemoteAddr    string    `json:"remoteAddr"`
@@ -42,6 +43,7 @@ type APIHLSMuxerList struct {
 
 // APIHLSMuxer is an HLS muxer.
 type APIHLSMuxer struct {
+	TenantID                string    `json:"tenantId"`
 	Path                    string    `json:"path"`
 	Created                 time.Time `json:"created"`
 	LastRequest             time.Time `json:"lastRequest"`

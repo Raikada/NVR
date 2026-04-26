@@ -1,6 +1,7 @@
 package api //nolint:revive
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,6 +23,7 @@ func (a *API) onConfigPathsList(ctx *gin.Context) {
 
 	for i, key := range sortedKeys(c.Paths) {
 		data.Items[i] = *c.Paths[key]
+		data.Items[i].TenantID = c.TenantID
 	}
 
 	data.ItemCount = len(data.Items)
@@ -52,7 +54,9 @@ func (a *API) onConfigPathsGet(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, p)
+	pCopy := *p
+	pCopy.TenantID = c.TenantID
+	ctx.JSON(http.StatusOK, &pCopy)
 }
 
 func (a *API) onConfigPathsAdd(ctx *gin.Context) { //nolint:dupl
@@ -62,8 +66,13 @@ func (a *API) onConfigPathsAdd(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
+	body, ok := a.readTenantScopedBody(ctx)
+	if !ok {
+		return
+	}
+
 	var p conf.OptionalPath
-	err := jsonwrapper.Decode(&customLimitReader{ctx.Request.Body, maxInboundConfigSize}, &p)
+	err := jsonwrapper.Decode(bytes.NewReader(body), &p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -99,8 +108,13 @@ func (a *API) onConfigPathsPatch(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
+	body, ok := a.readTenantScopedBody(ctx)
+	if !ok {
+		return
+	}
+
 	var p conf.OptionalPath
-	err := jsonwrapper.Decode(&customLimitReader{ctx.Request.Body, maxInboundConfigSize}, &p)
+	err := jsonwrapper.Decode(bytes.NewReader(body), &p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -140,8 +154,13 @@ func (a *API) onConfigPathsReplace(ctx *gin.Context) { //nolint:dupl
 		return
 	}
 
+	body, ok := a.readTenantScopedBody(ctx)
+	if !ok {
+		return
+	}
+
 	var p conf.OptionalPath
-	err := jsonwrapper.Decode(&customLimitReader{ctx.Request.Body, maxInboundConfigSize}, &p)
+	err := jsonwrapper.Decode(bytes.NewReader(body), &p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return

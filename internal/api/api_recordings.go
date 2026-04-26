@@ -20,6 +20,9 @@ func recordingsOfPath(
 	ret := &defs.APIRecording{
 		Name: pathName,
 	}
+	// TenantID is filled in by the calling handler from the recorder's
+	// bound tenant — see api_recordings.go::onRecordings* and
+	// canonical-divergences.md D1.
 
 	segments, _ := recordstore.FindSegments(pathConf, pathName, nil, nil)
 
@@ -53,9 +56,11 @@ func (a *API) onRecordingsList(ctx *gin.Context) {
 
 	data.Items = make([]defs.APIRecording, len(pathNames))
 
+	tenantID := a.tenantID()
 	for i, pathName := range pathNames {
 		pathConf, _, _ := conf.FindPathConf(c.Paths, pathName)
 		data.Items[i] = *recordingsOfPath(pathConf, pathName)
+		data.Items[i].TenantID = tenantID
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -78,7 +83,9 @@ func (a *API) onRecordingsGet(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, recordingsOfPath(pathConf, pathName))
+	rec := recordingsOfPath(pathConf, pathName)
+	rec.TenantID = a.tenantID()
+	ctx.JSON(http.StatusOK, rec)
 }
 
 func (a *API) onRecordingDeleteSegment(ctx *gin.Context) {

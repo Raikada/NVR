@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
@@ -15,7 +16,32 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
+// TestMain sets a sentinel MTX_TENANT_ID for the whole package. Conf.Validate
+// now requires tenantId per D1 in canonical-divergences.md, and tests that
+// load from defaults-only or from env-only paths bypass the file fixture
+// helper below; setting the env var globally lets those tests still load a
+// valid Conf without each one having to opt in.
+func TestMain(m *testing.M) {
+	const sentinel = "00000000-0000-0000-0000-000000000000"
+	if err := os.Setenv("MTX_TENANTID", sentinel); err != nil {
+		panic(err)
+	}
+	os.Exit(m.Run())
+}
+
+// createTempFile writes test config bytes to a temp file. It injects a
+// sentinel tenantId for YAML configs that don't already specify one,
+// because Conf.Validate now requires the field per D1 in
+// canonical-divergences.md. JSON-encoded configs, binary fixtures, and
+// configs that already include tenantId pass through unchanged.
 func createTempFile(byts []byte) (string, error) {
+	trimmed := bytes.TrimSpace(byts)
+	looksLikeYAMLConfig := !bytes.HasPrefix(trimmed, []byte("{")) &&
+		bytes.ContainsAny(byts, ":#") // YAML configs always contain ':' or '#'
+	if looksLikeYAMLConfig && !bytes.Contains(byts, []byte("tenantId:")) {
+		byts = append([]byte("tenantId: 00000000-0000-0000-0000-000000000000\n"), byts...)
+	}
+
 	tmpf, err := os.CreateTemp(os.TempDir(), "rtsp-")
 	if err != nil {
 		return "", err
@@ -272,7 +298,8 @@ func TestConfErrors(t *testing.T) {
 			"duplicate parameter",
 			"paths:\n" +
 				"paths:\n",
-			"[2:1] mapping key \"paths\" already defined at [1:1]\n   1 |  null\n>  2 | paths:\n       ^\n",
+			// line numbers reflect the prepended tenantId line from createTempFile (D1).
+			"[3:1] mapping key \"paths\" already defined at [2:1]\n   2 |  null\n>  3 | paths:\n       ^\n",
 		},
 		{
 			"non existent parameter",

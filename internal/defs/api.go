@@ -35,8 +35,9 @@ type APIError struct {
 
 // APIInfo is a info response.
 type APIInfo struct {
-	Version string    `json:"version"`
-	Started time.Time `json:"started"`
+	TenantID string    `json:"tenantId"`
+	Version  string    `json:"version"`
+	Started  time.Time `json:"started"`
 }
 
 // APIPathConfList is a list of path configurations.

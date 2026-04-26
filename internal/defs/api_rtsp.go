@@ -17,6 +17,7 @@ type APIRTSPServer interface {
 
 // APIRTSPConn is a RTSP connection.
 type APIRTSPConn struct {
+	TenantID      string     `json:"tenantId"`
 	ID            uuid.UUID  `json:"id"`
 	Created       time.Time  `json:"created"`
 	RemoteAddr    string     `json:"remoteAddr"`
@@ -47,6 +48,7 @@ const (
 
 // APIRTSPSession is a RTSP session.
 type APIRTSPSession struct {
+	TenantID                       string              `json:"tenantId"`
 	ID                             uuid.UUID           `json:"id"`
 	Created                        time.Time           `json:"created"`
 	RemoteAddr                     string              `json:"remoteAddr"`

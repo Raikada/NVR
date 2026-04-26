@@ -240,6 +240,9 @@ var defaultAuthInternalUsers = []AuthInternalUser{
 
 // Conf is a configuration.
 type Conf struct {
+	// Identity
+	TenantID string `json:"tenantId"`
+
 	// General
 	LogLevel            LogLevel        `json:"logLevel"`
 	LogDestinations     LogDestinations `json:"logDestinations"`
@@ -605,6 +608,13 @@ func (conf Conf) Clone() *Conf {
 func (conf *Conf) Validate(l logger.Writer) error {
 	if l == nil {
 		l = &nilLogger{}
+	}
+
+	// Identity
+
+	if conf.TenantID == "" {
+		return fmt.Errorf("'tenantId' is required: every recorder is bound to exactly one tenant. " +
+			"Set this in the bootstrap config until the pairing flow lands per ADR 0002.")
 	}
 
 	// General (deprecated params)

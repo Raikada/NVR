@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,12 @@ func (p testParent) Log(l logger.Level, s string, a ...any) {
 func (testParent) APIConfigSet(_ *conf.Conf) {}
 
 func tempConf(t *testing.T, cnt string) *conf.Conf {
+	// tenantId is required by conf.Validate (D1 in canonical-divergences.md);
+	// inject a sentinel so individual tests don't need to repeat it.
+	if !strings.Contains(cnt, "tenantId:") {
+		cnt = "tenantId: 00000000-0000-0000-0000-000000000000\n" + cnt
+	}
+
 	fi, err := test.CreateTempFile([]byte(cnt))
 	require.NoError(t, err)
 	defer os.Remove(fi)
@@ -149,8 +156,9 @@ func TestInfo(t *testing.T) {
 	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/info", nil, &out)
 	require.Equal(t, map[string]any{
-		"started": time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
-		"version": "v1.2.3",
+		"tenantId": "00000000-0000-0000-0000-000000000000",
+		"started":  time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
+		"version":  "v1.2.3",
 	}, out)
 }
 

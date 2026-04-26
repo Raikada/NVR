@@ -269,8 +269,9 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 
 func (a *API) onInfo(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, &defs.APIInfo{
-		Version: a.Version,
-		Started: a.Started,
+		TenantID: a.tenantID(),
+		Version:  a.Version,
+		Started:  a.Started,
 	})
 }
 

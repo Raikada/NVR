@@ -24,6 +24,7 @@ const (
 
 // APIWebRTCSession is a WebRTC session.
 type APIWebRTCSession struct {
+	TenantID                  string                `json:"tenantId"`
 	ID                        uuid.UUID             `json:"id"`
 	Created                   time.Time             `json:"created"`
 	RemoteAddr                string                `json:"remoteAddr"`

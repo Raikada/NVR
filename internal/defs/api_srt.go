@@ -25,6 +25,7 @@ const (
 
 // APISRTConn is a SRT connection.
 type APISRTConn struct {
+	TenantID   string          `json:"tenantId"`
 	ID         uuid.UUID       `json:"id"`
 	Created    time.Time       `json:"created"`
 	RemoteAddr string          `json:"remoteAddr"`

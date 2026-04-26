@@ -62,7 +62,8 @@ func TestRecordingsList(t *testing.T) {
 		"pageCount": float64(1),
 		"items": []any{
 			map[string]any{
-				"name": "mypath1",
+				"tenantId": "00000000-0000-0000-0000-000000000000",
+				"name":     "mypath1",
 				"segments": []any{
 					map[string]any{
 						"start": time.Date(2008, 11, 7, 11, 22, 0, 500000000, time.Local).Format(time.RFC3339Nano),
@@ -73,7 +74,8 @@ func TestRecordingsList(t *testing.T) {
 				},
 			},
 			map[string]any{
-				"name": "mypath2",
+				"tenantId": "00000000-0000-0000-0000-000000000000",
+				"name":     "mypath2",
 				"segments": []any{
 					map[string]any{
 						"start": time.Date(2009, 11, 7, 11, 22, 0, 900000000, time.Local).Format(time.RFC3339Nano),
@@ -122,7 +124,8 @@ func TestRecordingsGet(t *testing.T) {
 	var out any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/recordings/get/mypath1", nil, &out)
 	require.Equal(t, map[string]any{
-		"name": "mypath1",
+		"tenantId": "00000000-0000-0000-0000-000000000000",
+		"name":     "mypath1",
 		"segments": []any{
 			map[string]any{
 				"start": time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339Nano),

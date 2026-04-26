@@ -9,6 +9,7 @@ type APIRecordingSegment struct {
 
 // APIRecording is a recording.
 type APIRecording struct {
+	TenantID string                `json:"tenantId"`
 	Name     string                `json:"name"`
 	Segments []APIRecordingSegment `json:"segments"`
 }

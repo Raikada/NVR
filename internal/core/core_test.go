@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,18 @@ import (
 
 func newInstance(conf string) (*Core, bool) {
 	if conf == "" {
+		// tenantId is required by Conf.Validate (D1 in
+		// canonical-divergences.md); empty conf path means New()
+		// loads defaults, which still need a tenantId. The CLI test
+		// path Conf-loads a default file; that file must include
+		// tenantId. In test isolation (the common case), pass an
+		// explicit conf string instead.
 		return New([]string{})
+	}
+
+	// Inject a sentinel tenantId for tests that don't set one (most).
+	if !strings.Contains(conf, "tenantId:") {
+		conf = "tenantId: 00000000-0000-0000-0000-000000000000\n" + conf
 	}
 
 	tmpf, err := test.CreateTempFile([]byte(conf))

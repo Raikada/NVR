@@ -178,8 +178,9 @@ func FindPathConf(pathConfs map[string]*Path, name string) (*Path, []string, err
 
 // Path is a path configuration.
 type Path struct {
-	Regexp *regexp.Regexp `json:"-"`    // filled by Validate()
-	Name   string         `json:"name"` // filled by Validate()
+	Regexp   *regexp.Regexp `json:"-"`        // filled by Validate()
+	Name     string         `json:"name"`     // filled by Validate()
+	TenantID string         `json:"tenantId"` // filled by API handlers from the recorder's bootstrap tenant_id
 
 	// General
 	Source                     string   `json:"source"`

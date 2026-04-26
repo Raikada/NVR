@@ -1,6 +1,7 @@
 package api //nolint:revive
 
 import (
+	"bytes"
 	"net/http"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -13,12 +14,19 @@ func (a *API) onConfigGlobalGet(ctx *gin.Context) {
 	c := a.Conf
 	a.mutex.RUnlock()
 
+	// c.Global() reflects every Conf field, including TenantID, so
+	// no additional stamping is needed here (D1).
 	ctx.JSON(http.StatusOK, c.Global())
 }
 
 func (a *API) onConfigGlobalPatch(ctx *gin.Context) {
+	body, ok := a.readTenantScopedBody(ctx)
+	if !ok {
+		return
+	}
+
 	var c conf.OptionalGlobal
-	err := jsonwrapper.Decode(&customLimitReader{ctx.Request.Body, maxInboundConfigSize}, &c)
+	err := jsonwrapper.Decode(bytes.NewReader(body), &c)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return

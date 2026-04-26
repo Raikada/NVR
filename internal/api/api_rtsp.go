@@ -24,6 +24,11 @@ func (a *API) onRTSPConnsList(ctx *gin.Context) {
 	}
 	data.PageCount = pageCount
 
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -44,6 +49,8 @@ func (a *API) onRTSPConnsGet(ctx *gin.Context) {
 		return
 	}
 
+	data.TenantID = a.tenantID()
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -61,6 +68,11 @@ func (a *API) onRTSPSessionsList(ctx *gin.Context) {
 		return
 	}
 	data.PageCount = pageCount
+
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -81,6 +93,8 @@ func (a *API) onRTSPSessionsGet(ctx *gin.Context) {
 		}
 		return
 	}
+
+	data.TenantID = a.tenantID()
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -120,6 +134,11 @@ func (a *API) onRTSPSConnsList(ctx *gin.Context) {
 	}
 	data.PageCount = pageCount
 
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -140,6 +159,8 @@ func (a *API) onRTSPSConnsGet(ctx *gin.Context) {
 		return
 	}
 
+	data.TenantID = a.tenantID()
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -157,6 +178,11 @@ func (a *API) onRTSPSSessionsList(ctx *gin.Context) {
 		return
 	}
 	data.PageCount = pageCount
+
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -177,6 +203,8 @@ func (a *API) onRTSPSSessionsGet(ctx *gin.Context) {
 		}
 		return
 	}
+
+	data.TenantID = a.tenantID()
 
 	ctx.JSON(http.StatusOK, data)
 }

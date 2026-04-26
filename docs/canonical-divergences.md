@@ -35,8 +35,8 @@ Entries are grouped by severity:
 
 ### D1. No `tenant_id` anywhere on the API surface
 
-> **Highest priority.** Resolution unblocks every cross-tier
-> projection.
+> **Status: resolved.** Closed by the D1 commit on 2026-04-26. See
+> the Resolved section at the bottom of this document.
 
 - **Where.** Every endpoint, every list and detail response, every
   request body.
@@ -349,3 +349,46 @@ entry above will be closed by:
 When an entry is closed, this document updates: the entry stays
 for the historical record, with a `**Status: closed by <ADR / PR>
 on <date>**` line at the top of its body.
+
+---
+
+## Resolved
+
+### D1. No `tenant_id` anywhere on the API surface
+
+**Resolved 2026-04-26.** Closed by the D1 commit on `main`.
+
+The fix added `tenantId` to:
+
+- `conf.Conf` (the recorder's bootstrap config struct), required by
+  `Conf.Validate()` — the recorder will not start without it.
+- `mediamtx.yml` — the bootstrap config file gains a `tenantId:`
+  example with a comment about the ADR 0002 pairing path.
+- Every detail-level API response type
+  (`APIInfo`, `APIPath`, `APIRecording`, `APIHLSMuxer`,
+  `APIHLSSession`, `APIRTSPConn`, `APIRTSPSession`, `APIRTMPConn`,
+  `APISRTConn`, `APIWebRTCSession`).
+- `conf.Path` (per-path configuration shape returned by
+  `/v3/config/paths/get/*name`) — auto-flows into `OptionalPath`
+  via the existing reflection-derived patch shape.
+- The OpenAPI spec at `recorder/api/openapi.yaml`.
+
+Handlers stamp `tenantId` on responses at the API boundary using a
+small `tenantID()` helper in `internal/api/tenant.go`, which reads
+the recorder's `Conf.TenantID` under the existing config mutex. The
+producer packages (core, servers/{hls,rtsp,rtmp,srt,webrtc}) were
+not modified — the field is filled at the API boundary.
+
+Patch / add / replace bodies on `/v3/config/*` endpoints validate an
+incoming `tenantId` (if present) against the recorder's bound tenant
+via the same helper file's `readTenantScopedBody` shim; mismatches
+return 403, omissions are accepted (the recorder uses its own
+implicitly).
+
+Test fixtures that loaded `Conf` outside the production path were
+updated to inject a sentinel `tenantId`: `tempConf` in
+`internal/api/api_test.go`, `createTempFile` and a new `TestMain` in
+`internal/conf/conf_test.go`, and `newInstance` in
+`internal/core/core_test.go`. The last is a one-line test-helper
+edit outside the trio originally scoped, surfaced explicitly in the
+commit message.

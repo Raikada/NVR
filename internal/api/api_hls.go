@@ -26,6 +26,11 @@ func (a *API) onHLSMuxersList(ctx *gin.Context) {
 	}
 	data.PageCount = pageCount
 
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -46,6 +51,8 @@ func (a *API) onHLSMuxersGet(ctx *gin.Context) {
 		return
 	}
 
+	data.TenantID = a.tenantID()
+
 	ctx.JSON(http.StatusOK, data)
 }
 
@@ -63,6 +70,11 @@ func (a *API) onHLSSessionsList(ctx *gin.Context) {
 		return
 	}
 	data.PageCount = pageCount
+
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -85,6 +97,8 @@ func (a *API) onHLSSessionsGet(ctx *gin.Context) {
 		}
 		return
 	}
+
+	data.TenantID = a.tenantID()
 
 	ctx.JSON(http.StatusOK, data)
 }

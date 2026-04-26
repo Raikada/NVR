@@ -20,6 +20,19 @@ info:
     model in `../docs/domain-model.md` are tracked separately in
     `recorder/docs/canonical-divergences.md`.
 
+    **`tenantId` on responses.** Every detail-level response and every
+    list item carries a `tenantId` field identifying the tenant the
+    recorder is bound to. The value comes from the recorder's
+    bootstrap config and is the same for every response from a given
+    recorder. List wrappers themselves do not carry the field; their
+    items do. This closes canonical-divergence D1.
+
+    **`tenantId` on requests.** Patch / add / replace bodies on the
+    `/v3/config/*` endpoints accept an optional `tenantId` field. If
+    present and matching the recorder's bound tenant the request
+    proceeds; if present and mismatched the recorder returns 403. If
+    omitted, the recorder uses its own tenant id implicitly.
+
 servers:
   - url: http://localhost:9997
     description: Default LAN-side listener.
@@ -261,6 +274,12 @@ components:
     Info:
       type: object
       properties:
+        tenantId:
+          type: string
+          description: |
+            Tenant the recorder is bound to. Set in the bootstrap
+            config until the pairing flow lands per ADR 0002.
+            Tracked as canonical-divergence D1 (resolved).
         version:
           type: string
         started:
@@ -293,6 +312,15 @@ components:
     GlobalConf:
       type: object
       properties:
+        # Identity
+        tenantId:
+          type: string
+          description: |
+            Tenant the recorder is bound to. Required in the bootstrap
+            config. Patch requests may include this field; if present
+            it must match the recorder's bound tenant or the request
+            is rejected with 403.
+
         # General
         logLevel:
           $ref: '#/components/schemas/LogLevel'
@@ -726,6 +754,8 @@ components:
         should be redacted in logs.
       x-classification: sensitive
       properties:
+        tenantId:
+          type: string
         name:
           type: string
           x-classification: sensitive
@@ -1068,6 +1098,8 @@ components:
         canonical-rule violation in `recorder/docs/canonical-divergences.md`.
       x-classification: sensitive
       properties:
+        tenantId:
+          type: string
         name:
           type: string
           x-classification: sensitive
@@ -1289,6 +1321,8 @@ components:
     HLSMuxer:
       type: object
       properties:
+        tenantId:
+          type: string
         path:
           type: string
           x-classification: sensitive
@@ -1324,6 +1358,8 @@ components:
     HLSSession:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid
@@ -1372,6 +1408,8 @@ components:
         `state`, `created_at`) are absent. Tracked in
         `recorder/docs/canonical-divergences.md`.
       properties:
+        tenantId:
+          type: string
         name:
           type: string
           x-classification: sensitive
@@ -1404,6 +1442,8 @@ components:
     RTMPConn:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid
@@ -1458,6 +1498,8 @@ components:
     RTSPConn:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid
@@ -1504,6 +1546,8 @@ components:
     RTSPSession:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid
@@ -1628,6 +1672,8 @@ components:
     SRTConn:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid
@@ -1904,6 +1950,8 @@ components:
     WebRTCSession:
       type: object
       properties:
+        tenantId:
+          type: string
         id:
           type: string
           format: uuid

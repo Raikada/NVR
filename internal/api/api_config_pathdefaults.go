@@ -1,6 +1,7 @@
 package api //nolint:revive
 
 import (
+	"bytes"
 	"net/http"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -13,12 +14,19 @@ func (a *API) onConfigPathDefaultsGet(ctx *gin.Context) {
 	c := a.Conf
 	a.mutex.RUnlock()
 
-	ctx.JSON(http.StatusOK, c.PathDefaults)
+	defaults := c.PathDefaults
+	defaults.TenantID = c.TenantID
+	ctx.JSON(http.StatusOK, defaults)
 }
 
 func (a *API) onConfigPathDefaultsPatch(ctx *gin.Context) {
+	body, ok := a.readTenantScopedBody(ctx)
+	if !ok {
+		return
+	}
+
 	var p conf.OptionalPath
-	err := jsonwrapper.Decode(&customLimitReader{ctx.Request.Body, maxInboundConfigSize}, &p)
+	err := jsonwrapper.Decode(bytes.NewReader(body), &p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
