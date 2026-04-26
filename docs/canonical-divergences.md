@@ -405,10 +405,10 @@ OpenAPI spec gains a top-level `query` field redaction note in
 
 `internal/protocols/httpp/credentials.go` no longer interprets
 `Authorization: Bearer user:pass` as colon-separated credentials.
-Anything after `Bearer ` is now treated opaquely as a token (typically
-a JWT, validated downstream). Clients that previously relied on the
-non-standard form must switch to HTTP Basic — same primitive,
-standards-compliant.
+Anything after `Bearer ` is now treated opaquely as a token, validated
+downstream per the platform's chosen credential mechanism (see ADR
+0002 OQ10). Clients that previously relied on the non-standard form
+must switch to HTTP Basic — same primitive, standards-compliant.
 
 OpenAPI spec changes:
 - The `bearerUserPass` security scheme is removed from
