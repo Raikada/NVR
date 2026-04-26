@@ -1,0 +1,64 @@
+# CODEOWNERS — Raikada Recording Server
+#
+# Mirrors the rule from AGENTS.md sections 4 and 6: certain subtrees
+# require explicit owner review because casual changes there are
+# expensive to regress (media pipeline) or hard to reverse without a
+# coordinated cross-tier doc update (canonical wire shapes).
+#
+# All handles below are PLACEHOLDERS. Replace with real GitHub usernames
+# or team handles before this file is merged. The placeholders will not
+# enforce review until they are replaced.
+
+# Default fallback — anything not matched below.
+*                                @TODO-owner
+
+# ---------------------------------------------------------------------
+# Media pipeline (AGENTS.md sec 6).
+# Do not refactor without an explicit request that names the file and
+# the goal. Codec / container / segment-format default changes require
+# an ADR.
+# ---------------------------------------------------------------------
+/internal/stream/                @TODO-pipeline-owner
+/internal/recorder/              @TODO-pipeline-owner
+/internal/recordstore/           @TODO-pipeline-owner
+/internal/playback/              @TODO-pipeline-owner
+/internal/protocols/             @TODO-pipeline-owner
+/internal/servers/               @TODO-pipeline-owner
+/internal/staticsources/         @TODO-pipeline-owner
+/internal/recordcleaner/         @TODO-pipeline-owner
+/internal/unit/                  @TODO-pipeline-owner
+
+# ---------------------------------------------------------------------
+# Public API surfaces (AGENTS.md sec 1, 3).
+# Wire-shape changes require updates to ../docs/domain-model.md (and,
+# once it exists, the relevant doc under ../docs/api-contracts/).
+# ---------------------------------------------------------------------
+/internal/defs/                  @TODO-platform-owner
+/internal/api/                   @TODO-platform-owner
+/api/                            @TODO-platform-owner
+
+# ---------------------------------------------------------------------
+# Auth and trust glue (AGENTS.md sec 2).
+# Changes coupled to ../docs/trust-model.md, ../docs/pairing-flows.md,
+# and ../docs/authentication-flows.md.
+# ---------------------------------------------------------------------
+/internal/auth/                  @TODO-security-owner
+
+# ---------------------------------------------------------------------
+# Build, CI, dependencies.
+# ---------------------------------------------------------------------
+/Makefile                        @TODO-platform-owner
+/scripts/                        @TODO-platform-owner
+/.github/                        @TODO-platform-owner
+/go.mod                          @TODO-platform-owner
+/go.sum                          @TODO-platform-owner
+
+# ---------------------------------------------------------------------
+# Documentation.
+# ---------------------------------------------------------------------
+/AGENTS.md                       @TODO-platform-owner
+/ARCHITECTURE.md                 @TODO-platform-owner
+/CONTRIBUTING.md                 @TODO-platform-owner
+/README.md                       @TODO-platform-owner
+/SECURITY.md                     @TODO-security-owner
+/docs/adr/                       @TODO-platform-owner
