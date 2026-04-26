@@ -708,15 +708,40 @@ components:
 
     PathConf:
       type: object
+      description: |
+        MediaMTX-internal path configuration. Carries the recorder's
+        per-path settings as serialized in `mediamtx.yml`. Exposing
+        this shape at the public API surface is a canonical-rule
+        violation (ADR 0001 R5: MediaMTX-internal types must not leak
+        across boundaries); the canonical replacement is a `Camera`
+        plus a `RecordingPolicy` per the domain model. Resolution
+        will require its own ADR — the translation is non-trivial.
+        Tracked in `recorder/docs/canonical-divergences.md`.
+
+        Fields default to **Sensitive**; fields that may carry
+        embedded camera credentials (`source`) are **Credential** and
+        should be redacted in logs.
+      x-classification: sensitive
       properties:
         name:
           type: string
+          x-classification: sensitive
 
         # General
         source:
           type: string
+          x-classification: credential
+          description: |
+            Source URL for the path. May contain embedded credentials
+            (e.g. `rtsp://user:pass@camera/stream`). Treat as
+            Credential; never log; do not return to clients without
+            redaction. The canonical model splits this into
+            `Camera.source_url` (Sensitive, credential-free) plus
+            `Camera.credentials_ref` (Operational pointer to a
+            Credential-classified secret).
         sourceFingerprint:
           type: string
+          x-classification: sensitive
         sourceOnDemand:
           type: boolean
         sourceOnDemandStartTimeout:
@@ -1031,11 +1056,22 @@ components:
 
     Path:
       type: object
+      description: |
+        MediaMTX-internal runtime path object. Loosely corresponds to a
+        `Camera` plus its active `Stream`s in the canonical domain
+        model, but the field set, enum vocabulary (`source.type`,
+        `readers[].type`), and identifier (`name`, a string path
+        identifier rather than a UUID) all differ. Tracked as a
+        canonical-rule violation in `recorder/docs/canonical-divergences.md`.
+      x-classification: sensitive
       properties:
         name:
           type: string
+          x-classification: sensitive
+          description: Path identifier (string, not UUID). Identifies the customer's media path; reveals naming convention / infrastructure layout.
         confName:
           type: string
+          x-classification: sensitive
         source:
           type: object
           nullable: true
@@ -1252,6 +1288,7 @@ components:
       properties:
         path:
           type: string
+          x-classification: sensitive
         created:
           type: string
         lastRequest:
@@ -1291,12 +1328,16 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         path:
           type: string
+          x-classification: sensitive
         query:
           type: string
+          x-classification: sensitive
         user:
           type: string
+          x-classification: pii
         outboundBytes:
           type: integer
           format: uint64
@@ -1317,9 +1358,21 @@ components:
 
     Recording:
       type: object
+      description: |
+        On-disk recording grouping for a single path. Loosely
+        corresponds to the canonical `Camera` plus a list of
+        `RecordingSegment`s — but the current shape is a small subset
+        (only `name` and segment `start` timestamps). Most canonical
+        `RecordingSegment` fields (`tenant_id`, `site_id`,
+        `recording_server_id`, `volume_id`, `policy_id`, `ended_at`,
+        `duration`, `container`, `size_bytes`, `tracks`, `checksum`,
+        `state`, `created_at`) are absent. Tracked in
+        `recorder/docs/canonical-divergences.md`.
       properties:
         name:
           type: string
+          x-classification: sensitive
+          description: Path identifier (string, not UUID). Same caveat as `Path.name` — identifies the customer's media path.
         segments:
           type: array
           items:
@@ -1355,14 +1408,18 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         state:
           $ref: '#/components/schemas/RTMPConnState'
         path:
           type: string
+          x-classification: sensitive
         query:
           type: string
+          x-classification: sensitive
         user:
           type: string
+          x-classification: pii
         inboundBytes:
           type: integer
           format: uint64
@@ -1405,6 +1462,7 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         session:
           type: string
           format: uuid
@@ -1450,14 +1508,18 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         state:
           $ref: '#/components/schemas/RTSPSessionState'
         path:
           type: string
+          x-classification: sensitive
         query:
           type: string
+          x-classification: sensitive
         user:
           type: string
+          x-classification: pii
         transport:
           type: string
           nullable: true
@@ -1570,14 +1632,18 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         state:
           $ref: '#/components/schemas/SRTConnState'
         path:
           type: string
+          x-classification: sensitive
         query:
           type: string
+          x-classification: sensitive
         user:
           type: string
+          x-classification: pii
         packetsSent:
           type: integer
           format: uint64
@@ -1842,20 +1908,26 @@ components:
           type: string
         remoteAddr:
           type: string
+          x-classification: pii
         peerConnectionEstablished:
           type: boolean
         localCandidate:
           type: string
+          x-classification: sensitive
         remoteCandidate:
           type: string
+          x-classification: sensitive
         state:
           $ref: '#/components/schemas/WebRTCSessionState'
         path:
           type: string
+          x-classification: sensitive
         query:
           type: string
+          x-classification: sensitive
         user:
           type: string
+          x-classification: pii
         inboundBytes:
           type: integer
           format: uint64
