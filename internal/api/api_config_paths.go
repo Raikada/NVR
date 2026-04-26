@@ -24,6 +24,7 @@ func (a *API) onConfigPathsList(ctx *gin.Context) {
 	for i, key := range sortedKeys(c.Paths) {
 		data.Items[i] = *c.Paths[key]
 		data.Items[i].TenantID = c.TenantID
+		data.Items[i].Source = redactSourceURL(data.Items[i].Source)
 	}
 
 	data.ItemCount = len(data.Items)
@@ -56,6 +57,7 @@ func (a *API) onConfigPathsGet(ctx *gin.Context) {
 
 	pCopy := *p
 	pCopy.TenantID = c.TenantID
+	pCopy.Source = redactSourceURL(pCopy.Source)
 	ctx.JSON(http.StatusOK, &pCopy)
 }
 

@@ -16,6 +16,7 @@ func (a *API) onConfigPathDefaultsGet(ctx *gin.Context) {
 
 	defaults := c.PathDefaults
 	defaults.TenantID = c.TenantID
+	defaults.Source = redactSourceURL(defaults.Source)
 	ctx.JSON(http.StatusOK, defaults)
 }
 

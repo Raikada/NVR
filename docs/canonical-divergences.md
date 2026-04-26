@@ -100,6 +100,12 @@ Entries are grouped by severity:
 
 ### D4. `PathConf.source` may contain embedded camera credentials in cleartext
 
+> **Status: response-side mitigation resolved.** Closed by the D4
+> commit on 2026-04-26. The full canonical split (`Camera.source_url`
+> + `Camera.credentials_ref`) still requires ADR 0009; this entry
+> now tracks only the canonical-shape gap, not the cleartext-leak
+> risk. See the Resolved section.
+
 - **Where.** `/v3/config/paths/{list,get,add,patch,replace}`,
   `/v3/config/pathdefaults/{get,patch}`. Schema `PathConf.source`.
 - **What.** The `source` URL accepts the form
@@ -115,8 +121,8 @@ Entries are grouped by severity:
 - **Canonical.** `Camera.source_url` + `Camera.credentials_ref`.
 - **Proposed resolution.** Even before ADR 0009 lands, redact the
   userinfo portion of `source` URLs in responses
-  (`rtsp://***:***@host/path`). Full split arrives with ADR 0009.
-  This is the only entry in this section recommended for
+  (`rtsp://redacted:redacted@host/path`). Full split arrives with
+  ADR 0009. This is the only entry in this section recommended for
   short-term mitigation independent of the ADR.
 
 ### D5. `remoteAddr` (PII) returned to every authorized session viewer without masking
@@ -353,6 +359,30 @@ on <date>**` line at the top of its body.
 ---
 
 ## Resolved
+
+### D4. `PathConf.source` userinfo leaked in cleartext on responses
+
+**Resolved 2026-04-26 (response-side mitigation).** Closed by the D4
+commit on `main`.
+
+The fix adds `redactSourceURL` in `internal/api/redact.go` and applies
+it in three handlers: `onConfigPathsList`, `onConfigPathsGet`, and
+`onConfigPathDefaultsGet`. URLs of the form
+`scheme://user:pass@host/path` are returned as
+`scheme://redacted:redacted@host/path`; URLs without userinfo and
+empty / unparseable strings pass through unchanged.
+
+The recorder **still accepts** full credential-bearing source URLs in
+PATCH / POST bodies — write-side parsing is unchanged. The full
+canonical split (`Camera.source_url` + `Camera.credentials_ref`) is
+the subject of ADR 0009 and remains a separate workstream; this fix
+addresses only the response-side cleartext-leak risk.
+
+OpenAPI spec `PathConf.source.description` updated to document the
+asymmetric input/output behavior. Unit tests for the helper cover
+empty input, no-scheme input, no-userinfo URL, with-userinfo URL,
+userinfo-with-port, variant scheme (`udp+rtp`), and the
+unparseable-fallback case.
 
 ### D1. No `tenant_id` anywhere on the API surface
 

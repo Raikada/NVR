@@ -766,12 +766,16 @@ components:
           x-classification: credential
           description: |
             Source URL for the path. May contain embedded credentials
-            (e.g. `rtsp://user:pass@camera/stream`). Treat as
-            Credential; never log; do not return to clients without
-            redaction. The canonical model splits this into
-            `Camera.source_url` (Sensitive, credential-free) plus
-            `Camera.credentials_ref` (Operational pointer to a
-            Credential-classified secret).
+            (e.g. `rtsp://user:pass@camera/stream`) on **input**;
+            **on output the userinfo portion is redacted** to
+            `redacted:redacted@host` per D4 in
+            `recorder/docs/canonical-divergences.md`. The recorder
+            still accepts full credential-bearing URLs in PATCH /
+            POST bodies; it just does not return them. The full
+            canonical split into `Camera.source_url` (Sensitive,
+            credential-free) plus `Camera.credentials_ref`
+            (Operational pointer to a Credential-classified secret)
+            lands with ADR 0009.
         sourceFingerprint:
           type: string
           x-classification: sensitive
