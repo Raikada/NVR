@@ -34,4 +34,7 @@ lint-api-docs:
 	docker run --rm -v "$(shell pwd)/api:/s" -w /s temp \
 	sh -c "openapi lint openapi.yaml"
 
-lint: lint-go lint-go-mod lint-conf lint-go2api lint-docslinks lint-docsorder lint-docs lint-api-docs
+lint-canonicalnames:
+	go test -v -tags enable_linters ./internal/linters/canonicalnames
+
+lint: lint-go lint-go-mod lint-conf lint-go2api lint-docslinks lint-docsorder lint-docs lint-api-docs lint-canonicalnames
