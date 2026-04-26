@@ -1,0 +1,106 @@
+name: dep-warning
+
+# Posts a reminder PR comment when a pull request adds a new direct
+# Go module dependency to go.mod without also adding or modifying an
+# ADR under docs/adr/ (recorder-local) — and reminds the author that
+# workspace-level ADRs at ../docs/adr/ also count, but cannot be seen
+# from inside this repo. See root AGENTS.md rule 7.
+#
+# Soft-fail: never fails the PR check. Indirect dependency changes
+# (// indirect) are ignored — those reflect upstream churn, not a
+# deliberate choice the contributor is making.
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  warn:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect newly added direct dependencies
+        id: detect
+        run: |
+          base="origin/${{ github.base_ref }}"
+
+          extract_direct() {
+            # Read go.mod from stdin; emit one direct module path per line.
+            awk '/^[[:space:]]+[^[:space:]]+[[:space:]]+v[0-9]/ {
+              if ($0 !~ /\/\/ indirect/) print $1
+            }' | sort -u
+          }
+
+          old_modules=$(git show "$base:go.mod" | extract_direct)
+          new_modules=$(cat go.mod | extract_direct)
+
+          added=$(comm -23 <(echo "$new_modules") <(echo "$old_modules") | grep -v '^$' || true)
+
+          adr_changed=$(git diff --name-only "$base...HEAD" \
+            | grep -E '^docs/adr/.*\.md$' || true)
+
+          if [ -z "$added" ]; then
+            echo "added=false" >> "$GITHUB_OUTPUT"
+          elif [ -n "$adr_changed" ]; then
+            echo "added=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "added=true" >> "$GITHUB_OUTPUT"
+            {
+              echo 'list<<ADDED_EOF'
+              echo "$added"
+              echo ADDED_EOF
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post or update reminder comment
+        if: steps.detect.outputs.added == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- raikada:dep-warning -->';
+            const list = `${{ steps.detect.outputs.list }}`;
+            const body = [
+              marker,
+              '### New direct dependency detected',
+              '',
+              'This PR adds the following direct module(s) to `go.mod`:',
+              '',
+              '```',
+              list.trim(),
+              '```',
+              '',
+              'Per root `AGENTS.md` rule 7, new dependencies should be',
+              'paired with an ADR explaining what the module does, why',
+              'we cannot do it ourselves, its license, and its',
+              'maintenance status. The ADR can live at:',
+              '',
+              '- `docs/adr/` (recorder-local, visible to this workflow), or',
+              '- `../docs/adr/` (workspace-level, **not** visible to this',
+              '  workflow — if you added one there, ignore this comment).',
+              '',
+              '_Soft warning, not a blocker._',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number, per_page: 100 },
+            );
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
