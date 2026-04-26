@@ -170,3 +170,11 @@ For full reliable coverage: `make test`.
 - Not an excuse to skip tests when modifying code. The per-commit
   gate stays the four-touched-packages run; the broader local
   approximation here is a sanity check, not a green-light.
+
+## Cross-repo reference updates
+
+After any restructure that moves docs between repos, grep the full
+tree by pattern (e.g. `grep -rn -E '\.\./docs/|\.\./CLAUDE\.md' .`)
+rather than preselected files or directories — the 2026-04-26
+restructure caught references missed by the initial scoped inventory
+only because Phase 6 verification re-grepped the full tree.
