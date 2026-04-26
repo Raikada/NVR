@@ -13,8 +13,11 @@ info:
 
     Schemas describe what the current implementation actually returns.
     Per-field classifications follow `../docs/data-classification.md`
-    (workspace-relative). Divergences from the canonical domain model
-    in `../docs/domain-model.md` are tracked separately in
+    (workspace-relative). **Operational is the default**: schemas and
+    fields without an explicit `x-classification` are Operational.
+    Only divergent classifications (PII, Sensitive, Credential,
+    Restricted) are annotated. Divergences from the canonical domain
+    model in `../docs/domain-model.md` are tracked separately in
     `recorder/docs/canonical-divergences.md`.
 
 servers:
