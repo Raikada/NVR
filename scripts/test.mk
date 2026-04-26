@@ -13,8 +13,8 @@ test-core:
 test-nodocker: test-internal test-core
 
 define DOCKERFILE_TEST
-ARG ARCH
-FROM $$ARCH/$(BASE_IMAGE)
+ARG IMAGE_PREFIX=
+FROM $${IMAGE_PREFIX}$(BASE_IMAGE)
 RUN apk add --no-cache make gcc musl-dev
 WORKDIR /s
 COPY go.mod go.sum ./
@@ -23,14 +23,14 @@ endef
 export DOCKERFILE_TEST
 
 test:
-	echo "$$DOCKERFILE_TEST" | docker build -q . -f - -t temp --build-arg ARCH=amd64
+	echo "$$DOCKERFILE_TEST" | docker build -q . -f - -t temp
 	docker run --rm \
 	-v "$(shell pwd):/s" \
 	temp \
 	make test-nodocker
 
 test-32:
-	echo "$$DOCKERFILE_TEST" | docker build -q . -f - -t temp --build-arg ARCH=i386
+	echo "$$DOCKERFILE_TEST" | docker build -q . -f - -t temp --build-arg IMAGE_PREFIX=i386/
 	docker run --rm \
 	-v "$(shell pwd):/s" \
 	temp \
