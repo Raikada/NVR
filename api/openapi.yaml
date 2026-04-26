@@ -33,6 +33,19 @@ info:
     proceeds; if present and mismatched the recorder returns 403. If
     omitted, the recorder uses its own tenant id implicitly.
 
+    **`query` field redaction (D12).** Every session / connection
+    response that exposes a `query` field — `HLSSession.query`,
+    `RTSPSession.query`, `RTMPConn.query`, `SRTConn.query`,
+    `WebRTCSession.query` — runs the value through a pre-serialization
+    redaction step. Values for keys matching `token`, `password`,
+    `key`, or `secret` (case-insensitive substring) are replaced with
+    the literal `redacted` before the response is emitted; the keys
+    themselves remain visible so a reviewer can see that a sensitive
+    parameter was present without seeing what it was. Other keys
+    pass through unchanged. Per-key visibility makes this a
+    defense-in-depth filter, not a hard guarantee — clients should
+    not rely on it for credential confidentiality.
+
 servers:
   - url: http://localhost:9997
     description: Default LAN-side listener.

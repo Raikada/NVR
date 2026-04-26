@@ -72,6 +72,7 @@ func (a *API) onRTSPSessionsList(ctx *gin.Context) {
 	tenantID := a.tenantID()
 	for i := range data.Items {
 		data.Items[i].TenantID = tenantID
+		data.Items[i].Query = redactQueryString(data.Items[i].Query)
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -95,6 +96,7 @@ func (a *API) onRTSPSessionsGet(ctx *gin.Context) {
 	}
 
 	data.TenantID = a.tenantID()
+	data.Query = redactQueryString(data.Query)
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -182,6 +184,7 @@ func (a *API) onRTSPSSessionsList(ctx *gin.Context) {
 	tenantID := a.tenantID()
 	for i := range data.Items {
 		data.Items[i].TenantID = tenantID
+		data.Items[i].Query = redactQueryString(data.Items[i].Query)
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -205,6 +208,7 @@ func (a *API) onRTSPSSessionsGet(ctx *gin.Context) {
 	}
 
 	data.TenantID = a.tenantID()
+	data.Query = redactQueryString(data.Query)
 
 	ctx.JSON(http.StatusOK, data)
 }

@@ -27,6 +27,7 @@ func (a *API) onRTMPConnsList(ctx *gin.Context) {
 	tenantID := a.tenantID()
 	for i := range data.Items {
 		data.Items[i].TenantID = tenantID
+		data.Items[i].Query = redactQueryString(data.Items[i].Query)
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -50,6 +51,7 @@ func (a *API) onRTMPConnsGet(ctx *gin.Context) {
 	}
 
 	data.TenantID = a.tenantID()
+	data.Query = redactQueryString(data.Query)
 
 	ctx.JSON(http.StatusOK, data)
 }
@@ -92,6 +94,7 @@ func (a *API) onRTMPSConnsList(ctx *gin.Context) {
 	tenantID := a.tenantID()
 	for i := range data.Items {
 		data.Items[i].TenantID = tenantID
+		data.Items[i].Query = redactQueryString(data.Items[i].Query)
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -115,6 +118,7 @@ func (a *API) onRTMPSConnsGet(ctx *gin.Context) {
 	}
 
 	data.TenantID = a.tenantID()
+	data.Query = redactQueryString(data.Query)
 
 	ctx.JSON(http.StatusOK, data)
 }

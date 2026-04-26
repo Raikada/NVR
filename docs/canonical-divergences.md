@@ -277,6 +277,9 @@ be tracked, but they will resolve together.
 
 ### D12. `query` field on sessions may carry Sensitive / PII / Credential content
 
+> **Status: resolved.** Closed by the D12 commit on 2026-04-26. See
+> the Resolved section.
+
 - **Where.** `RTSPSession.query`, `WebRTCSession.query`,
   `RTMPConn.query`, `SRTConn.query`, `HLSSession.query`.
 - **What.** Annotated `x-classification: sensitive` (Phase 3) — but
@@ -364,6 +367,37 @@ on <date>**` line at the top of its body.
 ---
 
 ## Resolved
+
+### D12. `query` field credential-pattern redaction
+
+**Resolved 2026-04-26.** Closed by the D12 commit on `main`.
+
+The fix adds `redactQueryString` in `internal/api/redact.go` and
+applies it in every handler that returns a session / connection type
+with a `query` field: `onHLSSessionsList/Get`,
+`onRTSPSessionsList/Get` and `onRTSPSSessionsList/Get`,
+`onRTMPConnsList/Get` and `onRTMPSConnsList/Get`,
+`onSRTConnsList/Get`, `onWebRTCSessionsList/Get`.
+
+The helper parses the query string, walks the keys, and replaces
+values for any key whose name contains `token`, `password`, `key`,
+or `secret` (case-insensitive substring match) with the literal
+`redacted`. Other keys pass through unchanged. The keys themselves
+remain visible so a reviewer can see that a sensitive parameter was
+present without seeing what it was — defense-in-depth, not a
+guarantee.
+
+Unit tests cover empty input, non-sensitive passthrough, each of the
+four trigger keywords individually, all four together, mixed
+sensitive / non-sensitive, case-insensitive matching, substring
+match (`access_token`, `apikey`), and an unparseable-fallback case.
+Existing handler tests had query fixtures using `key=val` and
+`token=abc` — those collided with the new redaction patterns, so
+the fixtures were renamed to `q=val` and `p=abc` (non-trigger keys)
+to keep the round-trip semantics of those tests unchanged.
+
+OpenAPI spec gains a top-level `query` field redaction note in
+`info.description`, alongside the `tenantId` convention.
 
 ### D6. Non-standard `Authorization: Bearer user:pass` removed
 

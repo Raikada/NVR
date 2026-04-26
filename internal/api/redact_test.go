@@ -25,3 +25,47 @@ func TestRedactSourceURL(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactQueryString(t *testing.T) {
+	for _, ca := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"non-sensitive (passthrough)", "foo=bar&baz=qux", "foo=bar&baz=qux"},
+		{"token", "token=abc123", "token=redacted"},
+		{"password", "password=hunter2", "password=redacted"},
+		{"key", "key=secret_value", "key=redacted"},
+		{"secret", "secret=open_sesame", "secret=redacted"},
+		{
+			"all four together",
+			"token=t1&password=p1&key=k1&secret=s1",
+			"key=redacted&password=redacted&secret=redacted&token=redacted",
+		},
+		{
+			"mixed sensitive and non-sensitive",
+			"foo=bar&token=xyz&baz=qux",
+			"baz=qux&foo=bar&token=redacted",
+		},
+		{
+			"case insensitive on key",
+			"Token=abc&PASSWORD=def",
+			"PASSWORD=redacted&Token=redacted",
+		},
+		{
+			"substring match (access_token, apikey)",
+			"access_token=abc&apikey=def",
+			"access_token=redacted&apikey=redacted",
+		},
+		{
+			"value with special chars survives encoding",
+			"normal=hello%20world&token=abc",
+			"normal=hello+world&token=redacted",
+		},
+	} {
+		t.Run(ca.name, func(t *testing.T) {
+			require.Equal(t, ca.want, redactQueryString(ca.in))
+		})
+	}
+}

@@ -28,6 +28,7 @@ func (a *API) onWebRTCSessionsList(ctx *gin.Context) {
 	tenantID := a.tenantID()
 	for i := range data.Items {
 		data.Items[i].TenantID = tenantID
+		data.Items[i].Query = redactQueryString(data.Items[i].Query)
 	}
 
 	ctx.JSON(http.StatusOK, data)
@@ -51,6 +52,7 @@ func (a *API) onWebRTCSessionsGet(ctx *gin.Context) {
 	}
 
 	data.TenantID = a.tenantID()
+	data.Query = redactQueryString(data.Query)
 
 	ctx.JSON(http.StatusOK, data)
 }

@@ -162,7 +162,7 @@ func TestHLSSessionsList(t *testing.T) {
 				Created:       now,
 				RemoteAddr:    "192.168.1.1:5000",
 				Path:          "stream1",
-				Query:         "key=val1",
+				Query:         "q=val1",
 				User:          "user1",
 				OutboundBytes: 111,
 			},
@@ -171,7 +171,7 @@ func TestHLSSessionsList(t *testing.T) {
 				Created:       now.Add(time.Minute),
 				RemoteAddr:    "192.168.1.2:5001",
 				Path:          "stream2",
-				Query:         "key=val2",
+				Query:         "q=val2",
 				User:          "user2",
 				OutboundBytes: 222,
 			},
@@ -206,7 +206,7 @@ func TestHLSSessionsList(t *testing.T) {
 			Created:       now,
 			RemoteAddr:    "192.168.1.1:5000",
 			Path:          "stream1",
-			Query:         "key=val1",
+			Query:         "q=val1",
 			User:          "user1",
 			OutboundBytes: 111,
 		},
@@ -215,7 +215,7 @@ func TestHLSSessionsList(t *testing.T) {
 			Created:       now.Add(time.Minute),
 			RemoteAddr:    "192.168.1.2:5001",
 			Path:          "stream2",
-			Query:         "key=val2",
+			Query:         "q=val2",
 			User:          "user2",
 			OutboundBytes: 222,
 		},
@@ -231,7 +231,7 @@ func TestHLSSessionsGet(t *testing.T) {
 				Created:       now,
 				RemoteAddr:    "192.168.1.100:5000",
 				Path:          "mystream",
-				Query:         "key=val",
+				Query:         "q=val",
 				User:          "myuser",
 				OutboundBytes: 345,
 			},
@@ -262,7 +262,7 @@ func TestHLSSessionsGet(t *testing.T) {
 	require.Equal(t, uuid.MustParse(sessionID), out.ID)
 	require.Equal(t, "192.168.1.100:5000", out.RemoteAddr)
 	require.Equal(t, "mystream", out.Path)
-	require.Equal(t, "key=val", out.Query)
+	require.Equal(t, "q=val", out.Query)
 	require.Equal(t, "myuser", out.User)
 	require.Equal(t, uint64(345), out.OutboundBytes)
 }
