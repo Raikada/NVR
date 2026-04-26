@@ -24,7 +24,7 @@ projects.
 - **Output.** Sorted lists of `Segment`s and helpers for opening one
   for read.
 - Maps to the canonical `RecordingSegment` entity defined in
-  [`../../../docs/domain-model.md`](../../../docs/domain-model.md).
+  [`../../../platform/docs/domain-model.md`](../../../platform/docs/domain-model.md).
   This package is authoritative; the MS-side index is a projection.
 
 ## Gotchas
@@ -44,4 +44,4 @@ projects.
 
 Part of the media-adjacent pipeline; the root rule against drive-by
 refactors applies. See [`../../AGENTS.md`](../../AGENTS.md) and
-workspace [`../../../CLAUDE.md`](../../../CLAUDE.md).
+workspace [`../../../platform/CLAUDE.md`](../../../platform/CLAUDE.md).

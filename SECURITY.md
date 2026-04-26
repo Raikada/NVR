@@ -24,12 +24,12 @@ we will mirror fixes here as they land.
 Vulnerabilities in other Raikada platform components (Cloud, Management
 Server, Web Client, Flutter Client) should be reported to the owning
 repo. The platform's overall trust model is documented in
-[`../docs/trust-model.md`](../docs/trust-model.md).
+[`../platform/docs/trust-model.md`](../platform/docs/trust-model.md).
 
 ## Trust boundaries (summary)
 
 The recorder operates inside a layered trust model documented in full
-in [`../docs/trust-model.md`](../docs/trust-model.md). At a glance:
+in [`../platform/docs/trust-model.md`](../platform/docs/trust-model.md). At a glance:
 
 - **Cloud** is the trust root for cloud-connected deployments.
 - **The Management Server** is the site trust authority for Recording

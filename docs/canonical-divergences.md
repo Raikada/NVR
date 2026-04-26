@@ -4,7 +4,7 @@ This document lists every place the recorder's current HTTP API
 implementation — described faithfully in
 [`../api/openapi.yaml`](../api/openapi.yaml) — diverges from the
 canonical domain model in
-[`../../docs/domain-model.md`](../../docs/domain-model.md).
+[`../../platform/docs/domain-model.md`](../../platform/docs/domain-model.md).
 
 Each entry is **tracked debt**, not a unilateral repair. Resolutions
 are out of scope for this run. Each one will be resolved either by a
@@ -25,7 +25,7 @@ Entries are grouped by severity:
    expects UUIDs, schemas that are subsets of their canonical
    counterparts.
 3. **Data-classification gaps** — fields that aren't redacted or
-   masked correctly relative to `../../docs/data-classification.md`.
+   masked correctly relative to `../../platform/docs/data-classification.md`.
 4. **Cosmetic / structural** — tracked for completeness but not
    blocking anything.
 

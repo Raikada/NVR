@@ -2,7 +2,7 @@
 
 Platform-wide ADRs (decisions binding Cloud, Management Server,
 Recording Server, Web Client, and Flutter Client together) live at
-[`../../../docs/adr/`](../../../docs/adr/). That is the right place for
+[`../../../platform/docs/adr/`](../../../platform/docs/adr/). That is the right place for
 any decision whose consequences cross system boundaries.
 
 This directory is reserved for **recorder-only** ADRs: decisions whose
@@ -17,9 +17,9 @@ There are none yet.
 
 1. Confirm the decision is genuinely repo-local. If it touches a
    canonical entity, a public API surface, or another tier, it belongs
-   in [`../../../docs/adr/`](../../../docs/adr/) instead.
+   in [`../../../platform/docs/adr/`](../../../platform/docs/adr/) instead.
 2. Pick the next free number (`NNNN-<short-kebab-title>.md`).
 3. Copy the template from
-   [`../../../docs/adr/0000-template.md`](../../../docs/adr/0000-template.md)
+   [`../../../platform/docs/adr/0000-template.md`](../../../platform/docs/adr/0000-template.md)
    and adapt it.
 4. Add an entry to a future index here (when there is more than one).

@@ -3,7 +3,7 @@
 This package **produces `RecordingSegment` files on disk** for one path.
 It is the load-bearing producer of the canonical `RecordingSegment`
 entity defined in
-[`../../../docs/domain-model.md`](../../../docs/domain-model.md). If
+[`../../../platform/docs/domain-model.md`](../../../platform/docs/domain-model.md). If
 this package is wrong, footage is lost — see
 [`../../ARCHITECTURE.md`](../../ARCHITECTURE.md) §9.
 

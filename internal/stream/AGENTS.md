@@ -41,4 +41,4 @@ file and the goal.** Adding observability (metrics, structured logs)
 around the existing flow is fine when asked. Changing concurrency or
 buffer semantics is not.
 
-See also workspace [`../../../CLAUDE.md`](../../../CLAUDE.md).
+See also workspace [`../../../platform/CLAUDE.md`](../../../platform/CLAUDE.md).

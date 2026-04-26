@@ -7,14 +7,14 @@ not cover.
 
 > **Wire-format contracts are platform-wide.** Once API contracts are
 > agreed and written, they will live under
-> [`../../docs/api-contracts/`](../../docs/api-contracts/), not here.
+> [`../../platform/docs/api-contracts/`](../../platform/docs/api-contracts/), not here.
 > This document is for the recorder-specific implementation view —
 > handler organization, request lifecycle, error mapping, etc.
 
 For platform-level context on which surfaces the recorder exposes and
 to whom, see
-[`../../docs/service-boundaries.md`](../../docs/service-boundaries.md)
-§3 and [`../../docs/authentication-flows.md`](../../docs/authentication-flows.md).
+[`../../platform/docs/service-boundaries.md`](../../platform/docs/service-boundaries.md)
+§3 and [`../../platform/docs/authentication-flows.md`](../../platform/docs/authentication-flows.md).
 
 ---
 
@@ -36,7 +36,7 @@ This document is the recorder-side overview; the spec is the contract.
 > lifecycle, error mapping, performance notes. The wire-shape
 > contract lives in [`../api/openapi.yaml`](../api/openapi.yaml) and
 > is already populated; cross-tier contracts will land under
-> `../../docs/api-contracts/` as they are agreed.
+> `../../platform/docs/api-contracts/` as they are agreed.
 
 ## Hard rules
 
@@ -45,7 +45,7 @@ This document is the recorder-side overview; the spec is the contract.
   See [`../AGENTS.md`](../AGENTS.md) §3.
 - The recorder validates inbound tokens locally against cached issuer
   material. It does not call Cloud or the MS per request. See
-  [`../../docs/adr/0002-trust-pairing-authentication.md`](../../docs/adr/0002-trust-pairing-authentication.md)
+  [`../../platform/docs/adr/0002-trust-pairing-authentication.md`](../../platform/docs/adr/0002-trust-pairing-authentication.md)
   OQ10 required property 1.
 - Endpoints default to authenticated access. Anonymous access is opt-in
   per path, never the default.

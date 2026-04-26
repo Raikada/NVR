@@ -29,12 +29,12 @@ optimized to prevent it.
 This repo is one part of the Raikada platform. Platform-wide truth
 lives in the parent workspace:
 
-- [`../CLAUDE.md`](../CLAUDE.md) — workspace-level orientation and rules.
-- [`../docs/system-blueprint.md`](../docs/system-blueprint.md) — the
+- [`../platform/CLAUDE.md`](../platform/CLAUDE.md) — workspace-level orientation and rules.
+- [`../platform/docs/system-blueprint.md`](../platform/docs/system-blueprint.md) — the
   five-tier architecture.
-- [`../docs/domain-model.md`](../docs/domain-model.md) — canonical
+- [`../platform/docs/domain-model.md`](../platform/docs/domain-model.md) — canonical
   entities. Do not redefine these locally.
-- [`../docs/adr/`](../docs/adr/) — accepted cross-system decisions.
+- [`../platform/docs/adr/`](../platform/docs/adr/) — accepted cross-system decisions.
 
 ## Build and test
 

@@ -2,17 +2,17 @@
 
 This document is for humans (and AI agents) making changes to **this
 repository**. Workspace-wide rules live one level up — see
-[`../CLAUDE.md`](../CLAUDE.md). Repo-specific rules live in
+[`../platform/CLAUDE.md`](../platform/CLAUDE.md). Repo-specific rules live in
 [`AGENTS.md`](AGENTS.md).
 
 If you've never worked in this workspace before, read in this order:
 
-1. [`../CLAUDE.md`](../CLAUDE.md) — workspace-level orientation.
-2. [`../docs/system-blueprint.md`](../docs/system-blueprint.md) — the
+1. [`../platform/CLAUDE.md`](../platform/CLAUDE.md) — workspace-level orientation.
+2. [`../platform/docs/system-blueprint.md`](../platform/docs/system-blueprint.md) — the
    five-tier architecture.
-3. [`../docs/domain-model.md`](../docs/domain-model.md) — canonical
+3. [`../platform/docs/domain-model.md`](../platform/docs/domain-model.md) — canonical
    entities. Do not redefine these locally.
-4. [`../docs/service-boundaries.md`](../docs/service-boundaries.md) —
+4. [`../platform/docs/service-boundaries.md`](../platform/docs/service-boundaries.md) —
    what every tier owns.
 5. [`ARCHITECTURE.md`](ARCHITECTURE.md) — what this repo specifically does.
 6. [`AGENTS.md`](AGENTS.md) — repo rules.
@@ -23,7 +23,7 @@ If you've never worked in this workspace before, read in this order:
 
 | What                                         | Where                              |
 |----------------------------------------------|------------------------------------|
-| Platform-wide truth (canonical entities,     | `../docs/`                         |
+| Platform-wide truth (canonical entities,     | `../platform/docs/`                         |
 | ownership, trust, pairing, auth, ADRs,       |                                    |
 | API contracts)                               |                                    |
 | Repo-level orientation                       | `ARCHITECTURE.md`                  |
@@ -36,13 +36,13 @@ If you've never worked in this workspace before, read in this order:
 
 When you change recorder behavior:
 
-- Touching a canonical entity? → Edit `../docs/domain-model.md` first.
-- Changing ownership of a concern? → Edit `../docs/service-boundaries.md`.
-- Touching auth / pairing / trust? → Edit the relevant `../docs/*.md`
+- Touching a canonical entity? → Edit `../platform/docs/domain-model.md` first.
+- Changing ownership of a concern? → Edit `../platform/docs/service-boundaries.md`.
+- Touching auth / pairing / trust? → Edit the relevant `../platform/docs/*.md`
   before the code.
 - Touching media pipeline? → Read `AGENTS.md` §6 first; you probably
   don't want to.
-- Changing a wire contract? → Edit `../docs/api-contracts/` (once
+- Changing a wire contract? → Edit `../platform/docs/api-contracts/` (once
   populated) before the wire change.
 
 ---
