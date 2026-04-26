@@ -1,46 +1,52 @@
-<h1 align="center">
-  <a href="https://mediamtx.org">
-    <img src="logo.png" alt="MediaMTX">
-  </a>
+<h1 align="center">Raikada Recording Server</h1>
 
-  <br>
-  <br>
+The **Raikada Recording Server** is the on-premises component of the
+Raikada platform. It runs on a customer-LAN appliance, ingests media
+from cameras (RTSP, RTMP, WebRTC, SRT, HLS), records to local storage as
+bounded segments, serves live and historical streams to authorized
+clients, and prepares clip exports.
 
-  [![Website](https://img.shields.io/badge/website-mediamtx.org-1c94b5)](https://mediamtx.org)
-  [![Test](https://github.com/bluenviron/mediamtx/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/bluenviron/mediamtx/actions/workflows/test.yml?query=branch%3Amain)
-  [![Lint](https://github.com/bluenviron/mediamtx/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/bluenviron/mediamtx/actions/workflows/lint.yml?query=branch%3Amain)
-  [![CodeCov](https://codecov.io/gh/bluenviron/mediamtx/branch/main/graph/badge.svg)](https://app.codecov.io/gh/bluenviron/mediamtx/tree/main)
-  [![Release](https://img.shields.io/github/v/release/bluenviron/mediamtx)](https://github.com/bluenviron/mediamtx/releases)
-  [![Docker Hub](https://img.shields.io/badge/docker-bluenviron/mediamtx-blue)](https://hub.docker.com/r/bluenviron/mediamtx)
-</h1>
+This repository is a Raikada-specific fork of
+[MediaMTX](https://github.com/bluenviron/mediamtx); upstream remains the
+load-bearing engine for the media pipeline, but this fork is a separate
+product and is not merge-friendly.
 
-<br>
+## Offline-first invariant
 
-_MediaMTX_ is a ready-to-use and zero-dependency real-time media server and media proxy that allows to publish, read, proxy, record and playback video and audio streams. It has been conceived as a "media router" that routes media streams from one end to the other, with a focus on efficiency and portability.
+The recorder must continue recording when disconnected from Cloud or
+the Management Server. Every interaction with those tiers is
+asynchronous, retryable, and off the recording hot path. Footage loss
+is the worst outcome the system can produce, and the architecture is
+optimized to prevent it.
 
-<div align="center">
+## Where to start
 
-  |[Install](https://mediamtx.org/docs/kickoff/install)|[Documentation](https://mediamtx.org/docs/kickoff/introduction)|
-  |-|-|
+- [`AGENTS.md`](AGENTS.md) — rules for AI agents working in this repo.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — what this repo is and is not.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to make changes.
+- [`SECURITY.md`](SECURITY.md) — reporting vulnerabilities.
 
-</div>
+This repo is one part of the Raikada platform. Platform-wide truth
+lives in the parent workspace:
 
-<h3>Features</h3>
+- [`../CLAUDE.md`](../CLAUDE.md) — workspace-level orientation and rules.
+- [`../docs/system-blueprint.md`](../docs/system-blueprint.md) — the
+  five-tier architecture.
+- [`../docs/domain-model.md`](../docs/domain-model.md) — canonical
+  entities. Do not redefine these locally.
+- [`../docs/adr/`](../docs/adr/) — accepted cross-system decisions.
 
-- [Publish](https://mediamtx.org/docs/features/publish) live streams to the server with SRT, WebRTC, RTSP, RTMP, HLS, MPEG-TS, RTP, using FFmpeg, GStreamer, OBS Studio, Python , Golang, Unity, web browsers, Raspberry Pi Cameras and more.
-- [Read](https://mediamtx.org/docs/features/read) live streams from the server with SRT, WebRTC, RTSP, RTMP, HLS, using FFmpeg, GStreamer, VLC, OBS Studio, Python , Golang, Unity, web browsers and more.
-- Streams are automatically converted from a protocol to another
-- Serve several streams at once in separate paths
-- Reload the configuration without disconnecting existing clients (hot reloading)
-- [Serve always-available streams](https://mediamtx.org/docs/features/always-available) even when the publisher is offline
-- [Record](https://mediamtx.org/docs/features/record) streams to disk in fMP4 or MPEG-TS format
-- [Playback](https://mediamtx.org/docs/features/playback) recorded streams
-- [Authenticate](https://mediamtx.org/docs/features/authentication) users with internal, HTTP or JWT authentication
-- [Forward](https://mediamtx.org/docs/features/forward) streams to other servers
-- [Proxy](https://mediamtx.org/docs/features/proxy) requests to other servers
-- [Control](https://mediamtx.org/docs/features/control-api) the server through the Control API
-- [Extract metrics](https://mediamtx.org/docs/features/metrics) from the server in a Prometheus-compatible format
-- [Monitor performance](https://mediamtx.org/docs/features/performance) to investigate CPU and RAM consumption
-- [Run hooks](https://mediamtx.org/docs/features/hooks) (external commands) when clients connect, disconnect, read or publish streams
-- Compatible with Linux, Windows and macOS, does not require any dependency or interpreter, it's a single executable
-- ...and many [others](https://mediamtx.org/docs/kickoff/introduction).
+## Build and test
+
+```sh
+make help              # full list of targets
+make test-nodocker     # run tests locally
+make lint              # run linters (Docker-based)
+make binaries          # build release binaries
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow.
+
+## License
+
+See [`LICENSE`](LICENSE).
