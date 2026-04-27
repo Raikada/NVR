@@ -104,3 +104,80 @@ func TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied(t *testing.T) {
 	_, _, sev := findEventByKind(t, "policy.applied")
 	require.Equal(t, "info", sev)
 }
+
+// countEventsByKindAndVerb walks the default event store and returns
+// the number of events whose Kind matches and whose Attributes["verb"]
+// equals verb. Used by the multi-verb tests below to assert that each
+// write verb emits exactly one event with the correct verb attribute.
+func countEventsByKindAndVerb(kind, verb string) int {
+	n := 0
+	for _, e := range defaultEventStore().Snapshot() {
+		if string(e.Kind) == kind && e.Attributes["verb"] == verb {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPublishEvent_CameraPATCHAndDELETEEmitConfigApplied verifies that
+// the PATCH and DELETE verbs on /v1/cameras each emit one
+// config.applied event with the matching verb attribute. Locks the
+// wider verb coverage commit 1fc1ff56 introduced.
+func TestPublishEvent_CameraPATCHAndDELETEEmitConfigApplied(t *testing.T) {
+	resetEventStoreSingleton(t)
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	createBody, err := json.Marshal(map[string]any{
+		"name":        "verbcam",
+		"source_type": "rtsp",
+		"source_url":  "rtsp://192.0.2.5:554/stream",
+	})
+	require.NoError(t, err)
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", createBody)
+	require.Equal(t, http.StatusCreated, code)
+	camID := cameraIDFromPathName("verbcam")
+
+	patchBody, err := json.Marshal(map[string]any{"source_url": "rtsp://192.0.2.6:554/stream"})
+	require.NoError(t, err)
+	code, _ = invokeCameraHandler(api, api.onV1CamerasPatch, http.MethodPatch, "", camID, patchBody)
+	require.Equal(t, http.StatusOK, code)
+
+	code, _ = invokeCameraHandler(api, api.onV1CamerasDelete, http.MethodDelete, "", camID, nil)
+	require.Equal(t, http.StatusOK, code)
+
+	require.Equal(t, 1, countEventsByKindAndVerb("config.applied", "create"))
+	require.Equal(t, 1, countEventsByKindAndVerb("config.applied", "update"))
+	require.Equal(t, 1, countEventsByKindAndVerb("config.applied", "delete"))
+}
+
+// TestPublishEvent_RecordingPolicyPATCHAndDELETEEmitPolicyApplied
+// matches the camera test above for /v1/recording-policies PATCH and
+// DELETE verbs.
+func TestPublishEvent_RecordingPolicyPATCHAndDELETEEmitPolicyApplied(t *testing.T) {
+	resetEventStoreSingleton(t)
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf}
+
+	createBody, err := json.Marshal(map[string]any{"name": "verbpolicy", "mode": "continuous"})
+	require.NoError(t, err)
+	code, respBody := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", createBody)
+	require.Equal(t, http.StatusCreated, code)
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(respBody, &created))
+
+	patchBody, err := json.Marshal(map[string]any{"name": "verbpolicy_renamed"})
+	require.NoError(t, err)
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "", created.ID, patchBody)
+	require.Equal(t, http.StatusOK, code)
+
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesDelete, http.MethodDelete, "", created.ID, nil)
+	require.Equal(t, http.StatusOK, code)
+
+	require.Equal(t, 1, countEventsByKindAndVerb("policy.applied", "create"))
+	require.Equal(t, 1, countEventsByKindAndVerb("policy.applied", "update"))
+	require.Equal(t, 1, countEventsByKindAndVerb("policy.applied", "delete"))
+}
