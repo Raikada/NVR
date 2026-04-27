@@ -110,13 +110,28 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 		}
 	}
 
-	// Network reachability: the recorder doesn't yet have an MS-
-	// pairing client or cloud reachability prober (those are platform
-	// scaffolds today; see workspace platform/CLAUDE.md §1). We emit
-	// the conservative all-false default so the canonical shape stays
-	// coherent; the field flips to live values once the pairing
-	// client lands. Phase-2-followup.
-	in.Network = defs.HealthStatusNetwork{}
+	// Network reachability: until the MS-pairing client lands (ADR
+	// 0008, reserved) the recorder has no live control-plane
+	// connection to observe. As a stub, we run TCP-reachability
+	// probes against the optional bootstrap endpoints
+	// conf.Conf.ManagementServerEndpoint and conf.Conf.CloudEndpoint;
+	// either field unset reports the corresponding *_reachable as
+	// false. last_sync_at stays nil here — TCP reachability is not a
+	// successful control-plane sync; the pairing client is what will
+	// populate it.
+	a.mutex.Lock()
+	if a.networkProbe == nil {
+		a.networkProbe = newNetworkProbe()
+	}
+	probe := a.networkProbe
+	a.mutex.Unlock()
+	msEndpoint := ""
+	cloudEndpoint := ""
+	if c != nil {
+		msEndpoint = c.ManagementServerEndpoint
+		cloudEndpoint = c.CloudEndpoint
+	}
+	in.Network = probe.Sample(msEndpoint, cloudEndpoint)
 
 	// recordingServerID: the recorder doesn't yet surface a server-
 	// scoped UUID through conf.Conf (no `recording_server_id` field
