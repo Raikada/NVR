@@ -52,8 +52,8 @@ func TestV1EventsListEmptyShowsNotice(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Equal(t, 0, got.ItemCount)
 	require.Empty(t, got.Items)
-	require.NotEmpty(t, got.Notice, "empty store must surface the not-yet-wired notice")
-	require.Contains(t, got.Notice, "events store not yet wired")
+	require.NotEmpty(t, got.Notice, "empty store must surface the empty-buffer notice")
+	require.Contains(t, got.Notice, "no events buffered")
 }
 
 func TestV1EventsListReturnsPublishedEvents(t *testing.T) {

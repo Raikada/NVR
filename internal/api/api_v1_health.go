@@ -70,7 +70,7 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	if a.PathManager != nil && c != nil {
 		offline := 0
 		recording := 0
-		for name := range c.Paths {
+		for name, pathConf := range c.Paths {
 			ap, err := a.PathManager.APIPathsGet(name)
 			if err != nil || ap == nil {
 				offline++
@@ -79,15 +79,12 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 			if !ap.Online {
 				offline++
 			}
-			// PathManager exposes Online/Available; whether a path is
-			// actively recording lives elsewhere. As a Phase 2D
-			// approximation, "currently has at least one source live
-			// and is configured to record" maps to (Online && record-
-			// configured); we don't have the conf record flag handy
-			// here without a deeper walk, so we count Online as the
-			// recording proxy. Phase-2-followup tightens this once a
-			// dedicated CamerasRecording counter is wired.
-			if ap.Online {
+			// "Currently recording" = path is online AND its conf has
+			// the Record flag set. Reading conf.Path.Record directly is
+			// safe under a.mutex.RLock() (held by the caller) since
+			// /v1/cameras and /v1/recording-policies handlers always
+			// mutate the path under a.mutex.Lock().
+			if ap.Online && pathConf != nil && pathConf.Record {
 				recording++
 			}
 		}

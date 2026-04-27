@@ -1,13 +1,15 @@
 // Package api: /v1/events handlers per ADR 0009 §D5 Events.
 //
-// The recorder already emits canonical Event-shaped log lines for
-// camera state changes, segment errors, storage failures, and auth
-// decisions; today none of them are queryable via API. This file
-// exposes whatever the in-memory EventStore (event_store.go) holds.
-//
-// Phase 2D ships the handler + buffer; the buffer starts empty.
-// Phase-2-followup wires producers (camera-state, segment-write,
-// auth-decision) to call EventStore.Publish so the buffer fills.
+// The recorder emits canonical Events at known trigger points and
+// surfaces them through this handler. Producers wired today:
+// camera.online / camera.offline (internal/core/path.go via the
+// pipeline-event helpers in event_publish.go), auth.session_started /
+// auth.failed_login (the api.go authentication middleware), and
+// config.applied / policy.applied (the /v1/cameras,
+// /v1/recording-policies, and /v1/recorder/config write handlers).
+// Producers NOT yet wired: segment.write_failed and storage.volume_full
+// — both sit deeper in the recordstore / cleaner subsystems and are
+// queued separately.
 package api //nolint:revive
 
 import (
@@ -244,8 +246,12 @@ func (a *API) eventStore() *EventStore {
 // returns the buffer's current contents.
 //
 // When the buffer is empty the response carries a `notice` field
-// flagging that no producer wiring exists yet — that's the
-// Phase-2-followup gap, not a transient empty-state.
+// noting that some producers (segment.write_failed,
+// storage.volume_full) are still unwired, so a quiet buffer can mean
+// "no events match your filter," "no events have occurred since
+// startup," or "the unwired producers haven't fired anyway." Clients
+// that want to detect the unwired-producers gap explicitly can probe
+// for any of the wired kinds and check whether they ever appear.
 func (a *API) onV1EventsList(ctx *gin.Context) {
 	filters, err := parseEventFilters(ctx)
 	if err != nil {
@@ -287,9 +293,9 @@ func (a *API) onV1EventsList(ctx *gin.Context) {
 	resp.PageCount = pageCount
 
 	if len(all) == 0 {
-		resp.Notice = "events store not yet wired: producers (camera-state, " +
-			"segment-write, auth-decision) publish into the in-memory buffer " +
-			"in Phase-2-followup; the buffer is currently empty"
+		resp.Notice = "no events buffered: camera-state, auth, and config-apply " +
+			"producers are wired but may not have fired since startup; " +
+			"segment-write and storage producers remain unwired"
 	}
 
 	ctx.JSON(http.StatusOK, resp)
