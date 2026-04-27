@@ -1892,6 +1892,13 @@ components:
         Documented as opaque-shape here because the field set is
         large (~80 keys) and recorder-internal; full per-field
         reference lives in the recorder's own configuration docs.
+
+        Includes per-volume bootstrap overrides under
+        `recordingVolumes` (per ADR 0009 §D5): a map keyed by mount
+        path whose values carry an optional `priority` integer. When
+        set, that priority replaces the synthesized mount-path-sort
+        index surfaced by `/v1/storage-volumes`; when absent, the
+        synthesized fallback is used.
       additionalProperties: true
       x-classification: sensitive
 

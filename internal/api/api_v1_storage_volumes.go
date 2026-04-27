@@ -210,6 +210,15 @@ func (a *API) collectStorageVolumes(c *conf.Conf) []defs.StorageVolume {
 				status = defs.StorageVolumeStatusDegraded
 			}
 		}
+		// Priority resolution per ADR 0009 §D5: prefer an operator-set
+		// value from conf.RecordingVolumes[mountPath].Priority when
+		// present; otherwise fall back to the mount-path-sort index so
+		// unconfigured deployments retain the prior strictly-increasing
+		// ordering.
+		priority := i
+		if rv, ok := c.RecordingVolumes[mp]; ok && rv != nil && rv.Priority != nil {
+			priority = *rv.Priority
+		}
 		in := defs.StorageVolumeInput{
 			MountPath:     mp,
 			Kind:          volumeKindForMountPath(mp),
@@ -218,13 +227,7 @@ func (a *API) collectStorageVolumes(c *conf.Conf) []defs.StorageVolume {
 			ReservedBytes: 0,
 			Status:        status,
 			LastCheckedAt: nowUTC(),
-			// Priority is bootstrap-config-shaped; conf.Path doesn't
-			// carry a per-volume priority today. We expose a stable
-			// "list order" priority based on the deterministic mount-
-			// path sort so clients can rely on a strictly-increasing
-			// ordering. Real priority lands once /v1/recorder/config
-			// surfaces a volume[].priority field. Phase-2-followup.
-			Priority: i,
+			Priority:      priority,
 		}
 		out = append(out, defs.BuildStorageVolume(in, volumeIDFromMountPath(mp), ""))
 	}

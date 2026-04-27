@@ -444,6 +444,14 @@ type Conf struct {
 	// recording config and writes back through Parent.APIConfigSet on
 	// the next canonical-surface mutation.
 	RecordingPolicies map[string]*RecordingPolicyConfig `json:"recordingPolicies"`
+
+	// RecordingVolumes is the operator-set per-volume bootstrap override
+	// map per ADR 0009 §D5. Persists to mediamtx.yml as a top-level
+	// recordingVolumes: key, keyed by absolute mount path. Today only
+	// carries a Priority override; absent entries fall back to the
+	// mount-path-sort index in collectStorageVolumes (preserving prior
+	// behavior for unconfigured deployments).
+	RecordingVolumes map[string]*RecordingVolumeConfig `json:"recordingVolumes"`
 }
 
 func (conf *Conf) setDefaults() {
@@ -1149,6 +1157,25 @@ func (conf *Conf) Validate(l logger.Writer) error {
 			return fmt.Errorf("recording policy '%s' is nil", id)
 		}
 		if err := rp.validate(id); err != nil {
+			return err
+		}
+	}
+
+	// Validate per-volume bootstrap overrides per ADR 0009 §D5. Keys are
+	// mount paths; values are RecordingVolumeConfig. The map is optional;
+	// absent entries fall back to the mount-path-sort index in
+	// collectStorageVolumes.
+	volumeKeys := make([]string, 0, len(conf.RecordingVolumes))
+	for mp := range conf.RecordingVolumes {
+		volumeKeys = append(volumeKeys, mp)
+	}
+	sort.Strings(volumeKeys)
+	for _, mp := range volumeKeys {
+		rv := conf.RecordingVolumes[mp]
+		if rv == nil {
+			return fmt.Errorf("recording volume '%s' is nil", mp)
+		}
+		if err := rv.validate(mp); err != nil {
 			return err
 		}
 	}
