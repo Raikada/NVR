@@ -378,8 +378,9 @@ entry above will be closed by:
 - a code change (small, mechanical fixes — D4 redaction, D6 step 1,
   D12 redaction);
 - an ADR (D2 / D3 / D7 / D8 / D9 / D10 / D13 → **ADR 0009**;
-  D5 → role-catalog ADR; D6 step 3 → coordinated with
-  ADR 0002 OQ10);
+  D5 → **ADR 0010** role catalog; D6 step 3 → coordinated with
+  **ADR 0011** which resolved ADR 0002 OQ10 by selecting JWT/JWKS
+  for users + mTLS for service-to-service);
 - a future platform-API-contracts ADR (D15 forward reference).
 
 When an entry is closed, this document updates: the entry stays
@@ -474,9 +475,10 @@ OpenAPI spec gains a top-level `query` field redaction note in
 `internal/protocols/httpp/credentials.go` no longer interprets
 `Authorization: Bearer user:pass` as colon-separated credentials.
 Anything after `Bearer ` is now treated opaquely as a token, validated
-downstream per the platform's chosen credential mechanism (see ADR
-0002 OQ10). Clients that previously relied on the non-standard form
-must switch to HTTP Basic — same primitive, standards-compliant.
+downstream per the platform's chosen credential mechanism (ADR 0011
+selected JWT/JWKS for the user-facing surface). Clients that previously
+relied on the non-standard form must switch to HTTP Basic — same
+primitive, standards-compliant.
 
 OpenAPI spec changes:
 - The `bearerUserPass` security scheme is removed from
@@ -493,8 +495,8 @@ flipped to assert the new behavior (the input becomes
 
 This closes step 1 of the three-step deprecation plan in the
 original D6 entry. Steps 2 and 3 (server-side log warnings and final
-removal coordinated with ADR 0002 OQ10) are now moot — the path is
-already gone.
+removal coordinated with the chosen credential mechanism — now
+resolved by ADR 0011) are now moot: the path is already gone.
 
 ### D4. `PathConf.source` userinfo leaked in cleartext on responses
 
@@ -715,8 +717,12 @@ session.
 
 Limitation: pre-MS the recorder doesn't have a canonical `User`
 catalog wired up yet — `user_id` is populated when present but the
-upstream sources don't always have one to give. Cross-tier joins
-to identity remain a Phase-2 follow-up tied to ADR 0002 OQ10.
+upstream sources don't always have one to give. ADR 0011 specifies
+the JWT `sub` claim as the canonical user UUID for JWT-authed
+flows; cross-tier joins to identity unblock once the recorder is
+emitting Streams whose user_id is sourced from the validated JWT
+Principal. The wiring follow-up is small: thread the per-request
+Principal through to the Stream translator at session-start.
 
 ### D10. `path` string replaced by `camera_id` UUID on streams
 

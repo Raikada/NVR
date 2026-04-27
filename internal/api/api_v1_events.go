@@ -4,12 +4,13 @@
 // surfaces them through this handler. Producers wired today:
 // camera.online / camera.offline (internal/core/path.go via the
 // pipeline-event helpers in event_publish.go), auth.failed_login (the
-// api.go authentication middleware), and config.applied /
-// policy.applied (the /v1/cameras, /v1/recording-policies, and
-// /v1/recorder/config write handlers). Producers NOT yet wired:
-// auth.session_started (per-session semantics; needs ADR 0002 OQ10's
-// session model), segment.write_failed and storage.volume_full (both
-// sit deeper in the recordstore / cleaner subsystems).
+// api.go authentication middleware), config.applied / policy.applied
+// (the /v1/cameras, /v1/recording-policies, and /v1/recorder/config
+// write handlers), and segment.write_failed (recordstore wires it via
+// SetSegmentEventTarget). Producers NOT yet wired: auth.session_started
+// (ADR 0011 unblocks the kind via jti-keyed session lifecycle, but the
+// recorder doesn't yet track jti-dedup; small follow-up) and
+// storage.volume_full (sits deeper in the cleaner subsystem).
 package api //nolint:revive
 
 import (

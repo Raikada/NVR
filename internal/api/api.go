@@ -104,10 +104,12 @@ func (a *API) Initialize() error {
 	group.GET("/info", a.onInfo)
 
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
-	// ADR 0002 OQ10 keeps non-JWT credential mechanisms (mTLS,
-	// opaque-bearer-with-introspection, short-lived service tokens, hybrid)
-	// alive as candidates; the endpoint signals "refresh your cached
-	// issuer material now," whatever shape that material takes.
+	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
+	// for service-to-service connections; the mechanism-neutral name
+	// was kept anyway because the endpoint signals "refresh your
+	// cached issuer material now" — the JWKS endpoint URL today, but
+	// extensible to additional issuer-material kinds (e.g., the trust
+	// roots for mTLS validation) without a rename.
 	group.POST("/auth/refresh-issuer-material", a.onV1AuthRefreshIssuerMaterial)
 
 	// Cameras (ADR 0009 §D5 Cameras).
@@ -348,11 +350,14 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		"",
 		nil,
 	)
-	// Note: no auth.session_started emit here. The canonical kind implies
-	// per-session emission, but the recorder has no AuthSession concept
-	// yet (ADR 0002 OQ10), so emitting on every authenticated request
-	// would produce per-request events under a per-session kind name —
-	// a semantic mismatch. Wired once a session model lands.
+	// Note: no auth.session_started emit here. ADR 0011 §"Consequences"
+	// unblocks the kind by establishing JWT validation as the moment
+	// "session begins for this token" with same-jti requests
+	// deduplicating to the same session. The recorder doesn't yet
+	// track jti-keyed session state; until that small follow-up lands,
+	// emitting on every authenticated request would produce per-
+	// request events under a per-session kind name — a semantic
+	// mismatch. Wired once jti-dedup tracking lands.
 }
 
 func (a *API) onInfo(ctx *gin.Context) {
@@ -364,9 +369,11 @@ func (a *API) onInfo(ctx *gin.Context) {
 }
 
 // onV1AuthRefreshIssuerMaterial handles POST /v1/auth/refresh-issuer-material.
-// Renamed from /v3/auth/jwks/refresh per ADR 0009 §D7 to be mechanism-neutral
-// — ADR 0002 OQ10 has not yet selected a credential mechanism, so the
-// endpoint name does not commit to JWT/JWKS specifically.
+// Renamed from /v3/auth/jwks/refresh per ADR 0009 §D7 to be mechanism-neutral.
+// ADR 0011 picked JWT/JWKS for user flows and mTLS for service-to-service;
+// the mechanism-neutral name was retained so additional issuer-material
+// kinds (e.g., mTLS trust roots) can flow through this endpoint without a
+// rename. Today the body refreshes the JWKS cache.
 func (a *API) onV1AuthRefreshIssuerMaterial(ctx *gin.Context) {
 	a.AuthManager.RefreshJWTJWKS()
 	a.writeOK(ctx)

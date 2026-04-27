@@ -94,10 +94,13 @@ func (a *API) emitConfigAppliedLocked(resourceKind, resourceID, verb string, ext
 		ResourceID:   resourceID,
 		Attributes:   attrs,
 	})
-	// Note: ActorKind=system here because the recorder's auth surface
-	// today resolves to a single privileged principal (no per-user
-	// session model — ADR 0002 OQ10). When the session model lands,
-	// the actor kind / id come from the resolved principal.
+	// Note: ActorKind=system here because this site is reached from
+	// callers that don't carry a gin.Context (background reload
+	// paths, etc.) and so can't resolve a per-request Principal. The
+	// JWT-authed handler call sites use the per-request Principal
+	// from gin.Context per ADR 0011; that wiring follow-up will
+	// thread the Principal here too once we audit which call sites
+	// are user-initiated vs system-internal.
 }
 
 // emitAuthDecision is the convenience wrapper for the auth
@@ -132,7 +135,9 @@ func authActionForOutcome(o defs.AuditOutcome) string {
 	// failure and denied both surface as failed_login on the recorder
 	// today; the distinct kinds materialize once the auth manager
 	// distinguishes "wrong credentials" from "valid credentials,
-	// denied permission" (ADR 0002 OQ10).
+	// denied permission". ADR 0011 D-section provides the JWT
+	// validation surface; the auth manager's failure-classification
+	// refinement is a small follow-up against that surface.
 	return "auth.failed_login"
 }
 

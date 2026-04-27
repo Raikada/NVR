@@ -182,14 +182,14 @@ tags:
       Canonical Event entries emitted by the recorder. The in-memory
       ring buffer is fed by these wired producers: camera.online /
       camera.offline (path lifecycle), auth.failed_login (request
-      authentication), and config.applied / policy.applied (camera,
-      policy, and recorder-config writes). Producers not yet wired:
-      auth.session_started (the canonical kind implies per-session
-      semantics; the recorder has no AuthSession concept yet — see
-      ADR 0002 OQ10), segment.write_failed, and storage.volume_full
-      (the latter two sit deeper in the recordstore / cleaner
-      subsystems). An empty list response carries a top-level
-      `notice` field describing this state.
+      authentication), config.applied / policy.applied (camera,
+      policy, and recorder-config writes), and segment.write_failed
+      (recordstore wires it via SetSegmentEventTarget). Producers not
+      yet wired: auth.session_started (ADR 0011 unblocks the kind via
+      jti-keyed session lifecycle, but the recorder doesn't yet track
+      jti-dedup; small follow-up) and storage.volume_full (sits deeper
+      in the cleaner subsystem). An empty list response carries a
+      top-level `notice` field describing this state.
   - name: Audit
     description: |
       Tamper-evident AuditLogEntry chain per ADR 0006. Append-only;
@@ -2292,13 +2292,12 @@ paths:
       summary: Force the recorder's auth manager to refresh cached issuer material.
       description: |
         Renamed mechanism-neutrally from the legacy
-        `/v3/auth/jwks/refresh` per ADR 0009 §D7. ADR 0002 OQ10
-        keeps non-JWT credential mechanisms (mTLS, opaque-bearer-
-        with-introspection, short-lived service tokens, hybrid)
-        alive as candidates; the endpoint signals "refresh your
-        cached issuer material now," whatever shape that material
-        takes once OQ10 is decided. Today the implementation calls
-        `RefreshJWTJWKS()`.
+        `/v3/auth/jwks/refresh` per ADR 0009 §D7. ADR 0011 picked
+        JWT/JWKS for user-facing flows and mTLS X.509 for service-to-
+        service connections; the mechanism-neutral name was retained
+        so additional issuer-material kinds (e.g., the trust roots
+        for mTLS validation) can flow through this endpoint without
+        a rename. Today the implementation refreshes the JWKS cache.
       responses:
         '200':
           description: Refresh accepted.
@@ -3242,12 +3241,13 @@ paths:
         form (semantics: events at or above this rank pass through).
 
         Wired producer kinds: camera.online, camera.offline,
-        auth.failed_login, config.applied, policy.applied. Unwired
-        (queued for follow-up): auth.session_started (per-session
-        semantics; needs ADR 0002 OQ10's session model first),
-        segment.write_failed, storage.volume_full. An empty list
-        response surfaces a top-level `notice` field describing the
-        producer state.
+        auth.failed_login, config.applied, policy.applied,
+        segment.write_failed. Unwired (queued for follow-up):
+        auth.session_started (ADR 0011 unblocks the kind via
+        jti-keyed session lifecycle; recorder still needs jti-dedup
+        tracking) and storage.volume_full (sits deeper in the cleaner
+        subsystem). An empty list response surfaces a top-level
+        `notice` field describing the producer state.
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/ItemsPerPage'
