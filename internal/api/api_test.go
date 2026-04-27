@@ -156,7 +156,7 @@ func TestInfo(t *testing.T) {
 	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/info", nil, &out)
 	require.Equal(t, map[string]any{
-		"tenantId": "00000000-0000-0000-0000-000000000000",
+		"tenant_id": "00000000-0000-0000-0000-000000000000",
 		"started":  time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
 		"version":  "v1.2.3",
 	}, out)

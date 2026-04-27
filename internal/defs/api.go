@@ -35,7 +35,7 @@ type APIError struct {
 
 // APIInfo is a info response.
 type APIInfo struct {
-	TenantID string    `json:"tenantId"`
+	TenantID string    `json:"tenant_id"`
 	Version  string    `json:"version"`
 	Started  time.Time `json:"started"`
 }
