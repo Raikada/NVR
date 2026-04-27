@@ -27,6 +27,9 @@ import {
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
+import { fetchCameras, deleteCamera, createCamera } from '../lib/api';
+import type { Camera as ApiCamera, CameraSourceType } from '../lib/api';
+import { useFetch } from '../lib/hooks';
 import type { AppState, ToastInput, UICamera } from '../lib/types';
 
 interface CamerasProps {
@@ -75,38 +78,146 @@ const VENDOR_DEFAULTS: Record<string, VendorDefaults> = {
   Generic: { user: 'admin', port: '554', path: '/live' },
 };
 
+// Translate canonical Camera (from /v1/cameras) into the UICamera
+// shape the list/drawer components expect. Runtime online → status;
+// fields the SPA cares about beyond canonical (resolution, fps,
+// codec) are derived stubs until /v1/streams wiring lands per the
+// stub list in docs/web-ui.md.
+function toUICamera(c: ApiCamera): UICamera {
+  const status: UICamera['status'] = c.runtime
+    ? c.runtime.online
+      ? 'online'
+      : 'offline'
+    : 'offline';
+  return {
+    id: c.id,
+    name: c.name,
+    ip: c.source_url,
+    status,
+    resolution: '—', // STUB until /v1/streams wires up
+    fps: 0,
+    codec: '—',
+    vendor: undefined,
+    user: c.credentials_ref ?? undefined,
+  };
+}
+
 export function Cameras({ state, setState, addToast }: CamerasProps) {
   const [mode, setMode] = useState<Mode>('list');
   const [configCam, setConfigCam] = useState<UICamera | null>(null);
 
-  function bulkAdd(cams: UICamera[]) {
-    setState((s) => ({ ...s, cameras: [...s.cameras, ...cams] }));
+  // Real /v1/cameras list. Refetches on add/delete via the helper.
+  const list = useFetch(() => fetchCameras(0, 100), []);
+
+  // Mirror the canonical list into AppState.cameras so other routes
+  // (Overview's mini grid, the wizard) see the same data. STUB:
+  // the design's UICamera carries fields we don't have on canonical
+  // (resolution/fps/codec); those stay blank until /v1/streams wires.
+  useEffect(() => {
+    if (list.status === 'ready') {
+      setState((s) => ({
+        ...s,
+        cameras: list.data.items.map(toUICamera),
+      }));
+    }
+  }, [list.status, list.status === 'ready' ? list.data : null, setState]);
+
+  async function bulkAdd(cams: UICamera[]) {
+    // Discover flow surfaces an array of UICameras (mock-shape from
+    // ONVIF probe). Real recorder add takes a small canonical body
+    // per camera. For each, POST /v1/cameras then refetch.
+    let added = 0;
+    for (const cam of cams) {
+      try {
+        await createCamera({
+          name: cam.name,
+          source_type: 'rtsp',
+          source_url: `rtsp://${cam.ip}:${cam.port ?? '554'}${cam.path ?? ''}`,
+        });
+        added++;
+      } catch (e) {
+        addToast({
+          kind: 'danger',
+          title: 'ADD FAILED',
+          body: `${cam.name}: ${(e as Error).message}`,
+          icon: 'x',
+        });
+      }
+    }
+    if (added > 0) {
+      addToast({
+        kind: 'success',
+        title: 'ADDED',
+        body: `${added} camera${added > 1 ? 's' : ''} added`,
+        icon: 'check-circle',
+      });
+    }
+    list.refetch();
+    setMode('list');
+  }
+
+  async function singleAdd(cam: UICamera) {
+    try {
+      await createCamera({
+        name: cam.name,
+        source_type: (cam as { source_type?: CameraSourceType }).source_type ?? 'rtsp',
+        source_url: `rtsp://${cam.ip}:${cam.port ?? '554'}${cam.path ?? ''}`,
+      });
+      addToast({ kind: 'success', title: 'ADDED', body: `${cam.name} connected`, icon: 'check-circle' });
+      list.refetch();
+    } catch (e) {
+      addToast({
+        kind: 'danger',
+        title: 'ADD FAILED',
+        body: (e as Error).message,
+        icon: 'x',
+      });
+    }
+    setMode('list');
+  }
+
+  // Saving the config drawer's edits is currently STUB — the drawer
+  // collects motion zones, recording mode, ONVIF events, etc. that
+  // don't have a 1:1 /v1/cameras PATCH path yet (RecordingPolicy is
+  // its own resource; motion is recorder-internal; ONVIF events are
+  // recorder-internal). Most-frequently-edited fields (name, source
+  // URL) wire up to PATCH /v1/cameras/{id} in a follow-up. For now
+  // the save just closes the drawer and toasts "saved (locally)".
+  function saveCamera(updated: UICamera) {
     addToast({
-      kind: 'success',
-      title: 'ADDED',
-      body: `${cams.length} camera${cams.length > 1 ? 's' : ''} added`,
+      kind: 'info',
+      title: 'SAVED LOCALLY',
+      body: `${updated.name} — full PATCH wiring pending`,
       icon: 'check-circle',
     });
-    setMode('list');
-  }
-  function singleAdd(cam: UICamera) {
-    setState((s) => ({ ...s, cameras: [...s.cameras, cam] }));
-    addToast({ kind: 'success', title: 'ADDED', body: `${cam.name} connected`, icon: 'check-circle' });
-    setMode('list');
-  }
-  function saveCamera(updated: UICamera) {
-    setState((s) => ({
-      ...s,
-      cameras: s.cameras.map((c) => (c.id === updated.id ? updated : c)),
-    }));
-    addToast({ kind: 'success', title: 'SAVED', body: `${updated.name} updated`, icon: 'check-circle' });
     setConfigCam(null);
   }
-  function removeCamera(cam: UICamera) {
-    setState((s) => ({ ...s, cameras: s.cameras.filter((c) => c.id !== cam.id) }));
-    addToast({ kind: 'warning', title: 'REMOVED', body: `${cam.name} unlinked`, icon: 'trash-2' });
+
+  async function removeCamera(cam: UICamera) {
+    try {
+      await deleteCamera(cam.id);
+      addToast({
+        kind: 'warning',
+        title: 'REMOVED',
+        body: `${cam.name} unlinked`,
+        icon: 'trash-2',
+      });
+      list.refetch();
+    } catch (e) {
+      addToast({
+        kind: 'danger',
+        title: 'DELETE FAILED',
+        body: (e as Error).message,
+        icon: 'x',
+      });
+    }
     setConfigCam(null);
   }
+
+  // Cameras the routes/components see. Prefer the live list
+  // (canonical) once it arrives; fall back to the mock seed during
+  // initial render so the UI doesn't flash an empty grid.
+  const cameras = list.status === 'ready' ? list.data.items.map(toUICamera) : state.cameras;
 
   return (
     <div
@@ -122,7 +233,13 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
       <PageHeader
         breadcrumb="RECORDING SERVER / CAMERAS"
         title="Cameras"
-        sub={`${state.cameras.filter((c) => c.status === 'online').length} online · ${state.cameras.filter((c) => c.status === 'degraded').length} degraded · ${state.cameras.filter((c) => c.status === 'offline').length} offline`}
+        sub={
+          list.status === 'error'
+            ? `Recorder unreachable — ${list.error.message}`
+            : list.status === 'loading'
+              ? 'Loading cameras…'
+              : `${cameras.filter((c) => c.status === 'online').length} online · ${cameras.filter((c) => c.status === 'degraded').length} degraded · ${cameras.filter((c) => c.status === 'offline').length} offline`
+        }
         right={
           <>
             <Btn
@@ -143,7 +260,7 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
         {mode === 'manual' && (
           <ManualAddWizard onCancel={() => setMode('list')} onSubmit={singleAdd} addToast={addToast} />
         )}
-        <CameraList cameras={state.cameras} onConfig={setConfigCam} />
+        <CameraList cameras={cameras} onConfig={setConfigCam} />
       </div>
       {configCam && (
         <CameraConfigDrawer

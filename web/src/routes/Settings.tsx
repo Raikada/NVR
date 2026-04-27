@@ -1,9 +1,16 @@
 // Settings route — identity / firmware update / system actions.
-// Faithful port of the design's SettingsRoute.
+// The recorder's /v1/recorder/config block exposes ~50 fields of
+// recorder-process configuration; this UI surfaces a tiny slice
+// (server-family toggles via the Network route). Identity fields
+// (hostname / location / timezone) and firmware update flow are
+// STUB — the recorder doesn't expose those today. Save button
+// stays inert until per-field PATCH wiring lands. See docs/web-ui.md.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Btn, Card, Input, SectionHeader, Toggle } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
+import { fetchRecorderConfig } from '../lib/api';
+import { useFetch } from '../lib/hooks';
 import type { AppState, ToastInput } from '../lib/types';
 
 interface SettingsProps {
@@ -12,11 +19,24 @@ interface SettingsProps {
 }
 
 export function Settings({ state, addToast }: SettingsProps) {
+  // /v1/recorder/config — the canonical recorder-config block.
+  // Used today only to confirm it loads; per-field PATCH wiring is
+  // queued. Keeps the data layer warm for the next swing.
+  const config = useFetch(fetchRecorderConfig, []);
+
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [telemetry, setTelemetry] = useState(true);
   const [hostname, setHostname] = useState(state.hostname);
-  const [location, setLocation] = useState('Warehouse A — Rack 2');
-  const [timezone, setTimezone] = useState('Europe/Amsterdam');
+  const [location, setLocation] = useState('—'); // STUB
+  const [timezone, setTimezone] = useState('—'); // STUB
+
+  useEffect(() => {
+    if (config.data && typeof config.data.tenantId === 'string') {
+      // Surface tenantId as a soft signal — it's at least canonical.
+      setHostname(state.hostname); // hostname stays a STUB pending field exposure
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config.data]);
 
   return (
     <div
@@ -32,7 +52,13 @@ export function Settings({ state, addToast }: SettingsProps) {
       <PageHeader
         breadcrumb="RECORDING SERVER / SETTINGS"
         title="Settings"
-        sub="System-level controls for this recorder"
+        sub={
+          config.status === 'error'
+            ? `Recorder unreachable — ${config.error.message}`
+            : config.status === 'loading'
+              ? 'Loading recorder config…'
+              : 'System-level controls for this recorder'
+        }
       />
       <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <Card>

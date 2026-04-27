@@ -1,5 +1,10 @@
-// Network route — interface details, ports/protocols list, bandwidth
-// stats. Faithful port of the design's NetworkRoute.
+// Network route — interface details, ports/protocols list,
+// bandwidth stats. The recorder's /v1/recorder/config block exposes
+// which protocol servers are enabled (api, rtsp, rtmp, hls, webrtc,
+// srt) so the ports list reflects actual recorder config rather
+// than design constants. Bandwidth and per-interface link details
+// (gateway, DNS, MAC, MTU, VLAN) stay STUB — recorder doesn't
+// expose system network probe data today.
 
 import {
   Btn,
@@ -12,17 +17,28 @@ import {
 } from '../components/primitives';
 import type { StatusBadgeKind } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
+import { fetchHealth, fetchRecorderConfig } from '../lib/api';
+import { useFetch, usePoll } from '../lib/hooks';
 import type { AppState } from '../lib/types';
 
 export function Network({ state }: { state: AppState }) {
+  const config = useFetch(fetchRecorderConfig, []);
+  const health = usePoll(fetchHealth, 5000, []);
+
   type PortStatus = true | false | 'warn';
+  // Recorder's GlobalConf has bool toggles for the server families.
+  // Coerce the unknown to bool so the UI surfaces actual state.
+  const cfg = config.data ?? {};
+  const enabled = (k: string) => Boolean(cfg[k]);
+
   const ports: { p: string; v: string; ok: PortStatus }[] = [
-    { p: 'HTTPS / Web UI', v: '443', ok: true },
-    { p: 'RTSP ingest', v: '554', ok: true },
-    { p: 'ONVIF discovery', v: '3702', ok: true },
-    { p: 'MS tunnel (WSS)', v: '7443', ok: state.paired },
-    { p: 'SNMP', v: '161', ok: 'warn' },
-    { p: 'SSH', v: '22', ok: 'warn' },
+    { p: 'HTTPS / Web UI', v: '9997', ok: enabled('api') },
+    { p: 'RTSP ingest', v: '554', ok: enabled('rtsp') },
+    { p: 'RTMP ingest', v: '1935', ok: enabled('rtmp') },
+    { p: 'HLS', v: '8888', ok: enabled('hls') },
+    { p: 'WebRTC', v: '8889', ok: enabled('webrtc') },
+    { p: 'SRT', v: '8890', ok: enabled('srt') },
+    { p: 'MS tunnel (WSS)', v: '7443', ok: state.paired }, // STUB until pairing client lands
   ];
 
   function badge(ok: PortStatus): { kind: StatusBadgeKind; label: string } {
@@ -45,9 +61,37 @@ export function Network({ state }: { state: AppState }) {
       <PageHeader
         breadcrumb="RECORDING SERVER / NETWORK"
         title="Network"
-        sub="Primary: eth0 · DHCP reservation · gateway 10.0.1.1"
+        sub={
+          health.data
+            ? `MS reachable: ${health.data.network.management_server_reachable ? 'yes' : 'no'} · Cloud reachable: ${health.data.network.cloud_reachable ? 'yes' : 'no'}`
+            : 'Loading network probe…'
+        }
       />
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <Card>
+          <SectionHeader>NETWORK REACHABILITY</SectionHeader>
+          {/* /v1/health.network: TCP-reachability probes against
+              configured MS/Cloud endpoints. last_sync_at stays nil
+              until the MS pairing client lands. */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginTop: 6 }}>
+            <MiniBlock
+              k="MS REACHABLE"
+              v={health.data ? (health.data.network.management_server_reachable ? 'YES' : 'NO') : '—'}
+            />
+            <MiniBlock
+              k="CLOUD REACHABLE"
+              v={health.data ? (health.data.network.cloud_reachable ? 'YES' : 'NO') : '—'}
+            />
+            <MiniBlock
+              k="LAST SYNC"
+              v={
+                health.data?.network.last_sync_at
+                  ? new Date(health.data.network.last_sync_at).toLocaleTimeString('en-GB', { hour12: false })
+                  : '—'
+              }
+            />
+          </div>
+        </Card>
         <Card>
           <SectionHeader
             right={
@@ -56,17 +100,20 @@ export function Network({ state }: { state: AppState }) {
               </Btn>
             }
           >
-            INTERFACE · ETH0
+            INTERFACE · PRIMARY
           </SectionHeader>
+          {/* STUB: link / IPv4 / gateway / DNS / MAC / MTU / NTP /
+              VLAN are not surfaced by the recorder API. Would need
+              an OS-level probe extension. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginTop: 6 }}>
-            <MiniBlock k="LINK" v="1 GBPS FD" />
+            <MiniBlock k="LINK" v="—" />
             <MiniBlock k="IPV4" v={state.ip} />
             <MiniBlock k="GATEWAY" v={state.gateway} />
-            <MiniBlock k="DNS" v="8.8.8.8, 1.1.1.1" />
-            <MiniBlock k="MAC" v="B8:27:EB:E4:12:03" />
-            <MiniBlock k="MTU" v="1500" />
-            <MiniBlock k="NTP" v="POOL.NTP.ORG" />
-            <MiniBlock k="VLAN" v="UNTAGGED" />
+            <MiniBlock k="DNS" v="—" />
+            <MiniBlock k="MAC" v="—" />
+            <MiniBlock k="MTU" v="—" />
+            <MiniBlock k="NTP" v="—" />
+            <MiniBlock k="VLAN" v="—" />
           </div>
         </Card>
         <Card>
@@ -111,10 +158,12 @@ export function Network({ state }: { state: AppState }) {
           >
             BANDWIDTH USAGE
           </SectionHeader>
+          {/* STUB: bandwidth metrics need a Prometheus-side scrape
+              or a recorder /v1/ extension. Not exposed today. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 8 }}>
-            <Stat label="NOW" value="18.4" unit="Mb/s" />
-            <Stat label="PEAK · 24H" value="34.2" unit="Mb/s" />
-            <Stat label="AVG · 24H" value="17.1" unit="Mb/s" />
+            <Stat label="NOW" value="—" unit="" sub="NOT EXPOSED" />
+            <Stat label="PEAK · 24H" value="—" unit="" sub="NOT EXPOSED" />
+            <Stat label="AVG · 24H" value="—" unit="" sub="NOT EXPOSED" />
           </div>
         </Card>
       </div>

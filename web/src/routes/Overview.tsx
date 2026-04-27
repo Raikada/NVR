@@ -4,7 +4,7 @@
 // data is simulated by the mockdata helpers; replaced with real
 // /v1/health + /v1/events polling in the data-layer follow-up.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import {
   Btn,
   Brackets,
@@ -17,9 +17,9 @@ import {
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
-import { clamp } from '../lib/colors';
-import { seedEvents, nextEvent } from '../lib/mockdata';
-import type { MockEvent } from '../lib/mockdata';
+import { fetchHealth, fetchEvents } from '../lib/api';
+import type { Event as ApiEvent } from '../lib/api';
+import { usePoll, formatUptime, formatTime } from '../lib/hooks';
 import type { AppState, Route, ToastInput, UICamera, BadgeKind } from '../lib/types';
 
 interface OverviewProps {
@@ -31,28 +31,29 @@ interface OverviewProps {
 }
 
 export function Overview({ state, go, addToast, setShowWizard, setState }: OverviewProps) {
-  const [cpu, setCpu] = useState(34);
-  const [bw, setBw] = useState(18.4);
-  const [events, setEvents] = useState<MockEvent[]>(() => seedEvents());
+  // Live recorder health — polls /v1/health every second to drive
+  // CPU / mem / cameras_online / network knobs and the storage tile.
+  const health = usePoll(fetchHealth, 1000, []);
+  // Recent events: latest 6 entries from /v1/events. Polls every 4s
+  // (slower than the heartbeat — the ring buffer doesn't change as
+  // fast as the vitals).
+  const recent = usePoll(() => fetchEvents({ perPage: 6 }), 4000, []);
 
-  useEffect(() => {
-    const i = setInterval(() => {
-      setCpu((c) => clamp(c + (Math.random() - 0.5) * 6, 20, 75));
-      setBw((b) => clamp(b + (Math.random() - 0.5) * 2.4, 8, 30));
-    }, 1200);
-    return () => clearInterval(i);
-  }, []);
-
-  useEffect(() => {
-    const i = setInterval(() => {
-      setEvents((es) => [nextEvent(), ...es].slice(0, 6));
-    }, 3500);
-    return () => clearInterval(i);
-  }, []);
-
-  const recordingCount = state.cameras.filter((c) => c.status === 'online').length;
-  const cpuPct = Math.round(cpu);
-  const storage = { used: 256.4, total: 2048, retained: 14 };
+  const cpuPct = health.data ? Math.round(health.data.cpu_pct) : 0;
+  const memPct = health.data ? Math.round(health.data.mem_pct) : 0;
+  // BANDWIDTH: not currently exposed by /v1/health. Stays mocked
+  // (Math.random walk) until the Prometheus surface or a small
+  // /v1/health extension lands. See docs/web-ui.md stub list.
+  const bwMockSeed = (Date.now() / 60000) | 0;
+  const bw = 18 + (bwMockSeed % 10);
+  // Storage: from /v1/health.storage[]. Used = sum(used_pct *
+  // assumed-2TB) is meaningless without absolute capacity, so we
+  // pull from /v1/storage-volumes-derived stats once that route
+  // wires up. For now use the first volume's used_pct against the
+  // legend's 2 TB total (mock).
+  const recordingCount = health.data?.cameras_recording ?? 0;
+  const cameraTotal = health.data?.cameras_total ?? state.cameras.length;
+  const storage = { used: 256.4, total: 2048, retained: 14 }; // STUB
   const storagePct = (storage.used / storage.total) * 100;
 
   return (
@@ -69,20 +70,30 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
       <PageHeader
         breadcrumb="RAIKADA / RECORDING SERVER / OVERVIEW"
         title="Overview"
-        sub={`Last sync ${state.paired ? '18 seconds ago' : 'never — recorder is unpaired'}`}
+        sub={
+          health.status === 'error'
+            ? `Recorder unreachable — ${health.error.message}`
+            : health.status === 'loading'
+              ? 'Loading status…'
+              : state.paired
+                ? `Reported at ${formatTime(health.data.reported_at)}`
+                : 'Recorder is unpaired'
+        }
         right={
           <>
             <Btn
               kind="tactical"
               icon="refresh-cw"
-              onClick={() =>
+              onClick={() => {
+                health.refetch();
+                recent.refetch();
                 addToast({
                   kind: 'info',
                   title: 'REFRESHED',
                   body: 'Status reloaded from recorder',
                   icon: 'refresh-cw',
-                })
-              }
+                });
+              }}
             >
               REFRESH
             </Btn>
@@ -279,11 +290,15 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
             >
               <Knob value={cpuPct} label="CPU" unit="%" tone={cpuPct > 70 ? 'warning' : 'accent'} />
               <Knob value={bw} max={50} label="BANDWIDTH" unit="Mb/s" tone="accent" />
-              <Knob value={47} label="MEM" unit="%" tone="accent" />
+              <Knob value={memPct} label="MEM" unit="%" tone={memPct > 80 ? 'warning' : 'accent'} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginTop: 16 }}>
-              <MiniMetric label="UPTIME" value="14D 06H" />
-              <MiniMetric label="TEMP" value="52°C" />
+              <MiniMetric
+                label="UPTIME"
+                value={health.data ? formatUptime(health.data.uptime) : '—'}
+              />
+              {/* TEMP: not exposed by /v1/health. Stub. */}
+              <MiniMetric label="TEMP" value="—" />
             </div>
           </div>
         </div>
@@ -293,7 +308,7 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
           <StatCard
             title="CAMERAS"
             value={`${recordingCount}`}
-            unit={`/ ${state.cameras.length}`}
+            unit={`/ ${cameraTotal}`}
             tone="accent"
             sub="recording now"
             icon="cctv"
@@ -332,7 +347,7 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
         {/* Row 3: cameras + events */}
         <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 12 }}>
           <CamerasPanel cameras={state.cameras} go={go} />
-          <EventsPanel events={events} go={go} />
+          <EventsPanel events={recent.data?.items ?? []} go={go} />
         </div>
 
         {/* Row 4: checks + ingress */}
@@ -543,7 +558,17 @@ function CameraMini({ c }: { c: UICamera }) {
   );
 }
 
-function EventsPanel({ events, go }: { events: MockEvent[]; go: (r: Route) => void }) {
+function EventsPanel({ events, go }: { events: ApiEvent[]; go: (r: Route) => void }) {
+  // Map canonical EventSeverity (info/warning/error) onto the badge
+  // kinds exposed by StatusBadge. Recorder also has a "debug"
+  // logging convention but only info/warning/error are surfaced as
+  // canonical Event severities per ADR 0009.
+  function severityBadge(s: ApiEvent['severity']): BadgeKind {
+    if (s === 'error') return 'error';
+    if (s === 'warning') return 'warn';
+    return 'info';
+  }
+
   return (
     <div
       style={{
@@ -566,6 +591,20 @@ function EventsPanel({ events, go }: { events: MockEvent[]; go: (r: Route) => vo
         RECENT EVENTS
       </SectionHeader>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {events.length === 0 && (
+          <div
+            style={{
+              padding: '20px 8px',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              color: 'var(--text-muted)',
+              letterSpacing: 1,
+              textAlign: 'center',
+            }}
+          >
+            NO EVENTS YET
+          </div>
+        )}
         {events.map((e) => (
           <div
             key={e.id}
@@ -578,8 +617,10 @@ function EventsPanel({ events, go }: { events: MockEvent[]; go: (r: Route) => vo
               borderRadius: 3,
             }}
           >
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{e.time}</span>
-            <StatusBadge kind={e.level} size="sm" />
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+              {formatTime(e.occurred_at)}
+            </span>
+            <StatusBadge kind={severityBadge(e.severity)} size="sm" />
             <span
               style={{
                 fontFamily: 'var(--font-mono)',
@@ -590,7 +631,7 @@ function EventsPanel({ events, go }: { events: MockEvent[]; go: (r: Route) => vo
                 whiteSpace: 'nowrap',
               }}
             >
-              {e.msg}
+              {e.message}
             </span>
           </div>
         ))}

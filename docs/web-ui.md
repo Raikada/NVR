@@ -88,27 +88,142 @@ so unchanged code yields unchanged filenames).
   index is `Cache-Control: no-cache` so a `make web` redeploy is
   picked up on the next visit.
 
-## Data-layer follow-up
+## Data-layer status
 
-The SPA's live-data screens (Overview vitals, recent events, logs,
-diagnostics) currently animate against mock generators in
-`web/src/lib/mockdata.ts`. The handoff plan was: faithful pixel-
-perfect port first, real `/v1/` wiring as a second swing.
+The SPA's data layer wires to real `/v1/` endpoints where the
+recorder exposes the underlying data, and falls back to clearly-
+marked stubs (`'—'` / "NOT EXPOSED" labels in the UI, inline
+`STUB:` comments in the code) where it doesn't. Wired routes
+poll on a sensible cadence and pause polling when the tab is
+hidden.
 
-Routes ranked by ease of real-API wiring:
+Wired today:
 
-| Route        | Real source                                | Effort |
-|--------------|--------------------------------------------|--------|
-| Overview     | `/v1/health`, `/v1/cameras`, `/v1/events`  | Small  |
-| Cameras      | `/v1/cameras`, `/v1/streams`               | Small  |
-| Logs         | `/v1/audit` + `/v1/events`                 | Small  |
-| Storage      | `/v1/storage-volumes`                      | Small  |
-| Network      | `/v1/health.network` + recorder-config     | Small  |
-| Settings     | `/v1/recorder/config`                      | Small  |
-| Pairing      | (needs MS to exist)                        | Big    |
-| Diagnostics  | (needs runner subsystem)                   | Big    |
+- **Overview** — `/v1/health` (1Hz) drives CPU / Mem knobs +
+  CAMERAS tile + uptime + reported-at. `/v1/events` (4s) drives
+  the recent-events feed.
+- **Cameras** — `/v1/cameras` drives the list. `POST` creates,
+  `DELETE` removes. List refetches after every mutation.
+- **Logs** — `/v1/events` (1.1s while tailing, 60s while paused).
+  Level/source filters map onto canonical Event severity +
+  subject_kind. Search hits message / kind / subject_kind.
+- **Storage** — `/v1/storage-volumes` (30s). Per-volume rows show
+  mount path / kind / priority / used / capacity / status. Total
+  used vs free roll up into the breakdown bar and stat tiles.
+- **Network** — `/v1/health.network` (5s) drives reachability
+  block. `/v1/recorder/config` (one-shot) drives port enable/
+  disable badges (api / rtsp / rtmp / hls / webrtc / srt).
+- **Settings** — `/v1/recorder/config` (one-shot) keeps the data
+  layer warm; per-field PATCH wiring is queued.
 
-The first six are independent local engineering against the
-existing API. The last two depend on subsystems that don't exist
-yet (Management Server, diagnostic runner) and stay mock-only
-until those land.
+## Stub registry — fields the recorder doesn't expose yet
+
+Every stub below renders as a placeholder in the UI today and is
+labelled in source so future agents can find them with
+`grep -n 'STUB' web/src/`.
+
+**Overview.**
+- `BANDWIDTH` knob — `/v1/health` exposes no bandwidth metric.
+  Needs Prometheus scrape integration or a `/v1/health.bandwidth`
+  extension.
+- `TEMP` mini-metric — no thermal sensor surface on `/v1/health`.
+- `STORAGE` stat tile — used/total still uses a mock 256 GB / 2 TB
+  pair. The values exist live on the Storage route (which uses
+  `/v1/storage-volumes`); plumbing the rolled-up totals into the
+  Overview tile is a small follow-up.
+- `EVENTS · 24H` stat — needs an event-count-by-window query the
+  recorder doesn't surface yet.
+
+**Cameras.**
+- `resolution`, `fps`, `codec` columns — these come from the
+  active stream, not the canonical Camera. Wires up via
+  `/v1/streams`-aware row rendering.
+- ONVIF Discover panel — the WS-Discovery probe and identify
+  phases are entirely simulated. Real ONVIF discovery would need
+  a recorder-side subsystem that doesn't exist yet.
+- Manual-add wizard's "Probe Device" / "Test Stream" buttons —
+  the recorder validates the source URL on `POST /v1/cameras` but
+  has no separate pre-flight probe endpoint. Test buttons stay
+  simulated until that lands.
+- Config drawer — the drawer's Recording / Motion / ONVIF Events /
+  Advanced tabs collect state that has no 1:1 PATCH endpoint:
+  - Recording mode, retention, pre/post-buffer → maps to
+    `RecordingPolicy`, which is its own resource. Drawer needs
+    to be split or the form needs a multi-resource save.
+  - Motion zones, sensitivity → recorder doesn't model motion
+    detection canonically yet.
+  - ONVIF events → recorder doesn't subscribe to ONVIF events
+    yet.
+  - Advanced (NTP source, OSD, audio track) → recorder-internal,
+    no canonical surface.
+  Save button currently toasts "saved locally" and closes the
+  drawer; field changes land in component state only.
+
+**Logs.**
+- DEBUG severity filter — canonical Event severity is info /
+  warning / error only. DEBUG selects nothing today; the
+  recorder-internal debug-log surface is a different endpoint
+  (not yet exposed via `/v1/`).
+- NETWORK source filter — no canonical Event subject kind models
+  the network plane. Selects nothing.
+
+**Storage.**
+- Per-content-type breakdown (Continuous / Motion events / AI
+  detections) — recorder doesn't account by content type. Used-
+  vs-free is the live data we have.
+- Per-disk SMART hours, drive vendor / model strings — recorder
+  has no S.M.A.R.T. probe surface.
+- "≈ N days at current rate" — needs a write-rate observer.
+- "WRITE RATE" stat tile — same.
+- "RETENTION" stat tile — surfaces via `RecordingPolicy.
+  RetentionDuration` once `/v1/recording-policies` wires up.
+
+**Network.**
+- Interface block (LINK / DNS / MAC / MTU / NTP / VLAN) — needs
+  an OS-level network probe extension on the recorder.
+- Bandwidth stats (NOW / PEAK 24H / AVG 24H) — same as Overview's
+  bandwidth knob.
+- MS tunnel port row — depends on the pairing client landing.
+
+**Settings.**
+- Identity fields (hostname / location / timezone) — recorder
+  doesn't expose these as discrete `/v1/recorder/config` fields
+  today.
+- Firmware update banner ("3.1.4 available") — no update
+  endpoint surfaced; the version and the "Install" action are
+  both stubbed.
+- Auto-update / Telemetry toggles — stored locally only;
+  recorder doesn't have the corresponding flags.
+- System actions (Reboot / Backup / Restore / Factory Reset) —
+  no recorder endpoints. Buttons toast a stub message.
+
+**Pairing (whole route).**
+- LAN auto-discovery, pair-by-bearer-token, mTLS-cert badges,
+  heartbeat / latency / tunnel mini-blocks — every field on
+  this route depends on the Management Server tier existing. MS
+  is scaffold-only today (no code, no deployment). Whole route
+  stays mock until ADR 0008 (FRP broker) lands and the recorder
+  ↔ MS pairing client is built.
+
+**Diagnostics (whole route).**
+- `ping` / `iperf3` / `rtsp-probe` / `chronyc tracking` /
+  `smartctl` test runners — recorder has no diagnostic-runner
+  subsystem. Console output is canned. Adding a runner would
+  land as a recorder-side subsystem with its own ADR; not
+  blocked, but not started.
+
+**SetupWizard (overlay).**
+- Step 2 (Pair with MS) — same MS dependency as Pairing route.
+- Step 1 (Network preflight) — uses recorder bootstrap config
+  (state.ip, state.gateway) but the LINK / DNS / NTP / MTU /
+  UPnP rows are simulated checks.
+
+## Mock data source
+
+`web/src/lib/mockdata.ts` carries the remaining mock generators —
+`INITIAL_CAMERAS` (cameras seed before the live list arrives),
+`seedEvents` / `nextEvent` (still used by the wizard's preview),
+and `seedLogs` / `nextLog` / `MockLog` (now unused; deletable in a
+follow-up cleanup since Logs is wired). Each route file imports
+only what it still needs from this module so future cleanups can
+drop blocks as more wires up.
