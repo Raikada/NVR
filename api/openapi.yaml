@@ -3626,14 +3626,35 @@ paths:
           Canonical Camera UUID. Same UUID-to-path-name resolution as
           `/v1/recorder/hls-muxers/{id}`: configured paths first,
           runtime-active muxers as fallback.
+      - name: at
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+        description: |
+          Optional RFC3339 timestamp. When set, the snapshot is taken
+          from the recorded segment that covers the timestamp (the
+          segment whose start time precedes `at` and whose successor's
+          start follows `at`) rather than from the live HLS muxer.
+          The same libav decode/encode pipeline runs on the recorded
+          segment, so the response shape (`image/jpeg` on success,
+          raw fragment with `X-Snapshot-Format: hls-fragment-fallback`
+          on decode failure) is identical to the live path.
+          Returns 404 when no recorded segment covers the requested
+          timestamp; returns 400 when the value does not parse as
+          RFC3339. The 503 "muxer not producing media" response
+          applies only to the live path and never to `?at=`.
     get:
       tags: [Recorder]
-      summary: Most recent video keyframe for a camera (JPEG, with raw-fragment fallback).
+      summary: Video keyframe for a camera (JPEG, with raw-fragment fallback).
       description: |
-        Returns the most recent video keyframe for the camera as a
-        JPEG image. The recorder decodes the most recent HLS fragment
-        in-process via libav (cgo) and re-encodes the first decoded
-        frame to JPEG. The response shape is signaled by the
+        Returns a video keyframe for the camera as a JPEG image.
+        Without `?at=` the recorder decodes the most recent live HLS
+        fragment in-process via libav (cgo) and re-encodes the first
+        decoded frame to JPEG. With `?at=<RFC3339>` the recorder
+        instead decodes the recorded segment that covers that point
+        in history. The response shape is signaled by the
         `X-Snapshot-Format` header:
 
           * `jpeg` — Body is `image/jpeg`. The recorder decoded the
@@ -3700,7 +3721,9 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: Invalid camera id.
+          description: |
+            Invalid camera id, or `?at=` value that does not parse
+            as RFC3339.
           content:
             application/json:
               schema:
@@ -3708,17 +3731,19 @@ paths:
         '404':
           description: |
             Camera UUID does not match any configured path or
-            runtime-active muxer.
+            runtime-active muxer; or `?at=` is set but no recorded
+            segment covers that timestamp.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '503':
           description: |
-            Camera is known but is not currently producing media
-            (no HLS muxer registered, no instance, no finalized
-            segments, or content unavailable within the snapshot
-            deadline).
+            Live path only: camera is known but is not currently
+            producing media (no HLS muxer registered, no instance,
+            no finalized segments, or content unavailable within the
+            snapshot deadline). The `?at=` recorded-history path
+            never returns 503.
           content:
             application/json:
               schema:
