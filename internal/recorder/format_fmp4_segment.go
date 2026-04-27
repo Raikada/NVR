@@ -160,6 +160,13 @@ func (s *formatFMP4Segment) close() error {
 			err = wrapFMP4WriteErr(s.path, err2)
 		}
 
+		// Clear the in-flight registry entry now that the file is no
+		// longer being written. Done unconditionally on Close so a
+		// failed Close still releases the registry slot — leaving
+		// stale entries would cause synthesis to mark a sealed-but-
+		// failed Recording as state=active forever.
+		recordstore.UnregisterCurrentSegment(s.path)
+
 		if err2 == nil {
 			s.f.ri.onSegmentComplete(s.path, duration)
 		}
@@ -182,6 +189,11 @@ func (s *formatFMP4Segment) closeCurPart() error {
 		if err != nil {
 			return wrapFMP4WriteErr(s.path, err)
 		}
+
+		// Register the segment as in-flight so synthesis at the API
+		// layer can distinguish active from sealed Recordings. Paired
+		// with the UnregisterCurrentSegment call in close().
+		recordstore.RegisterCurrentSegment(s.path)
 
 		s.f.ri.onSegmentCreate(s.path)
 

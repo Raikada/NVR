@@ -215,7 +215,25 @@ func (a *API) synthesize() (
 
 		// Group contiguous segments by gap heuristic.
 		groups := groupSegmentsByGap(canonical, recordingGapThreshold)
-		for _, group := range groups {
+		// Identify which group (if any) owns the in-flight segment for
+		// this camera. recordstore's CurrentSegment registry is populated
+		// by the format writers on segment open/close; if the most-recent
+		// segment we just walked off disk is registered as in-flight,
+		// the Recording it belongs to is active rather than sealed. Only
+		// the chronologically last group can hold the in-flight segment
+		// (segments are written in time order and a new segment is only
+		// created after the previous one was Close()d).
+		activeGroupIdx := -1
+		if len(groups) > 0 {
+			lastGroup := groups[len(groups)-1]
+			if len(lastGroup) > 0 {
+				lastSeg := lastGroup[len(lastGroup)-1]
+				if recordstore.IsCurrentSegment(lastSeg.Path) {
+					activeGroupIdx = len(groups) - 1
+				}
+			}
+		}
+		for gi, group := range groups {
 			if len(group) == 0 {
 				continue
 			}
@@ -225,6 +243,15 @@ func (a *API) synthesize() (
 				defs.BackfillRecordingIDOnSegment(&group[i], recID)
 			}
 			rec := defs.RecordingFromSegments(group, recID)
+			// Promote to active when this group owns the in-flight
+			// segment. Per ADR 0009 §"Recording (new canonical entity)",
+			// active Recordings have ended_at == nil. RecordingFromSegments
+			// defaulted state=sealed and ended_at=last.EndedAt; reverse
+			// both for the active case.
+			if gi == activeGroupIdx {
+				rec.State = defs.RecordingStateActive
+				rec.EndedAt = nil
+			}
 			// Attach segments for the GET-by-id response per ADR 0009
 			// §D5; list responses must omit them (empty json:"omitempty").
 			rec.Segments = group
