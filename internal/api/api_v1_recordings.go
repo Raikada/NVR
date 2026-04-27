@@ -493,6 +493,103 @@ func (a *API) onV1RecordingsPlayback(ctx *gin.Context) {
 	})
 }
 
+// onV1RecordingsDelete handles DELETE /v1/recordings/{id}: a cascading
+// delete of every segment that composes the Recording. Equivalent to
+// the client iterating /v1/recording-segments/{id} DELETE for each
+// segment, but in one call so clients don't race against the recorder
+// rotating new segments mid-iteration on an active Recording.
+//
+// Behavior matches per-segment DELETE: each segment file is removed
+// from disk, then the synthesis cache is invalidated. On the next
+// listing the Recording disappears (it had no live segments left and
+// synthesis re-walks recordstore from scratch). ADR 0009 §D5 specifies
+// a persistent `state=deleted` tombstone for the Recording row; the
+// recorder doesn't yet have persistent Recording storage (synthesis
+// is in-memory, lazy, and re-derived on every restart), so the
+// tombstone semantic is documented as a divergence from the spec
+// rather than a bug in this handler. Promoting Recording state to
+// persistent storage is its own follow-up.
+//
+// Active Recordings are deletable: the in-flight segment is removed
+// along with the rest. The recorder's record loop will discover the
+// missing file on its next write, log the error, and the
+// segment.write_failed Event producer surfaces the condition. The
+// alternative — refusing to DELETE while active — would force
+// operators to stop the camera before reclaiming space, which is the
+// opposite of the property they want from a "delete this footage now"
+// verb.
+func (a *API) onV1RecordingsDelete(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
+	id := ctx.Param("id")
+	if _, err := uuid.Parse(id); err != nil {
+		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid id: %w", err))
+		return
+	}
+	recs, _ := a.synthesize()
+	r, ok := recs[id]
+	if !ok {
+		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("recording not found"))
+		return
+	}
+
+	// Walk the parent Recording's segment list and remove each from
+	// disk. Best-effort per segment: a single failure (e.g., a file
+	// already pruned by retention since synthesis cached it) shouldn't
+	// abort the cascade — the goal is "after this call, this
+	// Recording's footage is gone." Per-segment errors aggregate into
+	// the response so clients can see what didn't land if any part
+	// failed.
+	var removalErrors []string
+	for _, s := range r.Segments {
+		if s.Path == "" {
+			removalErrors = append(removalErrors,
+				fmt.Sprintf("segment %s: path missing from registry", s.ID))
+			continue
+		}
+		if err := os.Remove(s.Path); err != nil {
+			// os.IsNotExist: file already gone. Treat as success-by-
+			// concurrence (retention or another DELETE got there first).
+			if !os.IsNotExist(err) {
+				removalErrors = append(removalErrors,
+					fmt.Sprintf("segment %s: %v", s.ID, err))
+			}
+		}
+	}
+
+	a.recordingRegistry().reset()
+
+	// Audit the cascade. recording.deleted isn't a wired Event kind
+	// today (the producer set focuses on system signals, not admin-
+	// action lifecycle); the audit chain is the durable record.
+	a.emitAudit(defs.AuditLogEntryInput{
+		ActorKind:    principalFromContext(ctx).PrincipalKind,
+		ActorID:      principalFromContext(ctx).Sub,
+		Action:       "recording.delete",
+		Outcome:      defs.AuditOutcomeSuccess,
+		ResourceKind: "recording",
+		ResourceID:   id,
+		Attributes: map[string]string{
+			"camera_id":     r.CameraID,
+			"segment_count": fmt.Sprintf("%d", len(r.Segments)),
+		},
+	})
+
+	if len(removalErrors) > 0 {
+		// Partial success: the response includes the per-segment errors
+		// so the client knows what didn't drop. The cache has already
+		// been invalidated, so a follow-up GET will reflect whatever
+		// segments survived (if any).
+		a.writeError(ctx, http.StatusInternalServerError,
+			fmt.Errorf("recording partially deleted: %s",
+				strings.Join(removalErrors, "; ")))
+		return
+	}
+
+	a.writeOK(ctx)
+}
+
 // v1RecordingList is the list-response envelope. Unlike the legacy
 // APIRecordingList (camelCase) per Phase 2 conventions and ADR 0009 it
 // uses snake_case json tags.

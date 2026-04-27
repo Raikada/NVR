@@ -42,15 +42,23 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 		in.Uptime = time.Since(started)
 	}
 
-	// MemPct. We don't have a system-wide RSS reading without bringing
-	// gopsutil; fall back to the Go runtime's heap-in-use as a
-	// fraction of heap-sys, which is a coarse but defensible proxy
-	// for "how much memory the recorder is using vs the runtime has
-	// reserved." A real system-wide reading is a Phase-2-followup.
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	if ms.HeapSys > 0 {
-		in.MemPct = float64(ms.HeapInuse) / float64(ms.HeapSys) * 100.0
+	// MemPct. On Linux (the recorder's production target) we read
+	// process RSS from /proc/self/status and divide by system MemTotal
+	// from /proc/meminfo — the same numbers `top` and `ps -o rss` show,
+	// which captures cgo libav allocations, goroutine stacks, and
+	// mmap'd files alike. On non-Linux platforms (development) we fall
+	// back to the Go runtime's HeapInUse / HeapSys ratio. The runtime
+	// proxy underreports residency because it ignores reserved-but-
+	// unused arenas plus all non-heap mappings; it stays as the dev-
+	// only fallback so the field shape remains coherent.
+	if pct, ok := readSystemMemPct(); ok {
+		in.MemPct = pct
+	} else {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		if ms.HeapSys > 0 {
+			in.MemPct = float64(ms.HeapInuse) / float64(ms.HeapSys) * 100.0
+		}
 	}
 	// CPUPct: process-level user+system CPU time delta divided by
 	// wall-clock delta between successive /v1/health calls. See

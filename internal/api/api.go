@@ -137,6 +137,7 @@ func (a *API) Initialize() error {
 	group.GET("/recordings", a.onV1RecordingsList)
 	group.GET("/recordings/:id", a.onV1RecordingsGet)
 	group.GET("/recordings/:id/playback", a.onV1RecordingsPlayback)
+	group.DELETE("/recordings/:id", a.onV1RecordingsDelete)
 
 	// Recording segments (ADR 0009 §D5 Recording segments).
 	group.GET("/recording-segments", a.onV1RecordingSegmentsList)
@@ -350,14 +351,27 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		"",
 		nil,
 	)
-	// Note: no auth.session_started emit here. ADR 0011 §"Consequences"
-	// unblocks the kind by establishing JWT validation as the moment
-	// "session begins for this token" with same-jti requests
-	// deduplicating to the same session. The recorder doesn't yet
-	// track jti-keyed session state; until that small follow-up lands,
-	// emitting on every authenticated request would produce per-
-	// request events under a per-session kind name — a semantic
-	// mismatch. Wired once jti-dedup tracking lands.
+
+	// auth.session_started Event per ADR 0011 §"Consequences": same-jti
+	// requests deduplicate to the same logical session, so we emit once
+	// on first-seen and skip on subsequent requests bearing the same
+	// jti. Pre-ADR-0011 internal/HTTP auth paths produce an empty jti
+	// (RawJTI == "") and don't carry session lifecycle — Touch returns
+	// false for empty jti so they never emit. See session_tracker.go.
+	if jtiSessions.Touch(principal.RawJTI, time.Now()) {
+		a.publishEvent(defs.EventInput{
+			Kind:        "auth.session_started",
+			Severity:    defs.EventSeverityInfo,
+			SubjectKind: defs.EventSubjectKindUser,
+			SubjectID:   principal.Sub,
+			Message:     "authentication session started",
+			Attributes: map[string]string{
+				"principal_kind":     string(principal.PrincipalKind),
+				"jti":                principal.RawJTI,
+				"client_fingerprint": principal.ClientFingerprint,
+			},
+		})
+	}
 }
 
 func (a *API) onInfo(ctx *gin.Context) {

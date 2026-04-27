@@ -2870,6 +2870,59 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Recordings]
+      summary: Delete a recording and all of its segments.
+      description: |
+        Cascades through every `RecordingSegment` belonging to the
+        Recording, removing each file from disk. Equivalent to a
+        client iterating `DELETE /v1/recording-segments/{id}` for each
+        segment, but issued in a single call so clients don't race
+        against the recorder rotating new segments mid-iteration on
+        an active Recording.
+
+        Active Recordings are deletable; the in-flight segment is
+        removed along with the rest. The recorder's record loop will
+        discover the missing file on its next write and the
+        `segment.write_failed` Event surfaces the condition.
+
+        Per ADR 0009 §D5 the Recording's canonical lifecycle is to
+        transition to `state=deleted` and persist as a tombstone for
+        audit; the recorder's current synthesis-from-disk model has
+        no persistent Recording row, so the post-DELETE GET returns
+        404 instead. Persistent Recording storage is its own
+        follow-up; the audit-chain entry written by this handler is
+        the durable record today.
+
+        Partial failure (one or more segments couldn't be removed
+        for a non-`ENOENT` reason) returns 500 with a per-segment
+        error list; the cache is invalidated regardless so a follow-
+        up GET reflects whatever survived.
+      responses:
+        '200':
+          description: Recording (and all segments) deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Invalid recording id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Recording not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Partial failure during cascade; per-segment errors in body.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /v1/recordings/{id}/playback:
     parameters:
@@ -2883,14 +2936,13 @@ paths:
       tags: [Recordings]
       summary: Issue a playback handle for a recording.
       description: |
-        Returns playback connection material (URL, short-lived
-        token, expiry). The actual stream comes through the existing
-        media protocols, not over this endpoint.
-
-        NOTE: the current recorder issues a placeholder bearer
-        token; real bearer issuance is a Phase-2-followup. Clients
-        can pin the response shape today but should not rely on the
-        token being cryptographically meaningful yet.
+        Returns playback connection material (URL + `expires_at`
+        validity bound). The actual stream comes through the existing
+        media protocols, not over this endpoint. Per ADR 0011 the
+        recorder does not issue tokens — clients reuse the user JWT
+        they already hold from Cloud/MS when fetching the URL; the
+        playback `/get` endpoint authenticates via the existing
+        `auth.Manager`.
       responses:
         '200':
           description: Playback handle.

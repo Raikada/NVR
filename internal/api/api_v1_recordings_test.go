@@ -33,6 +33,7 @@ func newV1Server(t *testing.T, a *API) *httptest.Server {
 	r.GET("/v1/recordings", a.onV1RecordingsList)
 	r.GET("/v1/recordings/:id", a.onV1RecordingsGet)
 	r.GET("/v1/recordings/:id/playback", a.onV1RecordingsPlayback)
+	r.DELETE("/v1/recordings/:id", a.onV1RecordingsDelete)
 	r.GET("/v1/recording-segments", a.onV1RecordingSegmentsList)
 	r.GET("/v1/recording-segments/:id", a.onV1RecordingSegmentsGet)
 	r.DELETE("/v1/recording-segments/:id", a.onV1RecordingSegmentsDelete)
@@ -294,6 +295,90 @@ func TestV1RecordingsPlayback(t *testing.T) {
 		"playback URL must reference path: got %q", got.URL)
 	require.True(t, got.ExpiresAt.After(time.Now()),
 		"expires_at must be in the future")
+}
+
+func TestV1RecordingsDelete(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mediamtx-v1-recordings")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	// Two segments under one camera close enough in time to be the
+	// same Recording (60s gap threshold).
+	segA := writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000")
+	segB := writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000")
+
+	a := newTestAPI(t, dir)
+	srv := newV1Server(t, a)
+
+	resp, err := http.Get(srv.URL + "/v1/recordings")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var listed struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&listed))
+	require.Len(t, listed.Items, 1, "two contiguous segments are one Recording")
+	recID := listed.Items[0].ID
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/v1/recordings/"+recID, nil)
+	require.NoError(t, err)
+	delResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer delResp.Body.Close()
+	require.Equal(t, http.StatusOK, delResp.StatusCode)
+
+	// Both segment files must be gone on disk.
+	for _, p := range []string{segA, segB} {
+		_, statErr := os.Stat(p)
+		require.True(t, os.IsNotExist(statErr),
+			"cascade must remove every segment file: %s", p)
+	}
+
+	// Re-listing must reflect the deletion.
+	resp2, err := http.Get(srv.URL + "/v1/recordings")
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	var got struct {
+		ItemCount int `json:"item_count"`
+	}
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&got))
+	require.Equal(t, 0, got.ItemCount)
+}
+
+func TestV1RecordingsDeleteNotFound(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mediamtx-v1-recordings")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	a := newTestAPI(t, dir)
+	srv := newV1Server(t, a)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		srv.URL+"/v1/recordings/"+uuid.New().String(), nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestV1RecordingsDeleteInvalidUUID(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mediamtx-v1-recordings")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	a := newTestAPI(t, dir)
+	srv := newV1Server(t, a)
+
+	req, err := http.NewRequest(http.MethodDelete,
+		srv.URL+"/v1/recordings/not-a-uuid", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
 func TestV1RecordingsRecordingIDStability(t *testing.T) {
