@@ -2274,6 +2274,11 @@ paths:
     patch:
       tags: [RecordingPolicies]
       summary: Partially update a recording policy.
+      description: |
+        When the patch flips `enabled`, every camera that references
+        this policy has its underlying recording state toggled
+        accordingly; the change is applied immediately to the
+        recorder's per-path `Record` flag.
       requestBody:
         required: true
         content:
@@ -3183,11 +3188,21 @@ paths:
         description: |
           Canonical Camera UUID. The legacy /v3 endpoint keyed off
           MediaMTX path-name strings; this one keys on the canonical
-          camera id (the recorder resolves UUID → path-name
-          internally).
+          camera id. The recorder resolves the UUID to a path-name
+          internally — first against configured paths, then falling
+          back to runtime-active muxers — so a request for a
+          runtime-active path that isn't configured (e.g. concrete
+          paths matching a wildcard `all_others` entry) still
+          resolves correctly.
     get:
       tags: [Recorder]
       summary: Get HLS muxer state for a camera.
+      description: |
+        Resolution semantics (configured paths first, runtime-active
+        muxers as fallback) are recorder-internal and specified here
+        at the spec level; ADR 0009 §D6 (the authority for this
+        endpoint living in the recorder-internal escape hatch) is
+        silent on the resolution behavior.
       responses:
         '200':
           description: HLS muxer.
