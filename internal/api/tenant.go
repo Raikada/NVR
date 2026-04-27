@@ -57,8 +57,14 @@ func (a *API) globalPIIReadGrant() bool {
 //
 // This camelCase variant is used by escape-hatch endpoints whose body
 // shapes inherit MediaMTX-lineage camelCase JSON keys throughout
-// (e.g., /v1/recorder/config, /v1/recorder/camera-defaults). The
-// snake_case sibling readTenantSnakeCaseScopedBody applies to
+// (`/v1/recorder/config` wraps `conf.OptionalGlobal`,
+// `/v1/recorder/camera-defaults` wraps `conf.OptionalPath`). Using
+// snake_case for just the tenant key on those bodies would split the
+// body across two casings; the camelCase here is internally consistent
+// with the rest of the body, not a stale carve-out from the legacy /v3
+// surface. The OpenAPI spec's intro documents the split.
+//
+// The snake_case sibling readTenantSnakeCaseScopedBody applies to
 // escape-hatch endpoints whose body's tenant key matches the canonical
 // /v1 snake_case key (e.g., source-config, hooks).
 func (a *API) readTenantScopedBody(ctx *gin.Context) ([]byte, bool) {

@@ -42,11 +42,22 @@ info:
     accept an optional `tenant_id` field. If present and matching the
     recorder's bound tenant the request proceeds; if present and
     mismatched the recorder returns 403. If omitted, the recorder uses
-    its own tenant id implicitly. The escape-hatch endpoints under
-    `/v1/recorder/...` accept the same `tenant_id` field on PATCH
-    bodies (some of those handlers historically used the camelCase
-    `tenantId` form internally; the wire surface now mirrors the
-    canonical snake_case key).
+    its own tenant id implicitly.
+
+    The escape-hatch endpoints under `/v1/recorder/...` split into two
+    families on the request key:
+
+    - `camera-source-config` and `camera-hooks` accept `tenant_id`
+      (snake_case), matching the canonical /v1 convention.
+    - `recorder/config` and `recorder/camera-defaults` accept
+      `tenantId` (camelCase). These two endpoints wrap MediaMTX-
+      lineage shapes (`conf.OptionalGlobal`, `conf.OptionalPath`)
+      whose body is camelCase throughout; using snake_case for just
+      the tenant key would split the body across two casings. The
+      camelCase here is internally consistent, not a stale carve-out.
+      A future refactor that renames the underlying MediaMTX-lineage
+      shapes to snake_case would naturally pull the tenant key along
+      with them.
 
     **Source-URL redaction (D4).** `Camera.source_url` and the
     `source` field returned by `/v1/recorder/camera-defaults` have any
