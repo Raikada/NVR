@@ -44,6 +44,10 @@ func (s *formatMPEGTSSegment) close() error {
 			err = wrapMPEGTSWriteErr(s.path, err2)
 		}
 
+		// Clear the in-flight registry entry; see the matching comment
+		// in formatFMP4Segment.close().
+		recordstore.UnregisterCurrentSegment(s.path)
+
 		if err2 == nil {
 			duration := s.lastDTS - s.startDTS
 			s.onSegmentComplete(s.path, duration)
@@ -67,6 +71,10 @@ func (s *formatMPEGTSSegment) Write(p []byte) (int, error) {
 		if err != nil {
 			return 0, wrapMPEGTSWriteErr(s.path, err)
 		}
+
+		// Register the segment as in-flight; see the matching comment
+		// in formatFMP4Segment.closeCurPart().
+		recordstore.RegisterCurrentSegment(s.path)
 
 		s.onSegmentCreate(s.path)
 

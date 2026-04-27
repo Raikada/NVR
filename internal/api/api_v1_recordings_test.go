@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/test"
 )
 
@@ -363,4 +364,93 @@ func TestGroupSegmentsByGapEmpty(t *testing.T) {
 	groups := groupSegmentsByGap(nil, recordingGapThreshold)
 	require.NotNil(t, groups)
 	require.Len(t, groups, 0)
+}
+
+// TestV1RecordingsActiveStateNoLiveSegment confirms the pre-existing
+// behavior: when no segment is registered as in-flight in the recordstore
+// CurrentSegment registry, every synthesized Recording stays sealed. This
+// is the regression guard for the active-state change.
+func TestV1RecordingsActiveStateNoLiveSegment(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mediamtx-v1-recordings-noactive")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	a := newTestAPI(t, dir)
+	srv := newV1Server(t, a)
+
+	writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000")
+	writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000")
+
+	resp, err := http.Get(srv.URL + "/v1/recordings")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got struct {
+		Items []struct {
+			State   string     `json:"state"`
+			EndedAt *time.Time `json:"ended_at"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 1)
+	require.Equal(t, "sealed", got.Items[0].State)
+	require.NotNil(t, got.Items[0].EndedAt)
+}
+
+// TestV1RecordingsActiveStateLatestSegmentLive confirms the new behavior:
+// when the most-recent on-disk segment for a camera is registered as
+// in-flight in the recordstore CurrentSegment registry, the Recording it
+// belongs to is reported with state=active and ended_at=null. Older
+// Recordings on the same camera (separated by gap) stay sealed.
+func TestV1RecordingsActiveStateLatestSegmentLive(t *testing.T) {
+	dir, err := os.MkdirTemp("", "mediamtx-v1-recordings-active")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	a := newTestAPI(t, dir)
+	srv := newV1Server(t, a)
+
+	// Older Recording — two close-together segments on cam1.
+	oldA := writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000")
+	oldB := writeSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000")
+	// Latest Recording — distinct gap, single segment that we will
+	// register as in-flight.
+	live := writeSegmentFile(t, dir, "cam1", "2025-06-01_00-00-00-000000")
+
+	recordstore.RegisterCurrentSegment(live)
+	t.Cleanup(func() {
+		recordstore.UnregisterCurrentSegment(live)
+	})
+
+	// Sanity: the older segments are not registered.
+	require.False(t, recordstore.IsCurrentSegment(oldA))
+	require.False(t, recordstore.IsCurrentSegment(oldB))
+	require.True(t, recordstore.IsCurrentSegment(live))
+
+	resp, err := http.Get(srv.URL + "/v1/recordings")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got struct {
+		Items []struct {
+			ID        string     `json:"id"`
+			State     string     `json:"state"`
+			StartedAt time.Time  `json:"started_at"`
+			EndedAt   *time.Time `json:"ended_at"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 2)
+
+	// Items are sorted started_at desc — index 0 is the live one.
+	require.Equal(t, "active", got.Items[0].State,
+		"latest Recording should be active when its segment is in-flight")
+	require.Nil(t, got.Items[0].EndedAt,
+		"active Recordings have ended_at=null per ADR 0009")
+
+	require.Equal(t, "sealed", got.Items[1].State,
+		"older Recording on the same camera stays sealed")
+	require.NotNil(t, got.Items[1].EndedAt)
 }
