@@ -152,6 +152,57 @@ func PublishCameraOffline(pathName string) {
 	}, "", tenantID, "")
 }
 
+// PublishStorageVolumeFull is the recordcleaner-side helper for
+// storage.volume_full Events. Severity is error per
+// domain-model.md: a volume crossing the capacity threshold is an
+// operational incident, not just a warning. Callers (recordcleaner's
+// capacity probe) are responsible for once-per-state-change emission
+// — this helper does not deduplicate. SubjectID is the canonical
+// volume UUID derived from the absolute mount path; the wire shape
+// matches /v1/storage-volumes' volume-id derivation so consumers
+// linking events to volumes can correlate by id.
+func PublishStorageVolumeFull(volumeID, mountPath string) {
+	store, tenantID := pipelineTarget()
+	if store == nil {
+		return
+	}
+	store.Publish(defs.EventInput{
+		Kind:        "storage.volume_full",
+		Severity:    defs.EventSeverityError,
+		SubjectKind: defs.EventSubjectKindVolume,
+		SubjectID:   volumeID,
+		Message:     "storage volume crossed capacity threshold",
+		Attributes: map[string]string{
+			"mount_path": mountPath,
+		},
+	}, "", tenantID, "")
+}
+
+// PublishStorageVolumeDegraded is the recordcleaner-side helper for
+// storage.volume_degraded Events. Severity is warning: the volume is
+// still serving but its status (degraded or read_only) suggests
+// administrative attention. The reason argument is included as an
+// attribute so consumers can distinguish the underlying signal
+// (capacity headroom, statfs failure, read-only mount, etc.) without
+// parsing the message string.
+func PublishStorageVolumeDegraded(volumeID, mountPath, reason string) {
+	store, tenantID := pipelineTarget()
+	if store == nil {
+		return
+	}
+	store.Publish(defs.EventInput{
+		Kind:        "storage.volume_degraded",
+		Severity:    defs.EventSeverityWarning,
+		SubjectKind: defs.EventSubjectKindVolume,
+		SubjectID:   volumeID,
+		Message:     "storage volume entered a degraded state",
+		Attributes: map[string]string{
+			"mount_path": mountPath,
+			"reason":     reason,
+		},
+	}, "", tenantID, "")
+}
+
 // DefaultEventStore exposes the package-wide singleton so callers
 // that don't construct an *API can publish into the same store the
 // /v1/events surface serves from. core.go uses this in
