@@ -481,7 +481,11 @@ webrtc_sessions_rtcp_packets_sent 0
 	})
 
 	t.Run("servers disabled", func(t *testing.T) {
-		httpRequest(t, hc, http.MethodPatch, "http://localhost:9997/v3/config/global/patch", map[string]any{
+		// Per ADR 0009 §D5/§D6 the global recorder config is exposed at
+		// /v1/recorder/config (escape hatch); the body shape is unchanged
+		// from the legacy /v3/config/global/patch (recorder-local conf
+		// fields, not canonical types).
+		httpRequest(t, hc, http.MethodPatch, "http://localhost:9997/v1/recorder/config", map[string]any{
 			"rtsp":   false,
 			"rtmp":   false,
 			"srt":    false,

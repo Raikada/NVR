@@ -30,7 +30,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/bluenviron/mediamtx/internal/defs"
-	"github.com/bluenviron/mediamtx/internal/formatlabel"
 	"github.com/bluenviron/mediamtx/internal/protocols/webrtc"
 	"github.com/bluenviron/mediamtx/internal/protocols/whip"
 	"github.com/bluenviron/mediamtx/internal/test"
@@ -78,27 +77,31 @@ func checkError(t *testing.T, msg string, body io.Reader) {
 	require.Equal(t, map[string]any{"status": "error", "error": msg}, resErr)
 }
 
+// cameraIDFromPathName mirrors internal/api.cameraIDFromPathName: a
+// deterministic UUIDv5 (NameSpaceOID, path-name) so tests can address
+// cameras by canonical id without depending on internal API helpers.
+// Keep in sync with the helper in internal/api/api_v1_camera_id.go.
+func cameraIDFromPathName(name string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+}
+
+// TestAPIPathsList verifies that configured cameras appear at /v1/cameras
+// with the canonical Camera shape, and that a publishing session shows up
+// at /v1/streams with protocol-correct discrimination. The old
+// /v3/paths/list returned a hybrid of camera-config and runtime status
+// keyed by path name; ADR 0009 §D3 splits that into Camera (config +
+// runtime block) and Stream (active sessions).
 func TestAPIPathsList(t *testing.T) {
-	type pathSource struct {
-		Type string `json:"type"`
+	type cameraList struct {
+		ItemCount int           `json:"item_count"`
+		PageCount int           `json:"page_count"`
+		Items     []defs.Camera `json:"items"`
 	}
 
-	type path struct {
-		Name                 string                   `json:"name"`
-		Source               pathSource               `json:"source"`
-		Ready                bool                     `json:"ready"`
-		Tracks               []defs.APIPathTrackCodec `json:"tracks"`
-		InboundBytes         uint64                   `json:"inboundBytes"`
-		OutboundBytes        uint64                   `json:"outboundBytes"`
-		InboundFramesInError uint64                   `json:"inboundFramesInError"`
-		BytesReceived        uint64                   `json:"bytesReceived"`
-		BytesSent            uint64                   `json:"bytesSent"`
-	}
-
-	type pathList struct {
-		ItemCount int    `json:"itemCount"`
-		PageCount int    `json:"pageCount"`
-		Items     []path `json:"items"`
+	type streamList struct {
+		ItemCount int           `json:"item_count"`
+		PageCount int           `json:"page_count"`
+		Items     []defs.Stream `json:"items"`
 	}
 
 	t.Run("rtsp session", func(t *testing.T) {
@@ -133,23 +136,36 @@ func TestAPIPathsList(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		var out pathList
-		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/list", nil, &out)
-		require.Equal(t, pathList{
-			ItemCount: 1,
-			PageCount: 1,
-			Items: []path{{
-				Name: "mypath",
-				Source: pathSource{
-					Type: "rtspSession",
-				},
-				Ready:                true,
-				Tracks:               []defs.APIPathTrackCodec{formatlabel.H264, formatlabel.MPEG4Audio},
-				InboundBytes:         17,
-				InboundFramesInError: 0,
-				BytesReceived:        17,
-			}},
-		}, out)
+		// Camera config: source_type publish (default conf.Path source is
+		// "publisher" which maps to canonical CameraSourceTypePublish) and
+		// runtime should be online because the rtsp publisher is connected.
+		var cams cameraList
+		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/cameras", nil, &cams)
+		require.Equal(t, 1, cams.ItemCount)
+		require.Len(t, cams.Items, 1)
+		require.Equal(t, "mypath", cams.Items[0].Name)
+		require.Equal(t, defs.CameraSourceTypePublish, cams.Items[0].SourceType)
+		require.NotNil(t, cams.Items[0].Runtime)
+		require.True(t, cams.Items[0].Runtime.Available)
+
+		// Stream runtime: an active publishing rtsp session for camera "mypath".
+		var streams streamList
+		httpRequest(t, hc, http.MethodGet,
+			"http://localhost:9997/v1/streams?camera_id="+cameraIDFromPathName("mypath"),
+			nil, &streams)
+		require.GreaterOrEqual(t, streams.ItemCount, 1)
+		var sess *defs.Stream
+		for i := range streams.Items {
+			if streams.Items[i].Protocol == defs.StreamProtocolRTSP &&
+				streams.Items[i].Direction == defs.StreamDirectionPublish {
+				sess = &streams.Items[i]
+				break
+			}
+		}
+		require.NotNil(t, sess, "expected an rtsp publish stream for camera mypath")
+		require.Equal(t, defs.StreamProtocolRTSP, sess.Protocol)
+		require.Equal(t, defs.StreamStateActive, sess.State)
+		require.Equal(t, int64(17), sess.BytesInbound)
 	})
 
 	t.Run("rtsps session", func(t *testing.T) {
@@ -183,20 +199,22 @@ func TestAPIPathsList(t *testing.T) {
 		require.NoError(t, err)
 		defer source.Close()
 
-		var out pathList
-		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/list", nil, &out)
-		require.Equal(t, pathList{
-			ItemCount: 1,
-			PageCount: 1,
-			Items: []path{{
-				Name: "mypath",
-				Source: pathSource{
-					Type: "rtspsSession",
-				},
-				Ready:  true,
-				Tracks: []defs.APIPathTrackCodec{formatlabel.H264, formatlabel.MPEG4Audio},
-			}},
-		}, out)
+		// Stream side: an rtsps publish session is active for camera "mypath".
+		var streams streamList
+		httpRequest(t, hc, http.MethodGet,
+			"http://localhost:9997/v1/streams?camera_id="+cameraIDFromPathName("mypath"),
+			nil, &streams)
+		var sess *defs.Stream
+		for i := range streams.Items {
+			if streams.Items[i].Protocol == defs.StreamProtocolRTSPS &&
+				streams.Items[i].Direction == defs.StreamDirectionPublish {
+				sess = &streams.Items[i]
+				break
+			}
+		}
+		require.NotNil(t, sess, "expected an rtsps publish stream for camera mypath")
+		require.Equal(t, defs.StreamProtocolRTSPS, sess.Protocol)
+		require.Equal(t, defs.StreamStateActive, sess.State)
 	})
 
 	t.Run("rtsp source", func(t *testing.T) {
@@ -212,20 +230,17 @@ func TestAPIPathsList(t *testing.T) {
 		defer tr.CloseIdleConnections()
 		hc := &http.Client{Transport: tr}
 
-		var out pathList
-		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/list", nil, &out)
-		require.Equal(t, pathList{
-			ItemCount: 1,
-			PageCount: 1,
-			Items: []path{{
-				Name: "mypath",
-				Source: pathSource{
-					Type: "rtspSource",
-				},
-				Ready:  false,
-				Tracks: []defs.APIPathTrackCodec{},
-			}},
-		}, out)
+		// On-demand rtsp source not yet connected: the camera shows up in
+		// config with the canonical rtsp source_type, and runtime should
+		// reflect "not online" (no publisher attached because nobody asked).
+		var cams cameraList
+		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/cameras", nil, &cams)
+		require.Equal(t, 1, cams.ItemCount)
+		require.Equal(t, "mypath", cams.Items[0].Name)
+		require.Equal(t, defs.CameraSourceTypeRTSP, cams.Items[0].SourceType)
+		// On-demand block is surfaced when source_on_demand: yes.
+		require.NotNil(t, cams.Items[0].OnDemand)
+		require.True(t, cams.Items[0].OnDemand.Enabled)
 	})
 
 	t.Run("rtmp source", func(t *testing.T) {
@@ -241,20 +256,11 @@ func TestAPIPathsList(t *testing.T) {
 		defer tr.CloseIdleConnections()
 		hc := &http.Client{Transport: tr}
 
-		var out pathList
-		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/list", nil, &out)
-		require.Equal(t, pathList{
-			ItemCount: 1,
-			PageCount: 1,
-			Items: []path{{
-				Name: "mypath",
-				Source: pathSource{
-					Type: "rtmpSource",
-				},
-				Ready:  false,
-				Tracks: []defs.APIPathTrackCodec{},
-			}},
-		}, out)
+		var cams cameraList
+		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/cameras", nil, &cams)
+		require.Equal(t, 1, cams.ItemCount)
+		require.Equal(t, "mypath", cams.Items[0].Name)
+		require.Equal(t, defs.CameraSourceTypeRTMP, cams.Items[0].SourceType)
 	})
 
 	t.Run("hls source", func(t *testing.T) {
@@ -270,23 +276,31 @@ func TestAPIPathsList(t *testing.T) {
 		defer tr.CloseIdleConnections()
 		hc := &http.Client{Transport: tr}
 
-		var out pathList
-		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/list", nil, &out)
-		require.Equal(t, pathList{
-			ItemCount: 1,
-			PageCount: 1,
-			Items: []path{{
-				Name: "mypath",
-				Source: pathSource{
-					Type: "hlsSource",
-				},
-				Ready:  false,
-				Tracks: []defs.APIPathTrackCodec{},
-			}},
-		}, out)
+		var cams cameraList
+		httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/cameras", nil, &cams)
+		require.Equal(t, 1, cams.ItemCount)
+		require.Equal(t, "mypath", cams.Items[0].Name)
+		require.Equal(t, defs.CameraSourceTypeHLS, cams.Items[0].SourceType)
 	})
 }
 
+// TestAPIPathsGet verifies that an active publisher on a (possibly nested)
+// dynamic path-name is observable via the canonical /v1/streams surface,
+// keyed by the deterministic UUIDv5 derived from the runtime path-name.
+//
+// The old /v3/paths/get/{name} endpoint returned a hybrid per-path config
+// plus runtime status keyed by the runtime path-name (which may be a
+// dynamic name matched by a wildcard config like `all_others`). ADR 0009
+// §D5 splits this into:
+//   - /v1/cameras/{id} for *configured* cameras (the wildcard config
+//     itself is one camera; dynamic match-only path-names are not
+//     individual cameras).
+//   - /v1/streams[?camera_id=...] for active sessions (which use the
+//     same UUIDv5 derivation off the runtime path-name).
+//
+// So the canonical equivalent of "is path 'mypath' currently publishing"
+// is "does /v1/streams have a stream whose camera_id is UUIDv5(mypath)
+// and whose direction is publish". That is what we assert here.
 func TestAPIPathsGet(t *testing.T) {
 	p, ok := newInstance("api: yes\n" +
 		"paths:\n" +
@@ -300,22 +314,6 @@ func TestAPIPathsGet(t *testing.T) {
 
 	for _, ca := range []string{"ok", "ok-nested", "not found"} {
 		t.Run(ca, func(t *testing.T) {
-			type pathSource struct {
-				Type string `json:"type"`
-			}
-
-			type path struct {
-				Name                 string                   `json:"name"`
-				Source               pathSource               `json:"source"`
-				Ready                bool                     `json:"Ready"`
-				Tracks               []defs.APIPathTrackCodec `json:"tracks"`
-				InboundBytes         uint64                   `json:"inboundBytes"`
-				OutboundBytes        uint64                   `json:"outboundBytes"`
-				InboundFramesInError uint64                   `json:"inboundFramesInError"`
-				BytesReceived        uint64                   `json:"bytesReceived"`
-				BytesSent            uint64                   `json:"bytesSent"`
-			}
-
 			var pathName string
 
 			switch ca {
@@ -334,23 +332,37 @@ func TestAPIPathsGet(t *testing.T) {
 				require.NoError(t, err)
 				defer source.Close()
 
-				var out path
-				httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/paths/get/"+pathName, nil, &out)
-				require.Equal(t, path{
-					Name: pathName,
-					Source: pathSource{
-						Type: "rtspSession",
-					},
-					Ready:  true,
-					Tracks: []defs.APIPathTrackCodec{formatlabel.H264},
-				}, out)
+				// Active runtime: an rtsp publish stream exists for the
+				// dynamic path-name. The canonical Stream's camera_id is
+				// the deterministic UUIDv5 of the runtime path-name; we
+				// query /v1/streams filtered by that camera_id.
+				cameraID := cameraIDFromPathName(pathName)
+				var streams struct {
+					ItemCount int           `json:"item_count"`
+					Items     []defs.Stream `json:"items"`
+				}
+				httpRequest(t, hc, http.MethodGet,
+					"http://localhost:9997/v1/streams?camera_id="+cameraID, nil, &streams)
+				var sess *defs.Stream
+				for i := range streams.Items {
+					if streams.Items[i].Protocol == defs.StreamProtocolRTSP &&
+						streams.Items[i].Direction == defs.StreamDirectionPublish {
+						sess = &streams.Items[i]
+						break
+					}
+				}
+				require.NotNil(t, sess,
+					"expected an rtsp publish stream for runtime path %s", pathName)
+				require.Equal(t, defs.StreamStateActive, sess.State)
 			} else {
-				res, err := hc.Get("http://localhost:9997/v3/paths/get/" + pathName)
+				// Unknown stream id: /v1/streams/{id} returns 404 with the
+				// in-house error envelope.
+				res, err := hc.Get("http://localhost:9997/v1/streams/" + uuid.New().String())
 				require.NoError(t, err)
 				defer res.Body.Close()
 
 				require.Equal(t, http.StatusNotFound, res.StatusCode)
-				checkError(t, "path not found", res.Body)
+				checkError(t, "stream not found", res.Body)
 			}
 		})
 	}
@@ -392,8 +404,20 @@ func TestAPIProtocolListGet(t *testing.T) {
 					"rtmpServerKey: " + serverKeyFpath + "\n"
 			}
 
-			cnf += "paths:\n" +
-				"  all_others:\n"
+			cnf += "paths:\n"
+			// /v1/recorder/hls-muxers/{id} resolves the camera UUID back to a
+			// path-name via the configured-paths map (per ADR 0009 §D6
+			// escape-hatch shape: identifiers are canonical UUIDs even on
+			// the recorder-localized endpoints). A wildcard `all_others` config
+			// would not satisfy this lookup for the dynamic "mypath" the
+			// publisher creates, so we explicitly configure the path for this
+			// case. Other cases keep the wildcard, exercising dynamic-path
+			// matching.
+			if ca == "hls muxers" {
+				cnf += "  mypath:\n"
+			} else {
+				cnf += "  all_others:\n"
+			}
 
 			p, ok := newInstance(cnf)
 			require.Equal(t, true, ok)
@@ -596,422 +620,129 @@ func TestAPIProtocolListGet(t *testing.T) {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			var pa string
-			switch ca {
-			case "rtsp conns":
-				pa = "rtspconns"
-
-			case "rtsp sessions":
-				pa = "rtspsessions"
-
-			case "rtsps conns":
-				pa = "rtspsconns"
-
-			case "rtsps sessions":
-				pa = "rtspssessions"
-
-			case "rtmp":
-				pa = "rtmpconns"
-
-			case "rtmps":
-				pa = "rtmpsconns"
-
-			case "hls sessions":
-				pa = "hlssessions"
-
-			case "hls muxers":
-				pa = "hlsmuxers"
-
-			case "webrtc":
-				pa = "webrtcsessions"
-
-			case "srt":
-				pa = "srtconns"
-			}
-
-			var out1 any
-			httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/"+pa+"/list", nil, &out1)
-
-			switch ca {
-			case "rtsp conns":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"outboundBytes": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"bytesReceived": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":     out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"remoteAddr":    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"session":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["session"],
-							"tunnel":        "none",
-						},
-					},
-				}, out1)
-
-			case "rtsp sessions":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":                   out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"inboundRTPPackets":              out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPackets"],
-							"inboundRTPPacketsLost":          out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsLost"],
-							"inboundRTPPacketsInError":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsInError"],
-							"inboundRTPPacketsJitter":        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsJitter"],
-							"inboundRTCPPackets":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPackets"],
-							"inboundRTCPPacketsInError":      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPacketsInError"],
-							"outboundBytes":                  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundRTPPackets":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPackets"],
-							"outboundRTPPacketsReportedLost": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsReportedLost"],
-							"outboundRTPPacketsDiscarded":    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsDiscarded"],
-							"outboundRTCPPackets":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTCPPackets"],
-							"bytesReceived":                  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":                      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"path":                           "mypath",
-							"query":                          "key=val",
-							"user":                           "",
-							"remoteAddr":                     out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"state":                          "publish",
-							"transport":                      "UDP",
-							"profile":                        "AVP",
-							"rtpPacketsReceived":             float64(0),
-							"rtpPacketsSent":                 float64(0),
-							"rtpPacketsLost":                 float64(0),
-							"rtpPacketsInError":              float64(0),
-							"rtpPacketsJitter":               float64(0),
-							"rtcpPacketsReceived":            float64(0),
-							"rtcpPacketsSent":                float64(0),
-							"rtcpPacketsInError":             float64(0),
-							"conns":                          out1.(map[string]any)["items"].([]any)[0].(map[string]any)["conns"],
-						},
-					},
-				}, out1)
-
-			case "rtsps conns":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"outboundBytes": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"bytesReceived": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":     out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"remoteAddr":    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"session":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["session"],
-							"tunnel":        "none",
-						},
-					},
-				}, out1)
-
-			case "rtsps sessions":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":                   out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"inboundRTPPackets":              out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPackets"],
-							"inboundRTPPacketsLost":          out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsLost"],
-							"inboundRTPPacketsInError":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsInError"],
-							"inboundRTPPacketsJitter":        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsJitter"],
-							"inboundRTCPPackets":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPackets"],
-							"inboundRTCPPacketsInError":      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPacketsInError"],
-							"outboundBytes":                  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundRTPPackets":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPackets"],
-							"outboundRTPPacketsReportedLost": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsReportedLost"],
-							"outboundRTPPacketsDiscarded":    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsDiscarded"],
-							"outboundRTCPPackets":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTCPPackets"],
-							"bytesReceived":                  out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":                      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"path":                           "mypath",
-							"query":                          "key=val",
-							"user":                           "",
-							"remoteAddr":                     out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"state":                          "publish",
-							"transport":                      "UDP",
-							"profile":                        "SAVP",
-							"rtpPacketsReceived":             float64(0),
-							"rtpPacketsSent":                 float64(0),
-							"rtpPacketsLost":                 float64(0),
-							"rtpPacketsInError":              float64(0),
-							"rtpPacketsJitter":               float64(0),
-							"rtcpPacketsReceived":            float64(0),
-							"rtcpPacketsSent":                float64(0),
-							"rtcpPacketsInError":             float64(0),
-							"conns":                          out1.(map[string]any)["items"].([]any)[0].(map[string]any)["conns"],
-						},
-					},
-				}, out1)
-
-			case "rtmp":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"outboundBytes":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundFramesDiscarded": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"],
-							"bytesReceived":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":               out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                 out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"path":                    "mypath",
-							"query":                   "key=val",
-							"user":                    "",
-							"remoteAddr":              out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"state":                   "publish",
-						},
-					},
-				}, out1)
-
-			case "rtmps":
-				require.Equal(t, map[string]any{
-					"pageCount": float64(1),
-					"itemCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"outboundBytes":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundFramesDiscarded": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"],
-							"bytesReceived":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":               out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                 out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                      out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"path":                    "mypath",
-							"query":                   "key=val",
-							"user":                    "",
-							"remoteAddr":              out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"state":                   "publish",
-						},
-					},
-				}, out1)
-
-			case "hls sessions":
-				require.Equal(t, map[string]any{
-					"itemCount": float64(1),
-					"pageCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"id":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"created":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"remoteAddr":    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"path":          "mypath",
-							"query":         "",
-							"user":          "",
-							"outboundBytes": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-						},
-					},
-				}, out1)
-
-			case "hls muxers":
-				require.Equal(t, map[string]any{
-					"itemCount": float64(1),
-					"pageCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"outboundBytes":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundFramesDiscarded": out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"],
-							"bytesSent":               out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                 out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"lastRequest":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["lastRequest"],
-							"path":                    "mypath",
-						},
-					},
-				}, out1)
-
-			case "webrtc":
-				require.Equal(t, map[string]any{
-					"itemCount": float64(1),
-					"pageCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"inboundBytes":              out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"],
-							"inboundRTPPackets":         out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPackets"],
-							"inboundRTPPacketsLost":     out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsLost"],
-							"inboundRTPPacketsJitter":   out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsJitter"],
-							"inboundRTCPPackets":        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPackets"],
-							"outboundBytes":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"],
-							"outboundRTPPackets":        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPackets"],
-							"outboundRTCPPackets":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTCPPackets"],
-							"outboundFramesDiscarded":   out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"],
-							"bytesReceived":             out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"],
-							"bytesSent":                 out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"],
-							"created":                   out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                        out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"localCandidate":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["localCandidate"],
-							"path":                      "mypath",
-							"peerConnectionEstablished": true,
-							"query":                     "key=val",
-							"remoteAddr":                out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"remoteCandidate":           out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteCandidate"],
-							"state":                     "read",
-							"user":                      "",
-							"rtcpPacketsReceived":       float64(0),
-							"rtcpPacketsSent":           float64(2),
-							"rtpPacketsJitter":          float64(0),
-							"rtpPacketsLost":            float64(0),
-							"rtpPacketsReceived":        float64(0),
-							"rtpPacketsSent":            float64(1),
-						},
-					},
-				}, out1)
-
-			case "srt":
-				require.Equal(t, map[string]any{
-					"itemCount": float64(1),
-					"pageCount": float64(1),
-					"items": []any{
-						map[string]any{
-							"byteMSS":                       float64(1500),
-							"bytesAvailReceiveBuf":          float64(0),
-							"bytesAvailSendBuf":             float64(0),
-							"bytesReceiveBuf":               float64(0),
-							"bytesReceived":                 float64(628),
-							"bytesReceivedBelated":          float64(0),
-							"bytesReceivedDrop":             float64(0),
-							"bytesReceivedLoss":             float64(0),
-							"bytesReceivedRetrans":          float64(0),
-							"bytesReceivedUndecrypt":        float64(0),
-							"outboundFramesDiscarded":       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"],
-							"bytesReceivedUnique":           float64(628),
-							"bytesRetrans":                  float64(0),
-							"bytesSendBuf":                  float64(0),
-							"bytesSendDrop":                 float64(0),
-							"bytesSent":                     float64(0),
-							"bytesSentUnique":               float64(0),
-							"created":                       out1.(map[string]any)["items"].([]any)[0].(map[string]any)["created"],
-							"id":                            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"],
-							"mbpsLinkCapacity":              float64(0),
-							"mbpsMaxBW":                     float64(-1),
-							"mbpsReceiveRate":               float64(0),
-							"mbpsSendRate":                  float64(0),
-							"msRTT":                         out1.(map[string]any)["items"].([]any)[0].(map[string]any)["msRTT"],
-							"msReceiveBuf":                  float64(0),
-							"msReceiveTsbPdDelay":           float64(120),
-							"msSendBuf":                     float64(0),
-							"msSendTsbPdDelay":              float64(120),
-							"packetsFlightSize":             float64(0),
-							"packetsFlowWindow":             float64(25600),
-							"packetsReceiveBuf":             float64(0),
-							"packetsReceived":               float64(1),
-							"packetsReceivedACK":            out1.(map[string]any)["items"].([]any)[0].(map[string]any)["packetsReceivedACK"],
-							"packetsReceivedAvgBelatedTime": float64(0),
-							"packetsReceivedBelated":        float64(0),
-							"packetsReceivedDrop":           float64(0),
-							"packetsReceivedKM":             float64(0),
-							"packetsReceivedLoss":           float64(0),
-							"packetsReceivedLossRate":       float64(0),
-							"packetsReceivedNAK":            float64(0),
-							"packetsReceivedRetrans":        float64(0),
-							"packetsReceivedUndecrypt":      float64(0),
-							"packetsReceivedUnique":         float64(1),
-							"packetsReorderTolerance":       float64(0),
-							"packetsRetrans":                float64(0),
-							"packetsSendBuf":                float64(0),
-							"packetsSendDrop":               float64(0),
-							"packetsSendLoss":               float64(0),
-							"packetsSendLossRate":           float64(0),
-							"packetsSent":                   float64(0),
-							"packetsSentACK":                out1.(map[string]any)["items"].([]any)[0].(map[string]any)["packetsSentACK"],
-							"packetsSentKM":                 float64(0),
-							"packetsSentNAK":                float64(0),
-							"packetsSentUnique":             float64(0),
-							"path":                          "mypath",
-							"query":                         "key=val",
-							"remoteAddr":                    out1.(map[string]any)["items"].([]any)[0].(map[string]any)["remoteAddr"],
-							"state":                         "publish",
-							"user":                          "",
-							"usPacketsSendPeriod":           float64(10.967254638671875),
-							"usSndDuration":                 float64(0),
-						},
-					},
-				}, out1)
-			}
-
-			var out2 any
+			// Cases that previously hit /v3/{rtsp,rtsps}{conns,sessions}/list,
+			// /v3/{rtmp,rtmps,srt}conns/list, /v3/{webrtc,hls}sessions/list,
+			// /v3/hlsmuxers/list now go through one of:
+			//   * /v1/streams (with a protocol filter) for live sessions/conns,
+			//   * /v1/recorder/hls-muxers (escape hatch) for HLS muxer state.
+			//
+			// Per ADR 0009 §D5 the previously-separate rtsp/rtsps connection
+			// lists are folded into the parent rtsp(s) Stream's
+			// protocol_specific.transport_connections[]. The "rtsp conns" and
+			// "rtsps conns" cases assert on that nested array rather than on a
+			// dedicated endpoint.
+			cameraID := cameraIDFromPathName("mypath")
 
 			if ca == "hls muxers" {
-				httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/"+pa+"/get/"+
-					out1.(map[string]any)["items"].([]any)[0].(map[string]any)["path"].(string),
-					nil, &out2)
-			} else {
-				httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/"+pa+"/get/"+
-					out1.(map[string]any)["items"].([]any)[0].(map[string]any)["id"].(string),
-					nil, &out2)
+				// Escape-hatch list — keeps camelCase per ADR 0009 §D6 carve-out.
+				var muxers struct {
+					ItemCount int                `json:"itemCount"`
+					PageCount int                `json:"pageCount"`
+					Items     []defs.APIHLSMuxer `json:"items"`
+				}
+				httpRequest(t, hc, http.MethodGet,
+					"http://localhost:9997/v1/recorder/hls-muxers", nil, &muxers)
+				require.Equal(t, 1, muxers.ItemCount)
+				require.Len(t, muxers.Items, 1)
+				require.Equal(t, "mypath", muxers.Items[0].Path)
+
+				// And the by-id form (now keyed by canonical Camera UUID).
+				var oneMuxer defs.APIHLSMuxer
+				httpRequest(t, hc, http.MethodGet,
+					"http://localhost:9997/v1/recorder/hls-muxers/"+cameraID, nil, &oneMuxer)
+				require.Equal(t, "mypath", oneMuxer.Path)
+				require.Equal(t, muxers.Items[0].Created, oneMuxer.Created)
+				return
 			}
 
+			// Map test-case → canonical Stream protocol value.
+			var protocolFilter defs.StreamProtocol
 			switch ca {
-			case "rtsp conns", "rtsps conns":
-				out2.(map[string]any)["inboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"]
-				out2.(map[string]any)["outboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"]
-				out2.(map[string]any)["bytesReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"]
-				out2.(map[string]any)["bytesSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"]
-
-			case "rtsp sessions", "rtsps sessions":
-				out2.(map[string]any)["inboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"]
-				out2.(map[string]any)["inboundRTPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPackets"]
-				out2.(map[string]any)["inboundRTPPacketsLost"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsLost"]
-				out2.(map[string]any)["inboundRTPPacketsInError"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsInError"]
-				out2.(map[string]any)["inboundRTPPacketsJitter"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsJitter"]
-				out2.(map[string]any)["inboundRTCPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPackets"]
-				out2.(map[string]any)["inboundRTCPPacketsInError"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPacketsInError"]
-				out2.(map[string]any)["outboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"]
-				out2.(map[string]any)["outboundRTPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPackets"]
-				out2.(map[string]any)["outboundRTPPacketsReportedLost"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsReportedLost"]
-				out2.(map[string]any)["outboundRTPPacketsDiscarded"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPacketsDiscarded"]
-				out2.(map[string]any)["outboundRTCPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTCPPackets"]
-				out2.(map[string]any)["bytesReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"]
-				out2.(map[string]any)["bytesSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"]
-				out2.(map[string]any)["rtpPacketsReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsReceived"]
-				out2.(map[string]any)["rtpPacketsSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsSent"]
-				out2.(map[string]any)["rtpPacketsLost"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsLost"]
-				out2.(map[string]any)["rtpPacketsInError"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsInError"]
-				out2.(map[string]any)["rtpPacketsJitter"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsJitter"]
-				out2.(map[string]any)["rtcpPacketsReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtcpPacketsReceived"]
-				out2.(map[string]any)["rtcpPacketsSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtcpPacketsSent"]
-				out2.(map[string]any)["rtcpPacketsInError"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtcpPacketsInError"]
-
+			case "rtsp conns", "rtsp sessions":
+				protocolFilter = defs.StreamProtocolRTSP
+			case "rtsps conns", "rtsps sessions":
+				protocolFilter = defs.StreamProtocolRTSPS
+			case "rtmp":
+				protocolFilter = defs.StreamProtocolRTMP
+			case "rtmps":
+				protocolFilter = defs.StreamProtocolRTMPS
+			case "hls sessions":
+				protocolFilter = defs.StreamProtocolHLS
 			case "webrtc":
-				out2.(map[string]any)["inboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundBytes"]
-				out2.(map[string]any)["inboundRTPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPackets"]
-				out2.(map[string]any)["inboundRTPPacketsLost"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsLost"]
-				out2.(map[string]any)["inboundRTPPacketsJitter"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTPPacketsJitter"]
-				out2.(map[string]any)["inboundRTCPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["inboundRTCPPackets"]
-				out2.(map[string]any)["outboundBytes"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundBytes"]
-				out2.(map[string]any)["outboundRTPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTPPackets"]
-				out2.(map[string]any)["outboundRTCPPackets"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundRTCPPackets"]
-				out2.(map[string]any)["outboundFramesDiscarded"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["outboundFramesDiscarded"]
-				out2.(map[string]any)["bytesReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesReceived"]
-				out2.(map[string]any)["bytesSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["bytesSent"]
-				out2.(map[string]any)["rtpPacketsReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsReceived"]
-				out2.(map[string]any)["rtpPacketsSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsSent"]
-				out2.(map[string]any)["rtpPacketsLost"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsLost"]
-				out2.(map[string]any)["rtpPacketsJitter"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtpPacketsJitter"]
-				out2.(map[string]any)["rtcpPacketsReceived"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtcpPacketsReceived"]
-				out2.(map[string]any)["rtcpPacketsSent"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["rtcpPacketsSent"]
-
-			case "hls muxers":
-				out2.(map[string]any)["lastRequest"] = out1.(map[string]any)["items"].([]any)[0].(map[string]any)["lastRequest"]
+				protocolFilter = defs.StreamProtocolWebRTC
+			case "srt":
+				protocolFilter = defs.StreamProtocolSRT
 			}
 
-			require.Equal(t, out1.(map[string]any)["items"].([]any)[0], out2)
+			var streams struct {
+				ItemCount int           `json:"item_count"`
+				PageCount int           `json:"page_count"`
+				Items     []defs.Stream `json:"items"`
+			}
+			httpRequest(t, hc, http.MethodGet,
+				"http://localhost:9997/v1/streams?protocol="+string(protocolFilter),
+				nil, &streams)
+			require.GreaterOrEqual(t, streams.ItemCount, 1, "expected at least one %s stream", protocolFilter)
+
+			// Find the stream for camera "mypath" (filter+camera_id is
+			// equivalent; we look it up explicitly so the assertion message
+			// is helpful when the stream is missing).
+			var streamRef *defs.Stream
+			for i := range streams.Items {
+				if streams.Items[i].CameraID == cameraID {
+					streamRef = &streams.Items[i]
+					break
+				}
+			}
+			require.NotNil(t, streamRef,
+				"expected a %s stream for camera %s in /v1/streams response", protocolFilter, cameraID)
+			require.Equal(t, protocolFilter, streamRef.Protocol)
+			// Stream.id is a UUID (universal across protocols per ADR 0009).
+			require.NotEmpty(t, streamRef.ID)
+			// Remote address is PII and gets redacted at the API boundary.
+			require.Equal(t, "redacted", streamRef.RemoteAddr)
+
+			// Direction depends on the protocol — webrtc is the WHEP read
+			// session in this fixture; hls is read-by-definition; everything
+			// else is publish.
+			expectedDirection := defs.StreamDirectionPublish
+			if ca == "webrtc" || ca == "hls sessions" {
+				expectedDirection = defs.StreamDirectionRead
+			}
+			require.Equal(t, expectedDirection, streamRef.Direction)
+
+			// Protocol-specific assertions: cases that previously used the
+			// per-protocol-conns endpoints now read the nested
+			// transport_connections array on the parent Stream. Stream's
+			// custom UnmarshalJSON dispatches ProtocolSpecific by Protocol.
+			if ca == "rtsp conns" || ca == "rtsps conns" {
+				ps, ok := streamRef.ProtocolSpecific.(*defs.ProtocolSpecificRTSP)
+				require.True(t, ok, "expected ProtocolSpecificRTSP on rtsp(s) stream")
+				require.NotEmpty(t, ps.TransportConnections,
+					"expected at least one transport_connection on the parent rtsp(s) stream")
+				// Per the redaction policy, the transport_connections array
+				// also has remote_addr redacted at the API edge.
+				require.Equal(t, "redacted", ps.TransportConnections[0].RemoteAddr)
+			}
+
+			// Get-by-id round-trip: GET /v1/streams/{id} returns the same id.
+			var oneStream defs.Stream
+			httpRequest(t, hc, http.MethodGet,
+				"http://localhost:9997/v1/streams/"+streamRef.ID, nil, &oneStream)
+			require.Equal(t, streamRef.ID, oneStream.ID)
+			require.Equal(t, streamRef.Protocol, oneStream.Protocol)
+			require.Equal(t, streamRef.CameraID, oneStream.CameraID)
 		})
 	}
 }
 
+// TestAPIProtocolGetNotFound asserts the canonical /v1 surface returns 404
+// for unknown stream / muxer IDs. The legacy /v3 surface had per-protocol
+// "connection not found" / "session not found" / "muxer not found" error
+// messages; the unified /v1/streams handler collapses the first two into
+// "stream not found", and /v1/recorder/hls-muxers/{id} surfaces
+// "camera not found" when the UUID does not correspond to a configured
+// camera (per ADR 0009 §D5/§D6).
 func TestAPIProtocolGetNotFound(t *testing.T) {
 	serverCertFpath, err := test.CreateTempFile(test.TLSCertPub)
 	require.NoError(t, err)
@@ -1021,35 +752,25 @@ func TestAPIProtocolGetNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(serverKeyFpath)
 
+	// We need two distinct cases now:
+	//   * stream-shaped (everything that used to be a protocol session/conn)
+	//     → /v1/streams/{id} returns "stream not found".
+	//   * hls-muxers escape hatch → /v1/recorder/hls-muxers/{id} returns
+	//     "camera not found" when the id does not map to any configured camera.
 	for _, ca := range []string{
-		"rtsp conns",
-		"rtsp sessions",
-		"rtsps conns",
-		"rtsps sessions",
-		"rtmp",
-		"rtmps",
-		"hls sessions",
+		"streams",
 		"hls muxers",
-		"webrtc",
-		"srt",
 	} {
 		t.Run(ca, func(t *testing.T) {
-			cnf := "api: yes\n"
-
-			switch ca {
-			case "rtsps conns", "rtsps sessions":
-				cnf += "rtspTransports: [tcp]\n" +
-					"rtspEncryption: strict\n" +
-					"rtspServerCert: " + serverCertFpath + "\n" +
-					"rtspServerKey: " + serverKeyFpath + "\n"
-
-			case "rtmps":
-				cnf += "rtmpEncryption: strict\n" +
-					"rtmpServerCert: " + serverCertFpath + "\n" +
-					"rtmpServerKey: " + serverKeyFpath + "\n"
-			}
-
-			cnf += "paths:\n" +
+			cnf := "api: yes\n" +
+				"rtspEncryption: strict\n" +
+				"rtspTransports: [tcp]\n" +
+				"rtspServerCert: " + serverCertFpath + "\n" +
+				"rtspServerKey: " + serverKeyFpath + "\n" +
+				"rtmpEncryption: strict\n" +
+				"rtmpServerCert: " + serverCertFpath + "\n" +
+				"rtmpServerKey: " + serverKeyFpath + "\n" +
+				"paths:\n" +
 				"  all_others:\n"
 
 			p, ok := newInstance(cnf)
@@ -1060,62 +781,25 @@ func TestAPIProtocolGetNotFound(t *testing.T) {
 			defer tr.CloseIdleConnections()
 			hc := &http.Client{Transport: tr}
 
-			var pa string
+			var url, expectedErr string
 			switch ca {
-			case "rtsp conns":
-				pa = "rtspconns"
-
-			case "rtsp sessions":
-				pa = "rtspsessions"
-
-			case "rtsps conns":
-				pa = "rtspsconns"
-
-			case "rtsps sessions":
-				pa = "rtspssessions"
-
-			case "rtmp":
-				pa = "rtmpconns"
-
-			case "rtmps":
-				pa = "rtmpsconns"
-
-			case "hls sessions":
-				pa = "hlssessions"
-
+			case "streams":
+				url = "http://localhost:9997/v1/streams/" + uuid.New().String()
+				expectedErr = "stream not found"
 			case "hls muxers":
-				pa = "hlsmuxers"
-
-			case "webrtc":
-				pa = "webrtcsessions"
-
-			case "srt":
-				pa = "srtconns"
+				url = "http://localhost:9997/v1/recorder/hls-muxers/" + uuid.New().String()
+				expectedErr = "camera not found"
 			}
 
-			func() {
-				var req *http.Request
-				req, err = http.NewRequest(http.MethodGet, "http://localhost:9997/v3/"+pa+"/get/"+uuid.New().String(), nil)
-				require.NoError(t, err)
+			req, err2 := http.NewRequest(http.MethodGet, url, nil)
+			require.NoError(t, err2)
 
-				var res *http.Response
-				res, err = hc.Do(req)
-				require.NoError(t, err)
-				defer res.Body.Close()
+			res, err2 := hc.Do(req)
+			require.NoError(t, err2)
+			defer res.Body.Close()
 
-				require.Equal(t, http.StatusNotFound, res.StatusCode)
-
-				switch ca {
-				case "rtsp conns", "rtsps conns", "rtmp", "rtmps", "srt":
-					checkError(t, "connection not found", res.Body)
-
-				case "rtsp sessions", "rtsps sessions", "hls sessions", "webrtc":
-					checkError(t, "session not found", res.Body)
-
-				case "hls muxers":
-					checkError(t, "muxer not found", res.Body)
-				}
-			}()
+			require.Equal(t, http.StatusNotFound, res.StatusCode)
+			checkError(t, expectedErr, res.Body)
 		})
 	}
 }
@@ -1298,25 +982,24 @@ func TestAPIProtocolKick(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			var pa string
+			// Per ADR 0009 §D5 the per-protocol kick endpoints
+			// (POST /v3/{rtspsessions,rtmpconns,…}/kick/{id}) collapse into
+			// DELETE /v1/streams/{id}. Filter the unified list by protocol so
+			// we kick only the stream this case set up.
+			var protocolFilter defs.StreamProtocol
 			switch ca {
 			case "rtsp":
-				pa = "rtspsessions"
-
+				protocolFilter = defs.StreamProtocolRTSP
 			case "rtsps":
-				pa = "rtspssessions"
-
+				protocolFilter = defs.StreamProtocolRTSPS
 			case "rtmp":
-				pa = "rtmpconns"
-
+				protocolFilter = defs.StreamProtocolRTMP
 			case "hls":
-				pa = "hlssessions"
-
+				protocolFilter = defs.StreamProtocolHLS
 			case "webrtc":
-				pa = "webrtcsessions"
-
+				protocolFilter = defs.StreamProtocolWebRTC
 			case "srt":
-				pa = "srtconns"
+				protocolFilter = defs.StreamProtocolSRT
 			}
 
 			var out1 struct {
@@ -1324,22 +1007,31 @@ func TestAPIProtocolKick(t *testing.T) {
 					ID string `json:"id"`
 				} `json:"items"`
 			}
-			httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/"+pa+"/list", nil, &out1)
+			httpRequest(t, hc, http.MethodGet,
+				"http://localhost:9997/v1/streams?protocol="+string(protocolFilter), nil, &out1)
 			require.NotEmpty(t, out1.Items)
 
-			httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v3/"+pa+"/kick/"+out1.Items[0].ID, nil, nil)
+			httpRequest(t, hc, http.MethodDelete,
+				"http://localhost:9997/v1/streams/"+out1.Items[0].ID, nil, nil)
 
 			var out2 struct {
 				Items []struct {
 					ID string `json:"id"`
 				} `json:"items"`
 			}
-			httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/"+pa+"/list", nil, &out2)
+			httpRequest(t, hc, http.MethodGet,
+				"http://localhost:9997/v1/streams?protocol="+string(protocolFilter), nil, &out2)
 			require.Empty(t, out2.Items)
 		})
 	}
 }
 
+// TestAPIProtocolKickNotFound asserts the unified DELETE /v1/streams/{id}
+// returns 404 with the canonical "stream not found" error envelope when
+// the id does not match any active session/connection. The legacy
+// /v3/{rtspsessions,rtmpconns,…}/kick/{id} endpoints had per-protocol
+// "connection not found" / "session not found" error messages; ADR 0009
+// §D5 collapses both into a single canonical error.
 func TestAPIProtocolKickNotFound(t *testing.T) {
 	serverCertFpath, err := test.CreateTempFile(test.TLSCertPub)
 	require.NoError(t, err)
@@ -1349,76 +1041,30 @@ func TestAPIProtocolKickNotFound(t *testing.T) {
 	require.NoError(t, err)
 	defer os.Remove(serverKeyFpath)
 
-	for _, ca := range []string{
-		"rtsp",
-		"rtsps",
-		"rtmp",
-		"hls",
-		"webrtc",
-		"srt",
-	} {
-		t.Run(ca, func(t *testing.T) {
-			cnf := "api: yes\n"
+	cnf := "api: yes\n" +
+		"rtspTransports: [tcp]\n" +
+		"rtspEncryption: strict\n" +
+		"rtspServerCert: " + serverCertFpath + "\n" +
+		"rtspServerKey: " + serverKeyFpath + "\n" +
+		"paths:\n" +
+		"  all_others:\n"
 
-			if ca == "rtsps" {
-				cnf += "rtspTransports: [tcp]\n" +
-					"rtspEncryption: strict\n" +
-					"rtspServerCert: " + serverCertFpath + "\n" +
-					"rtspServerKey: " + serverKeyFpath + "\n"
-			}
+	p, ok := newInstance(cnf)
+	require.Equal(t, true, ok)
+	defer p.Close()
 
-			cnf += "paths:\n" +
-				"  all_others:\n"
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	hc := &http.Client{Transport: tr}
 
-			p, ok := newInstance(cnf)
-			require.Equal(t, true, ok)
-			defer p.Close()
+	req, err := http.NewRequest(http.MethodDelete,
+		"http://localhost:9997/v1/streams/"+uuid.New().String(), nil)
+	require.NoError(t, err)
 
-			tr := &http.Transport{}
-			defer tr.CloseIdleConnections()
-			hc := &http.Client{Transport: tr}
+	res, err := hc.Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
 
-			var pa string
-			switch ca {
-			case "rtsp":
-				pa = "rtspsessions"
-
-			case "rtsps":
-				pa = "rtspssessions"
-
-			case "rtmp":
-				pa = "rtmpconns"
-
-			case "hls":
-				pa = "hlssessions"
-
-			case "webrtc":
-				pa = "webrtcsessions"
-
-			case "srt":
-				pa = "srtconns"
-			}
-
-			func() {
-				var req *http.Request
-				req, err = http.NewRequest(http.MethodPost, "http://localhost:9997/v3/"+pa+"/kick/"+uuid.New().String(), nil)
-				require.NoError(t, err)
-
-				var res *http.Response
-				res, err = hc.Do(req)
-				require.NoError(t, err)
-				defer res.Body.Close()
-
-				require.Equal(t, http.StatusNotFound, res.StatusCode)
-
-				switch ca {
-				case "rtsp conns", "rtsps conns", "rtmp", "rtmps", "srt":
-					checkError(t, "connection not found", res.Body)
-
-				case "rtsp sessions", "rtsps sessions", "hls", "webrtc":
-					checkError(t, "session not found", res.Body)
-				}
-			}()
-		})
-	}
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
+	checkError(t, "stream not found", res.Body)
 }
