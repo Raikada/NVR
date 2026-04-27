@@ -47,16 +47,18 @@ func withFreshClipStore(t *testing.T) {
 	})
 }
 
-// fmp4SegmentBytes returns a minimal byte payload that stand-in
-// stitching can concatenate. The test stitch doesn't assert
-// playable output (a real fmp4 remux is out of scope per the spec
-// fallback authorization); it asserts byte-identical concat.
-func fmp4SegmentBytes(marker byte) []byte {
-	out := make([]byte, 32)
-	for i := range out {
-		out[i] = marker
-	}
-	return out
+// fixtureMP4Bytes returns the bytes of a small h264 mp4 fixture
+// shipped at internal/stream/offline_h264.mp4. The clip preparation
+// pipeline now performs a real fmp4-to-mp4 remux; tests need real
+// container input that libav's `mov` demuxer can parse, not the
+// 32-byte filler that the prior byte-concat tests used.
+func fixtureMP4Bytes(t *testing.T) []byte {
+	t.Helper()
+	// Test runs from internal/api/, so the fixture lives two dirs up
+	// at internal/stream/offline_h264.mp4.
+	bs, err := os.ReadFile(filepath.Join("..", "stream", "offline_h264.mp4"))
+	require.NoError(t, err, "load h264 fixture for clip remux test")
+	return bs
 }
 
 func writeClipSegmentFile(t *testing.T, dir, pathName, ts string, payload []byte) string {
@@ -65,6 +67,16 @@ func writeClipSegmentFile(t *testing.T, dir, pathName, ts string, payload []byte
 	p := filepath.Join(dir, pathName, ts+".mp4")
 	require.NoError(t, os.WriteFile(p, payload, 0o644))
 	return p
+}
+
+// isMP4 returns true if the given bytes look like a standard mp4
+// container (`ftyp` box at the start). Used as a structural sanity
+// check on remux output without requiring a full ffprobe run.
+func isMP4(b []byte) bool {
+	if len(b) < 12 {
+		return false
+	}
+	return string(b[4:8]) == "ftyp"
 }
 
 func TestV1ClipsPostCreatesAndPrepares(t *testing.T) {
@@ -77,8 +89,8 @@ func TestV1ClipsPostCreatesAndPrepares(t *testing.T) {
 	a := newTestAPI(t, dir)
 	srv := newClipServer(t, a)
 
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fmp4SegmentBytes('A'))
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000", fmp4SegmentBytes('B'))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fixtureMP4Bytes(t))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000", fixtureMP4Bytes(t))
 
 	cam := cameraIDFromPathName("cam1")
 	body := map[string]any{
@@ -107,7 +119,7 @@ func TestV1ClipsPostCreatesAndPrepares(t *testing.T) {
 	require.Equal(t, cam, got.CameraID)
 	require.Equal(t, "mp4", got.Container)
 	require.Len(t, got.SourceSegmentIDs, 2)
-	require.NotEmpty(t, got.Notice, "fmp4-concat fallback notice must be surfaced")
+	require.Empty(t, got.Notice, "remux pipeline produces real mp4; notice field is reserved for future use")
 	require.Contains(t, []string{"requested", "preparing", "ready"}, got.State)
 
 	// Wait for the async preparer to finish, then verify the clip
@@ -128,7 +140,7 @@ func TestV1ClipsPostCreatesAndPrepares(t *testing.T) {
 	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&got2))
 	require.Equal(t, "ready", got2.State)
 	require.NotNil(t, got2.SizeBytes)
-	require.Equal(t, int64(64), *got2.SizeBytes, "two 32-byte segments concatenated → 64 bytes")
+	require.Greater(t, *got2.SizeBytes, int64(0), "remuxed clip must produce non-empty mp4 output")
 	require.NotNil(t, got2.Checksum)
 	require.Contains(t, *got2.Checksum, "sha256:")
 }
@@ -143,7 +155,7 @@ func TestV1ClipsPostNoOverlappingSegments(t *testing.T) {
 	a := newTestAPI(t, dir)
 	srv := newClipServer(t, a)
 
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fmp4SegmentBytes('A'))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fixtureMP4Bytes(t))
 
 	cam := cameraIDFromPathName("cam1")
 	body := map[string]any{
@@ -193,7 +205,7 @@ func TestV1ClipsList(t *testing.T) {
 	a := newTestAPI(t, dir)
 	srv := newClipServer(t, a)
 
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fmp4SegmentBytes('A'))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fixtureMP4Bytes(t))
 
 	cam := cameraIDFromPathName("cam1")
 	body := map[string]any{
@@ -235,7 +247,7 @@ func TestV1ClipsDeleteSoft(t *testing.T) {
 	a := newTestAPI(t, dir)
 	srv := newClipServer(t, a)
 
-	segPath := writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fmp4SegmentBytes('A'))
+	segPath := writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fixtureMP4Bytes(t))
 
 	cam := cameraIDFromPathName("cam1")
 	body := map[string]any{
@@ -290,8 +302,8 @@ func TestV1ClipsDownload(t *testing.T) {
 	a := newTestAPI(t, dir)
 	srv := newClipServer(t, a)
 
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fmp4SegmentBytes('A'))
-	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000", fmp4SegmentBytes('B'))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-00-000000", fixtureMP4Bytes(t))
+	writeClipSegmentFile(t, dir, "cam1", "2008-11-07_11-22-30-000000", fixtureMP4Bytes(t))
 
 	cam := cameraIDFromPathName("cam1")
 	body := map[string]any{
@@ -318,15 +330,8 @@ func TestV1ClipsDownload(t *testing.T) {
 
 	bs, err := io.ReadAll(dl.Body)
 	require.NoError(t, err)
-	require.Equal(t, 64, len(bs), "concat of two 32-byte segments")
-
-	// First 32 bytes are 'A', second 32 'B'.
-	for i := 0; i < 32; i++ {
-		require.Equal(t, byte('A'), bs[i])
-	}
-	for i := 32; i < 64; i++ {
-		require.Equal(t, byte('B'), bs[i])
-	}
+	require.Greater(t, len(bs), 0, "downloaded clip must have content")
+	require.True(t, isMP4(bs), "downloaded clip must be a real mp4 (ftyp at start)")
 }
 
 func TestV1ClipsDownloadNotReady(t *testing.T) {
@@ -363,25 +368,79 @@ func TestV1ClipsDownloadNotReady(t *testing.T) {
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
 }
 
-func TestStitchSegmentsConcatenates(t *testing.T) {
+// TestStitchSegmentsRemuxesToMP4 drives a real (small) source mp4
+// through the remux helper twice — exercising both the single-
+// segment and the multi-segment timestamp-offset paths — and
+// verifies the output is a parseable mp4 starting with `ftyp`.
+//
+// We don't require a fully fragmented-mp4 source fixture here:
+// libav's `mov` demuxer parses both fragmented and non-fragmented
+// mp4 inputs, and the remux helper is agnostic to which one it
+// gets. The recorder's actual on-disk segments are fragmented mp4
+// files but the helper's contract is "any mov-demuxable input"; the
+// fixture below stresses that contract.
+func TestStitchSegmentsRemuxesToMP4(t *testing.T) {
 	dir, err := os.MkdirTemp("", "stitch")
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
+	src := filepath.Join("..", "stream", "offline_h264.mp4")
+	srcBytes, err := os.ReadFile(src)
+	require.NoError(t, err)
+
 	a := filepath.Join(dir, "a.mp4")
 	b := filepath.Join(dir, "b.mp4")
-	require.NoError(t, os.WriteFile(a, fmp4SegmentBytes('X'), 0o644))
-	require.NoError(t, os.WriteFile(b, fmp4SegmentBytes('Y'), 0o644))
+	require.NoError(t, os.WriteFile(a, srcBytes, 0o644))
+	require.NoError(t, os.WriteFile(b, srcBytes, 0o644))
 	out := filepath.Join(dir, "out.mp4")
 
 	size, checksum, err := stitchSegments([]string{a, b}, out)
 	require.NoError(t, err)
-	require.Equal(t, int64(64), size)
+	require.Greater(t, size, int64(0))
 	require.Contains(t, checksum, "sha256:")
 
 	bs, err := os.ReadFile(out)
 	require.NoError(t, err)
-	require.Equal(t, 64, len(bs))
+	require.Greater(t, len(bs), 0)
+	require.True(t, isMP4(bs), "remuxed output must start with ftyp")
+}
+
+// TestStitchSegmentsRemuxSingleSegment covers the simpler path
+// where only one input segment exists — exercising the no-offset
+// case and ensuring the helper works as a pass-through remux.
+func TestStitchSegmentsRemuxSingleSegment(t *testing.T) {
+	dir, err := os.MkdirTemp("", "stitch-single")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	src := filepath.Join("..", "stream", "offline_h264.mp4")
+	srcBytes, err := os.ReadFile(src)
+	require.NoError(t, err)
+
+	a := filepath.Join(dir, "a.mp4")
+	require.NoError(t, os.WriteFile(a, srcBytes, 0o644))
+	out := filepath.Join(dir, "out.mp4")
+
+	size, checksum, err := stitchSegments([]string{a}, out)
+	require.NoError(t, err)
+	require.Greater(t, size, int64(0))
+	require.Contains(t, checksum, "sha256:")
+
+	bs, err := os.ReadFile(out)
+	require.NoError(t, err)
+	require.True(t, isMP4(bs))
+}
+
+// TestStitchSegmentsRejectsEmpty asserts the helper fails fast on
+// an empty input list — the preparer relies on this to surface a
+// failure rather than producing a zero-byte output.
+func TestStitchSegmentsRejectsEmpty(t *testing.T) {
+	dir, err := os.MkdirTemp("", "stitch-empty")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	_, _, err = stitchSegments(nil, filepath.Join(dir, "out.mp4"))
+	require.Error(t, err)
 }
 
 // Sanity: ensure the package-level singleton resets cleanly.

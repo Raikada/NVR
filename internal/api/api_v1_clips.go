@@ -50,8 +50,10 @@ type v1ClipCreateRequest struct {
 }
 
 // v1ClipResponse mirrors defs.Clip on the wire and adds a Notice
-// field for surfacing operational caveats — primarily the
-// "fmp4-concat fallback in use" note from the preparation pipeline.
+// field for surfacing operational caveats. The field is currently
+// unused on the success path — preparation produces a real
+// fmp4-to-mp4 remux — but is retained on the wire shape for
+// forward-compat with future limitation-surfacing needs.
 type v1ClipResponse struct {
 	defs.Clip
 	Notice string `json:"notice,omitempty"`
@@ -66,11 +68,6 @@ type v1ClipList struct {
 	Notice    string     `json:"notice,omitempty"`
 }
 
-// clipFmp4ConcatNotice surfaces the simplified-concat limitation
-// described in clip_pipeline.go. Stable string so clients that want
-// to detect it can match on prefix.
-const clipFmp4ConcatNotice = "clip export is a byte-wise concatenation of fmp4 fragments; " +
-	"playable by ffmpeg-class players, may require remux for QuickTime-style players"
 
 // clipStore returns the API's clip store. The orchestrator does not
 // yet hold a reference; callers share the package-level singleton
@@ -192,7 +189,7 @@ func (a *API) onV1ClipsPost(ctx *gin.Context) {
 		pathConfs: c.Paths,
 	})
 
-	resp := v1ClipResponse{Clip: *clip, Notice: clipFmp4ConcatNotice}
+	resp := v1ClipResponse{Clip: *clip}
 	ctx.JSON(http.StatusCreated, &resp)
 }
 
@@ -241,7 +238,7 @@ func (a *API) onV1ClipsGet(ctx *gin.Context) {
 		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("clip not found"))
 		return
 	}
-	ctx.JSON(http.StatusOK, &v1ClipResponse{Clip: c, Notice: clipFmp4ConcatNotice})
+	ctx.JSON(http.StatusOK, &v1ClipResponse{Clip: c})
 }
 
 func (a *API) onV1ClipsDelete(ctx *gin.Context) {

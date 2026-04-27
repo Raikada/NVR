@@ -160,10 +160,12 @@ tags:
       be pruned while the clip is requested/preparing/ready.
 
       Pre-MS phase: `requested_by` is the empty string. Stitching
-      uses a byte-wise concatenation of fmp4 fragments today; a
-      proper fmp4-to-mp4 remux is queued as a follow-up. The
-      limitation is surfaced via the `notice` field on each Clip
-      response.
+      performs an in-process fmp4-to-mp4 remux of the source
+      segments, producing a single mp4 with one moov and a
+      monotonic timeline (playable by QuickTime, web `<video>`
+      elements, ffprobe, VLC, etc.). The `notice` field on each
+      Clip response is reserved for future operational caveats and
+      is empty in this build.
   - name: Events
     description: |
       Canonical Event entries emitted by the recorder. The in-memory
@@ -1579,12 +1581,9 @@ components:
         notice:
           type: string
           description: |
-            Operational note. The current recorder uses a byte-wise
-            concatenation of fmp4 fragments as the stitching strategy
-            (playable by ffmpeg-class players, may require remux for
-            QuickTime-style players); this field surfaces that
-            limitation. A future ADR will replace the concat strategy
-            with a proper fmp4-to-mp4 remux.
+            Operational note. Reserved for surfacing future
+            preparation caveats; empty in this build, where
+            preparation produces a real fmp4-to-mp4 remux.
         created_at:
           type: string
           format: date-time

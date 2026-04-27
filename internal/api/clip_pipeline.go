@@ -7,25 +7,22 @@
 // artifact, and on success transitions to `ready`. On failure the
 // clip moves to `failed` with `failure_reason` populated.
 //
-// Stitching strategy. The current build concatenates the on-disk
-// fmp4-fragment segment files byte-wise into a single output file. A
-// fully canonical fmp4-to-mp4 remux would require pulling apart each
-// fragment's `moof` boxes, recomputing baseMediaDecodeTime against a
-// new movie-fragment timeline, and emitting a single `moov` —
-// which is a non-trivial amount of new mux code (mediacommon's mp4
-// helpers don't expose a one-call remux). We take the simpler concat
-// path here per the spec's explicit fallback authorization, document
-// it as a known limitation on the response surface (`Notice` field),
-// and leave the proper remux for a follow-up. See AGENTS.md §6 — this
-// pipeline READS from recordstore and writes a NEW export artifact;
-// it does not refactor or alter codec/container/segmenting defaults.
+// Stitching strategy. The pipeline performs a real fmp4-to-mp4 remux
+// via in-process libav (cgo). Each source segment is opened with
+// libav's `mov` demuxer; packets are copied (no decode/encode) into
+// a single `mp4` output muxer with rewritten stream indices and
+// timebase-rescaled timestamps offset by per-stream running totals
+// to keep the resulting mp4's timeline monotonic. The output is a
+// single mp4 file with one moov, one set of streams, and a
+// continuous timeline — playable by QuickTime, web `<video>`
+// elements, ffprobe, VLC, etc. The remux helper lives in
+// `clip_remux.go`. See AGENTS.md §6 — this pipeline READS from
+// recordstore and writes a NEW export artifact; it does not
+// refactor or alter codec/container/segmenting defaults.
 package api //nolint:revive
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -175,46 +172,13 @@ func resolveClipExportDir(pathConfs map[string]*conf.Path, pathName string) (str
 	return dir, nil
 }
 
-// stitchSegments concatenates the supplied segment files into one
-// output file at outPath. Returns the byte size and sha256 checksum
-// of the produced file.
-//
-// Implementation note: this is the simplified concat strategy
-// described at the top of the file. fmp4 fragments concatenated
-// byte-wise are commonly playable by ffmpeg-class players because
-// each fragment is self-describing; standard QuickTime-style
-// players may need an explicit remux. The limitation is documented
-// in the POST response and on the prepared clip via the spec
-// `notice` surface.
+// stitchSegments produces the export artifact for a clip by
+// remuxing the supplied source-segment files into a single mp4 at
+// outPath. Returns the produced file's byte size and sha256
+// checksum. Thin wrapper over remuxFmp4Segments (see clip_remux.go)
+// retained for naming clarity at the pipeline boundary.
 func stitchSegments(segPaths []string, outPath string) (int64, string, error) {
-	out, err := os.Create(outPath)
-	if err != nil {
-		return 0, "", fmt.Errorf("create export file: %w", err)
-	}
-	defer out.Close() //nolint:errcheck
-
-	hasher := sha256.New()
-	multi := io.MultiWriter(out, hasher)
-
-	var total int64
-	for _, p := range segPaths {
-		f, err := os.Open(p)
-		if err != nil {
-			return 0, "", fmt.Errorf("open segment %s: %w", p, err)
-		}
-		n, err := io.Copy(multi, f)
-		f.Close() //nolint:errcheck
-		if err != nil {
-			return 0, "", fmt.Errorf("copy segment %s: %w", p, err)
-		}
-		total += n
-	}
-
-	if err := out.Sync(); err != nil {
-		return 0, "", fmt.Errorf("sync export file: %w", err)
-	}
-
-	return total, "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
+	return remuxFmp4Segments(segPaths, outPath)
 }
 
 // clipPreparer drives one clip from `requested` to `ready` (or
