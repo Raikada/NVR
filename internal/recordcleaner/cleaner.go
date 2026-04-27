@@ -41,6 +41,25 @@ var statfsFn = func(path string, st *syscall.Statfs_t) error {
 	return syscall.Statfs(path, st)
 }
 
+// SegmentPinPredicate reports whether an on-disk segment path is
+// pinned by an external owner (today: a Clip whose state is
+// requested/preparing/ready). When set, the cleaner consults this
+// before removing any segment file. nil means "no external pin
+// authority" — the cleaner falls back to its policy-only behavior.
+//
+// The hook is intentionally a single package-level function variable
+// rather than an interface or constructor parameter so its addition
+// is strictly additive (no Cleaner-struct shape change, no callsite
+// migration in core). The internal/api package registers a
+// predicate at startup that checks the process-wide ClipStore; tests
+// can override it.
+//
+// Per platform/docs/domain-model.md Clip notes: "the recorder MUST
+// NOT prune any RecordingSegment referenced by a clip whose state is
+// requested, preparing, or ready, even when the segment is older
+// than the policy retention window."
+var SegmentPinPredicate func(segmentPath string) bool
+
 // Cleaner removes expired recording segments from disk.
 //
 // Beyond segment cleanup, the Cleaner runs a periodic capacity probe
@@ -189,6 +208,15 @@ func (c *Cleaner) deleteExpiredSegments(now time.Time, pathName string, pathConf
 	}
 
 	for _, seg := range segments {
+		// Pin check per Clip canonical-entity rules: an external pin
+		// holder (e.g., a clip in requested/preparing/ready state)
+		// vetoes pruning of its source segments even when policy
+		// retention has expired. See SegmentPinPredicate doc above
+		// and platform/docs/domain-model.md Clip Notes.
+		if SegmentPinPredicate != nil && SegmentPinPredicate(seg.Fpath) {
+			c.Log(logger.Debug, "skipping pinned segment %s", seg.Fpath)
+			continue
+		}
 		c.Log(logger.Debug, "removing %s", seg.Fpath)
 		os.Remove(seg.Fpath)
 	}
