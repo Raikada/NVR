@@ -33,6 +33,8 @@ func multicastCapableInterface(t *testing.T) string {
 }
 
 func TestSourceUDP(t *testing.T) {
+	test.RequireUDPLoopback(t)
+
 	for _, ca := range []string{
 		"unicast",
 		"multicast",
