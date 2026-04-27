@@ -11,17 +11,18 @@ import type { Event as ApiEvent } from '../lib/api';
 import { usePoll, formatTime } from '../lib/hooks';
 import type { ToastInput } from '../lib/types';
 
-// /v1/events surfaces canonical Event severities (info / warning /
-// error). The design's "DEBUG" slot doesn't map to a canonical
-// severity — there's a recorder-internal debug-log surface that
-// would need a different endpoint. STUB: DEBUG filter is a no-op
-// today; surfaces nothing.
-const LEVELS = ['ALL', 'ERROR', 'WARN', 'INFO', 'DEBUG'] as const;
-// Subject-kind filter mapped from the design's "source" segment.
-// Maps: SYSTEM→server, CAMERA→camera, RECORDER→stream/segment,
-// NETWORK→(none). NETWORK is a STUB — no canonical Event subject
-// kind models it. See docs/web-ui.md.
-const SOURCES = ['ALL', 'SYSTEM', 'CAMERA', 'RECORDER', 'NETWORK'] as const;
+// /v1/events surfaces canonical Event severities only — info /
+// warning / error. The design's prototype carried a DEBUG filter
+// because the mock log generator had a debug tier; canonical
+// Events don't, so we don't expose it on the real wiring.
+const LEVELS = ['ALL', 'ERROR', 'WARN', 'INFO'] as const;
+// Subject-kind filter — maps to canonical Event.subject_kind. The
+// design's NETWORK option is dropped: no canonical subject kind
+// models a network-plane event today. SERVER covers server-scoped
+// emissions (auth.failed_login, config.applied, etc.); CAMERA
+// scopes to camera lifecycle; RECORDING covers stream + segment
+// (the two recorder-data subjects).
+const SOURCES = ['ALL', 'SERVER', 'CAMERA', 'RECORDING'] as const;
 
 type LevelFilter = (typeof LEVELS)[number];
 type SourceFilter = (typeof SOURCES)[number];
@@ -30,14 +31,13 @@ function severityColor(s: ApiEvent['severity']): string {
   return { error: '#EF4444', warning: '#EAB308', info: '#F97316' }[s] || '#E5E5E5';
 }
 
-// Map the design's source filter onto the canonical subject-kind.
-// Returns null when the filter is ALL or has no canonical mapping.
+// Map the source filter onto canonical Event.subject_kind values.
+// Returns null when the filter is ALL.
 function subjectKindForSource(s: SourceFilter): string[] | null {
   if (s === 'ALL') return null;
-  if (s === 'SYSTEM') return ['server'];
+  if (s === 'SERVER') return ['server'];
   if (s === 'CAMERA') return ['camera'];
-  if (s === 'RECORDER') return ['stream', 'segment'];
-  return ['__no_match__']; // NETWORK — STUB
+  return ['stream', 'segment']; // RECORDING
 }
 
 interface LogsProps {
@@ -73,11 +73,10 @@ export function Logs({ addToast }: LogsProps) {
   const subjectFilter = subjectKindForSource(source);
   const filtered = all.filter((e) => {
     if (level !== 'ALL') {
-      const map: Record<Exclude<LevelFilter, 'ALL'>, ApiEvent['severity'] | '__none__'> = {
+      const map: Record<Exclude<LevelFilter, 'ALL'>, ApiEvent['severity']> = {
         ERROR: 'error',
         WARN: 'warning',
         INFO: 'info',
-        DEBUG: '__none__', // STUB — see header
       };
       if (map[level] !== e.severity) return false;
     }

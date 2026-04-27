@@ -150,20 +150,46 @@ export function Network({ state }: { state: AppState }) {
             right={
               <Segmented
                 size="sm"
-                options={['INGRESS', 'EGRESS'] as const}
-                value="INGRESS"
+                options={['INGRESS', 'EGRESS', 'TOTAL'] as const}
+                value="TOTAL"
                 onChange={() => {}}
               />
             }
           >
             BANDWIDTH USAGE
           </SectionHeader>
-          {/* STUB: bandwidth metrics need a Prometheus-side scrape
-              or a recorder /v1/ extension. Not exposed today. */}
+          {/* /v1/health.bandwidth — current sample only. PEAK and
+              AVG over a rolling window would need a recorder-side
+              ring buffer or Prometheus integration; not exposed
+              yet. STUB on those two cells. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 8 }}>
-            <Stat label="NOW" value="—" unit="" sub="NOT EXPOSED" />
-            <Stat label="PEAK · 24H" value="—" unit="" sub="NOT EXPOSED" />
-            <Stat label="AVG · 24H" value="—" unit="" sub="NOT EXPOSED" />
+            <Stat
+              label="INGRESS · NOW"
+              value={
+                health.data ? ((health.data.bandwidth.rx_bps * 8) / 1e6).toFixed(2) : '—'
+              }
+              unit="Mb/s"
+              tone="accent"
+            />
+            <Stat
+              label="EGRESS · NOW"
+              value={
+                health.data ? ((health.data.bandwidth.tx_bps * 8) / 1e6).toFixed(2) : '—'
+              }
+              unit="Mb/s"
+              tone="accent"
+            />
+            <Stat
+              label="TOTAL · NOW"
+              value={
+                health.data
+                  ? (((health.data.bandwidth.rx_bps + health.data.bandwidth.tx_bps) * 8) / 1e6).toFixed(2)
+                  : '—'
+              }
+              unit="Mb/s"
+              tone="accent"
+              sub="PEAK / AVG NOT EXPOSED"
+            />
           </div>
         </Card>
       </div>

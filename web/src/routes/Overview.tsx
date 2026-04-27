@@ -41,11 +41,15 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
 
   const cpuPct = health.data ? Math.round(health.data.cpu_pct) : 0;
   const memPct = health.data ? Math.round(health.data.mem_pct) : 0;
-  // BANDWIDTH: not currently exposed by /v1/health. Stays mocked
-  // (Math.random walk) until the Prometheus surface or a small
-  // /v1/health extension lands. See docs/web-ui.md stub list.
-  const bwMockSeed = (Date.now() / 60000) | 0;
-  const bw = 18 + (bwMockSeed % 10);
+  // Bandwidth: total RX + TX bytes/sec from /v1/health.bandwidth,
+  // converted to Mbit/s for display. First /v1/health call returns
+  // (0, 0) while the sampler primes; subsequent calls deliver real
+  // rates. The knob's max=50 was chosen for typical 6-camera
+  // residential ingress; clamps internally.
+  const totalBps = health.data
+    ? health.data.bandwidth.rx_bps + health.data.bandwidth.tx_bps
+    : 0;
+  const bw = (totalBps * 8) / 1_000_000;
   // Storage: from /v1/health.storage[]. Used = sum(used_pct *
   // assumed-2TB) is meaningless without absolute capacity, so we
   // pull from /v1/storage-volumes-derived stats once that route
@@ -338,7 +342,11 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
             value={bw.toFixed(1)}
             unit="Mb/s"
             tone="accent"
-            sub="of 1000 Mb/s link"
+            sub={
+              health.data
+                ? `↓ ${(health.data.bandwidth.rx_bps * 8 / 1e6).toFixed(1)} ↑ ${(health.data.bandwidth.tx_bps * 8 / 1e6).toFixed(1)} Mb/s`
+                : 'priming…'
+            }
             icon="arrow-down-up"
             onClick={() => go('network')}
           />

@@ -122,10 +122,22 @@ Every stub below renders as a placeholder in the UI today and is
 labelled in source so future agents can find them with
 `grep -n 'STUB' web/src/`.
 
+Recently retired (now wired to real `/v1/`):
+- Overview BANDWIDTH knob → `/v1/health.bandwidth` (rx_bps + tx_bps)
+- Network bandwidth row → same
+- Storage WRITE RATE stat + per-volume write-rate → `/v1/storage-volumes.write_bytes_per_second`
+- Storage `≈ N days at current rate` → derived from the above
+- Storage SMART hours / vendor / model / temperature →
+  `/v1/storage-volumes.smart` (best-effort smartctl shell-out)
+- Settings identity (hostname / timezone read-only, location editable) →
+  `/v1/recorder/identity`
+- Settings firmware version display → `/v1/recorder/identity.firmware_version`
+- Settings Reboot button → `POST /v1/recorder/reboot`
+- Settings Backup Config button → `GET /v1/recorder/config-backup`
+- Logs DEBUG severity filter → dropped (canonical events have no DEBUG tier)
+- Logs NETWORK source filter → dropped (no canonical subject kind models it)
+
 **Overview.**
-- `BANDWIDTH` knob — `/v1/health` exposes no bandwidth metric.
-  Needs Prometheus scrape integration or a `/v1/health.bandwidth`
-  extension.
 - `TEMP` mini-metric — no thermal sensor surface on `/v1/health`.
 - `STORAGE` stat tile — used/total still uses a mock 256 GB / 2 TB
   pair. The values exist live on the Storage route (which uses
@@ -159,43 +171,32 @@ labelled in source so future agents can find them with
   Save button currently toasts "saved locally" and closes the
   drawer; field changes land in component state only.
 
-**Logs.**
-- DEBUG severity filter — canonical Event severity is info /
-  warning / error only. DEBUG selects nothing today; the
-  recorder-internal debug-log surface is a different endpoint
-  (not yet exposed via `/v1/`).
-- NETWORK source filter — no canonical Event subject kind models
-  the network plane. Selects nothing.
-
 **Storage.**
 - Per-content-type breakdown (Continuous / Motion events / AI
   detections) — recorder doesn't account by content type. Used-
   vs-free is the live data we have.
-- Per-disk SMART hours, drive vendor / model strings — recorder
-  has no S.M.A.R.T. probe surface.
-- "≈ N days at current rate" — needs a write-rate observer.
-- "WRITE RATE" stat tile — same.
 - "RETENTION" stat tile — surfaces via `RecordingPolicy.
   RetentionDuration` once `/v1/recording-policies` wires up.
 
 **Network.**
 - Interface block (LINK / DNS / MAC / MTU / NTP / VLAN) — needs
   an OS-level network probe extension on the recorder.
-- Bandwidth stats (NOW / PEAK 24H / AVG 24H) — same as Overview's
-  bandwidth knob.
+- Bandwidth stats `PEAK · 24H` / `AVG · 24H` — needs a recorder-
+  side rolling-window observer or Prometheus scrape integration.
+  `NOW` cells are wired to live bandwidth.
 - MS tunnel port row — depends on the pairing client landing.
 
 **Settings.**
-- Identity fields (hostname / location / timezone) — recorder
-  doesn't expose these as discrete `/v1/recorder/config` fields
-  today.
-- Firmware update banner ("3.1.4 available") — no update
-  endpoint surfaced; the version and the "Install" action are
-  both stubbed.
+- Firmware update flow ("Check for Updates" button) — no update
+  endpoint surfaced. Architectural decision pending: binary
+  signing, rollback semantics, update channel.
 - Auto-update / Telemetry toggles — stored locally only;
   recorder doesn't have the corresponding flags.
-- System actions (Reboot / Backup / Restore / Factory Reset) —
-  no recorder endpoints. Buttons toast a stub message.
+- Restore Config — server-side intentionally not implemented in
+  this swing (destructive op; needs careful atomic-replacement
+  + rollback design). Button toasts a stub.
+- Factory Reset — no recorder endpoint; needs scope decision
+  (what state survives?). Button toasts.
 
 **Pairing (whole route).**
 - LAN auto-discovery, pair-by-bearer-token, mTLS-cert badges,

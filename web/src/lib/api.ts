@@ -73,6 +73,11 @@ export interface HealthNetwork {
   last_sync_at?: string;
 }
 
+export interface HealthBandwidth {
+  rx_bps: number;
+  tx_bps: number;
+}
+
 export interface HealthStatus {
   id: string;
   recording_server_id: string;
@@ -88,6 +93,7 @@ export interface HealthStatus {
   cameras_offline: number;
   storage?: HealthVolume[];
   network: HealthNetwork;
+  bandwidth: HealthBandwidth;
   overall: 'healthy' | 'degraded' | 'unhealthy';
 }
 
@@ -227,6 +233,16 @@ export const fetchAudit = (page = 0, perPage = 100) =>
 
 export type StorageVolumeStatus = 'online' | 'degraded' | 'full' | 'read_only' | 'offline';
 
+export interface StorageVolumeSMART {
+  device?: string;
+  model_family?: string;
+  model_name?: string;
+  serial_number?: string;
+  power_on_hours?: number;
+  health_passed?: boolean;
+  temperature_c?: number;
+}
+
 export interface StorageVolume {
   id: string;
   recording_server_id: string;
@@ -238,6 +254,8 @@ export interface StorageVolume {
   status: StorageVolumeStatus;
   last_checked_at: string;
   priority: number;
+  write_bytes_per_second?: number;
+  smart?: StorageVolumeSMART;
 }
 
 export interface StorageVolumeList extends ListEnvelope<StorageVolume> {}
@@ -269,3 +287,25 @@ export interface RecorderConfig {
 export const fetchRecorderConfig = () => api.get<RecorderConfig>('/recorder/config');
 export const patchRecorderConfig = (body: Partial<RecorderConfig>) =>
   api.patch<{ status: string }>('/recorder/config', body);
+
+/* ---------- /v1/recorder/identity ---------- */
+
+export interface RecorderIdentity {
+  tenant_id: string;
+  hostname: string;
+  location: string;
+  timezone: string;
+  firmware_version: string;
+}
+
+export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');
+export const patchIdentity = (body: { location: string }) =>
+  api.patch<{ status: string }>('/recorder/identity', body);
+
+/* ---------- /v1/recorder system actions ---------- */
+
+export const rebootRecorder = () => api.post<{ status: string }>('/recorder/reboot');
+// config-backup is a GET that returns a downloadable file. We hit
+// it via a window.location-style redirect from the UI rather than
+// fetch + JSON, so the browser's native download flow takes over.
+export const configBackupURL = '/v1/recorder/config-backup';
