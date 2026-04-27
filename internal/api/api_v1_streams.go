@@ -30,23 +30,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// streamCameraIDFromPath maps a path-name string to a stable canonical
-// CameraID UUID. The canonical Stream needs to reference Camera by UUID, but
-// the existing protocol session shapes carry path-name strings. Subagent 2A
-// owns a centralized helper (likely PathManager.NameToCameraID) that
-// supersedes this; until that lands here, we emit a deterministic UUIDv5 in
-// the OID namespace so two streams on the same path round-trip to the same
-// camera_id without coupling to 2A's not-yet-merged code.
-//
-// TODO(2A): replace with the centralized name-to-camera-id resolver once
-// available. The orchestrator can deduplicate.
-func streamCameraIDFromPath(pathName string) string {
-	if pathName == "" {
-		return ""
-	}
-	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(pathName)).String()
-}
-
 // streamFilters captures the query-string filters accepted by GET /v1/streams.
 type streamFilters struct {
 	protocol  defs.StreamProtocol // empty = no filter
@@ -293,7 +276,7 @@ func (a *API) gatherRTSPStreams(
 				matched = append(matched, c)
 			}
 		}
-		cameraID := streamCameraIDFromPath(s.Path)
+		cameraID := cameraIDFromPathName(s.Path)
 		var stream defs.Stream
 		if protocol == defs.StreamProtocolRTSPS {
 			stream = defs.StreamFromRTSPSSession(&s, matched, cameraID, tenantID)
@@ -318,7 +301,7 @@ func (a *API) gatherRTMPStreams(
 	out := make([]defs.Stream, 0, len(conns.Items))
 	for i := range conns.Items {
 		c := conns.Items[i]
-		cameraID := streamCameraIDFromPath(c.Path)
+		cameraID := cameraIDFromPathName(c.Path)
 		var stream defs.Stream
 		if protocol == defs.StreamProtocolRTMPS {
 			stream = defs.StreamFromRTMPSConn(&c, cameraID, tenantID)
@@ -338,7 +321,7 @@ func (a *API) gatherSRTStreams(tenantID string) ([]defs.Stream, error) {
 	out := make([]defs.Stream, 0, len(conns.Items))
 	for i := range conns.Items {
 		c := conns.Items[i]
-		out = append(out, defs.StreamFromSRTConn(&c, streamCameraIDFromPath(c.Path), tenantID))
+		out = append(out, defs.StreamFromSRTConn(&c, cameraIDFromPathName(c.Path), tenantID))
 	}
 	return out, nil
 }
@@ -351,7 +334,7 @@ func (a *API) gatherWebRTCStreams(tenantID string) ([]defs.Stream, error) {
 	out := make([]defs.Stream, 0, len(sessions.Items))
 	for i := range sessions.Items {
 		s := sessions.Items[i]
-		out = append(out, defs.StreamFromWebRTCSession(&s, streamCameraIDFromPath(s.Path), tenantID))
+		out = append(out, defs.StreamFromWebRTCSession(&s, cameraIDFromPathName(s.Path), tenantID))
 	}
 	return out, nil
 }
@@ -364,7 +347,7 @@ func (a *API) gatherHLSStreams(tenantID string) ([]defs.Stream, error) {
 	out := make([]defs.Stream, 0, len(sessions.Items))
 	for i := range sessions.Items {
 		s := sessions.Items[i]
-		out = append(out, defs.StreamFromHLSSession(&s, streamCameraIDFromPath(s.Path), tenantID))
+		out = append(out, defs.StreamFromHLSSession(&s, cameraIDFromPathName(s.Path), tenantID))
 	}
 	return out, nil
 }
@@ -434,7 +417,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.RTSPServer) {
 		if s, err := a.RTSPServer.APISessionsGet(id); err == nil && s != nil {
 			conns := a.fetchRTSPConns(a.RTSPServer, s.Conns)
-			out := defs.StreamFromRTSPSession(s, conns, streamCameraIDFromPath(s.Path), tenantID)
+			out := defs.StreamFromRTSPSession(s, conns, cameraIDFromPathName(s.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -446,7 +429,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.RTSPSServer) {
 		if s, err := a.RTSPSServer.APISessionsGet(id); err == nil && s != nil {
 			conns := a.fetchRTSPConns(a.RTSPSServer, s.Conns)
-			out := defs.StreamFromRTSPSSession(s, conns, streamCameraIDFromPath(s.Path), tenantID)
+			out := defs.StreamFromRTSPSSession(s, conns, cameraIDFromPathName(s.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -457,7 +440,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 	if !interfaceIsEmpty(a.RTMPServer) {
 		if c, err := a.RTMPServer.APIConnsGet(id); err == nil && c != nil {
-			out := defs.StreamFromRTMPConn(c, streamCameraIDFromPath(c.Path), tenantID)
+			out := defs.StreamFromRTMPConn(c, cameraIDFromPathName(c.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -468,7 +451,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 	if !interfaceIsEmpty(a.RTMPSServer) {
 		if c, err := a.RTMPSServer.APIConnsGet(id); err == nil && c != nil {
-			out := defs.StreamFromRTMPSConn(c, streamCameraIDFromPath(c.Path), tenantID)
+			out := defs.StreamFromRTMPSConn(c, cameraIDFromPathName(c.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -479,7 +462,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 	if !interfaceIsEmpty(a.SRTServer) {
 		if c, err := a.SRTServer.APIConnsGet(id); err == nil && c != nil {
-			out := defs.StreamFromSRTConn(c, streamCameraIDFromPath(c.Path), tenantID)
+			out := defs.StreamFromSRTConn(c, cameraIDFromPathName(c.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -490,7 +473,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 	if !interfaceIsEmpty(a.WebRTCServer) {
 		if s, err := a.WebRTCServer.APISessionsGet(id); err == nil && s != nil {
-			out := defs.StreamFromWebRTCSession(s, streamCameraIDFromPath(s.Path), tenantID)
+			out := defs.StreamFromWebRTCSession(s, cameraIDFromPathName(s.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return
@@ -501,7 +484,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 	if !interfaceIsEmpty(a.HLSServer) {
 		if s, err := a.HLSServer.APISessionsGet(id); err == nil && s != nil {
-			out := defs.StreamFromHLSSession(s, streamCameraIDFromPath(s.Path), tenantID)
+			out := defs.StreamFromHLSSession(s, cameraIDFromPathName(s.Path), tenantID)
 			a.redactStream(&out)
 			ctx.JSON(http.StatusOK, out)
 			return

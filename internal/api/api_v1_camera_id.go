@@ -15,7 +15,14 @@ import (
 // The namespace is uuid.NameSpaceOID — chosen as a stable, well-known
 // namespace that doesn't collide with any of the platform's other
 // UUIDv5 spaces.
+//
+// Empty input returns "" rather than a derived UUID, so a stream
+// session whose path is unknown surfaces no spurious camera_id (each
+// such session would otherwise collide on the same UUIDv5 of "").
 func cameraIDFromPathName(name string) string {
+	if name == "" {
+		return ""
+	}
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 

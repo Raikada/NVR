@@ -452,7 +452,7 @@ func TestV1StreamsListReturnsAllProtocols(t *testing.T) {
 		s, ok := byProtocol[proto]
 		require.Truef(t, ok, "missing %s stream in list output", proto)
 		require.Equal(t, id.String(), s["id"])
-		require.Equal(t, streamCameraIDFromPath(paths[proto]), s["camera_id"])
+		require.Equal(t, cameraIDFromPathName(paths[proto]), s["camera_id"])
 		require.Equal(t, "00000000-0000-0000-0000-000000000000", s["tenant_id"])
 	}
 }
@@ -476,7 +476,7 @@ func TestV1StreamsListFilterByProtocol(t *testing.T) {
 func TestV1StreamsListFilterByCameraID(t *testing.T) {
 	api, ids, paths := v1StreamsFixture(t)
 
-	cameraID := streamCameraIDFromPath(paths["webrtc"])
+	cameraID := cameraIDFromPathName(paths["webrtc"])
 	q := url.Values{"camera_id": {cameraID}}.Encode()
 
 	code, body := invokeStreamHandler(api, streamHandlerList, q, "")
