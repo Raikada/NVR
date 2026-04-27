@@ -1,19 +1,24 @@
 // Package api: helpers for publishing canonical Events from API-layer
-// trigger points.
+// and pipeline-side trigger points.
 //
-// The /v1/events ring buffer (event_store.go) was added in Phase 2D
-// with a "producers will be wired in Phase-2-followup" notice. This
-// file is the followup wiring for the API-layer trigger points: auth
-// decisions and config/policy applies. Pipeline-adjacent producers
-// (camera state changes from internal/core/path_manager.go) call into
-// the same EventStore singleton via a thin helper that lives here so
-// the pipeline package never imports defs.EventInput construction
-// logic — pipeline code only ever invokes Publish.
+// API-layer producers (auth decisions and config/policy applies) live
+// in handlers that hold *API, and use publishEvent /
+// publishEventLocked; the locked variant is for callers that already
+// hold a.mutex (Go's RWMutex isn't reentrant, so calling the unlocked
+// helper under a held write lock deadlocks).
+//
+// Pipeline-side producers (camera state changes from
+// internal/core/path.go's lifecycle hooks) cannot reach an *API
+// receiver without breaking layering. They use the package-level
+// PublishCameraOnline / PublishCameraOffline functions, which resolve
+// their target via SetPipelineEventTarget — wired once at startup by
+// core.go to share the same EventStore the /v1/events surface serves
+// from.
 //
 // Per AGENTS.md §6, helpers used by media-pipeline producers live in
 // internal/api (not in the pipeline packages); pipeline code calls
 // them as a single-statement attachment alongside existing logger
-// calls.
+// calls. The defs.EventInput construction logic stays in this file.
 package api //nolint:revive
 
 import (
