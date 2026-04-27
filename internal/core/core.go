@@ -712,15 +712,19 @@ func (p *Core) createResources(initial bool) error {
 
 		// Wire the pipeline-side Event publish target so path.go's
 		// camera.online / camera.offline emitters land in the same
-		// EventStore that /v1/events serves from. Tenant id resolves
-		// dynamically against the current recorder conf so reloads
-		// pick up changes; the brief TOCTOU window during a reload is
-		// acceptable for an Event's tenant_id field.
+		// EventStore that /v1/events serves from. Tenant id is
+		// captured by value (not by closure over p.conf) to avoid a
+		// data race with reloadConf at core.go:1089. createResources
+		// runs on both initial setup and every conf reload, so each
+		// reload re-snapshots tenantID through this same SetPipeline-
+		// EventTarget call — legitimate tenant-rebind paths still
+		// flow through.
+		var tenantID string
+		if p.conf != nil {
+			tenantID = p.conf.TenantID
+		}
 		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
-			if p.conf == nil {
-				return ""
-			}
-			return p.conf.TenantID
+			return tenantID
 		})
 	}
 
