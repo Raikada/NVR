@@ -122,6 +122,44 @@ func TestV1RecorderHLSMuxersGetByCameraID(t *testing.T) {
 	require.Equal(t, uint64(9999), out.OutboundBytes)
 }
 
+// TestV1RecorderHLSMuxersGetRuntimeActiveCamera: gap #13 closure. When a
+// camera is producing media at runtime but the config table only holds a
+// wildcard path entry (e.g., `all_others`), the cameraID derived from
+// the runtime path-name is not in pathNameFromCameraID(c.Paths, ...).
+// The handler must fall back to the HLS muxer list to resolve runtime-
+// active path-names, matching the runtime-aware lookup the Phase 2
+// playback-URL fix uses.
+func TestV1RecorderHLSMuxersGetRuntimeActiveCamera(t *testing.T) {
+	// `all_others` is a wildcard path entry; cam_runtime is not in c.Paths
+	// directly but a muxer is producing for it.
+	cnf := tempConf(t, "paths:\n  all_others:\n    source: publisher\n")
+	hlsSrv := &hlsMuxerOnlyServer{
+		muxers: map[string]*defs.APIHLSMuxer{
+			"cam_runtime": {Path: "cam_runtime", OutboundBytes: 4242},
+		},
+	}
+	api := &API{
+		Conf:      cnf,
+		HLSServer: hlsSrv,
+		Parent:    &testParent{},
+	}
+
+	// Sanity: cam_runtime is not in conf.Paths.
+	_, ok := api.Conf.Paths["cam_runtime"]
+	require.False(t, ok, "cam_runtime is runtime-only, not configured")
+
+	// The cameraID derived from the runtime path-name resolves via the
+	// runtime fallback.
+	cameraID := cameraIDFromPathName("cam_runtime")
+	code, body := invokeHLSMuxersHandler(api, "get", cameraID)
+	require.Equal(t, http.StatusOK, code)
+
+	var out defs.APIHLSMuxer
+	require.NoError(t, json.Unmarshal(body, &out))
+	require.Equal(t, "cam_runtime", out.Path)
+	require.Equal(t, uint64(4242), out.OutboundBytes)
+}
+
 func TestV1RecorderHLSMuxersGetUnknownCamera(t *testing.T) {
 	cnf := tempConf(t, "paths:\n  cam_a:\n    source: publisher\n")
 	hlsSrv := &hlsMuxerOnlyServer{muxers: map[string]*defs.APIHLSMuxer{}}

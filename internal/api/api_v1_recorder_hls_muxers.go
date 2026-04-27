@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
 	"github.com/gin-gonic/gin"
 )
@@ -68,7 +69,23 @@ func (a *API) onV1RecorderHLSMuxersGet(ctx *gin.Context) {
 	c := a.Conf
 	a.mutex.RUnlock()
 
+	// Resolve the canonical UUID to a path-name. Configured paths are the
+	// happy path: if the camera was created via /v1/cameras (or any
+	// MediaMTX-style path config) the cameraID derived from the path-name
+	// matches and pathNameFromCameraID hits.
+	//
+	// Wildcard config entries (e.g., `all_others`) and any path that
+	// became active without a discrete conf.Path entry are not in
+	// c.Paths. The HLS muxer table, however, is keyed by the runtime
+	// path-name — so a muxer is producing for cam_a even though c.Paths
+	// only carries `all_others`. Per the Phase 2 playback-URL convergence
+	// (api_v1_recordings.go's runtime-aware resolution), fall back to the
+	// runtime muxer list and match by deriving cameraID from each
+	// muxer's path-name.
 	pathName, ok := pathNameFromCameraID(c.Paths, cameraID)
+	if !ok {
+		pathName, ok = pathNameFromRuntimeHLSMuxers(a.HLSServer, cameraID)
+	}
 	if !ok {
 		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
 		return
@@ -87,4 +104,26 @@ func (a *API) onV1RecorderHLSMuxersGet(ctx *gin.Context) {
 	data.TenantID = a.tenantID()
 
 	ctx.JSON(http.StatusOK, data)
+}
+
+// pathNameFromRuntimeHLSMuxers walks the HLS server's runtime muxer
+// list and returns the path-name whose deterministic cameraID matches
+// the requested one. Used as the fallback resolver when c.Paths
+// doesn't contain a discrete entry (typical for wildcard path configs
+// like `all_others` that match many concrete on-disk paths). Returns
+// "" / false if no muxer's path-name derives the requested cameraID.
+func pathNameFromRuntimeHLSMuxers(srv defs.APIHLSServer, cameraID string) (string, bool) {
+	if srv == nil {
+		return "", false
+	}
+	list, err := srv.APIMuxersList()
+	if err != nil || list == nil {
+		return "", false
+	}
+	for _, m := range list.Items {
+		if cameraIDFromPathName(m.Path) == cameraID {
+			return m.Path, true
+		}
+	}
+	return "", false
 }
