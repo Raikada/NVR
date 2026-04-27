@@ -28,7 +28,7 @@ import (
 // Recording, /v1/streams DELETE, /v1/clips operations, /v1/recordings
 // playback, and /v1/recorder/cameras/:id/snapshot are NOT gated.
 func (a *API) guardAdminAction(ctx *gin.Context) bool {
-	if !defaultAuditBuffer().IsDegraded() {
+	if !defaultAuditSink().IsDegraded() {
 		return true
 	}
 	ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, &defs.APIError{

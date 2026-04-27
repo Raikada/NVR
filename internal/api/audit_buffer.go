@@ -51,6 +51,23 @@ const (
 	auditDegradedThresholdDenominator = 5
 )
 
+// auditSink is the abstraction the AuditChain producer writes
+// through and the read-side handlers (audit_v1_audit.go,
+// audit_gate.go) consult. Both the in-memory AuditBuffer and the
+// disk-backed AuditDiskBuffer satisfy it; the chain machinery is
+// agnostic to which implementation is wired in. Production callers
+// install the disk-backed implementation per ADR 0006 D6; tests
+// continue to drive the in-memory ring.
+type auditSink interface {
+	Append(entry defs.AuditLogEntry)
+	Snapshot() []defs.AuditLogEntry
+	GetByID(id string) (defs.AuditLogEntry, bool)
+	Len() int
+	Capacity() int
+	IsDegraded() bool
+	Clear()
+}
+
 // AuditBuffer is the recorder's in-memory ring buffer of chained
 // AuditLogEntry. Newest-last; oldest-first eviction at capacity.
 //
@@ -144,16 +161,73 @@ func (b *AuditBuffer) Clear() {
 // auditBufferSingleton is the default process-wide buffer used when
 // no caller has injected one. The chain singleton (audit_emit.go)
 // shares this buffer.
+//
+// auditSinkSingleton is the active sink the chain producer and the
+// read-side handlers consult. By default it is the in-memory
+// AuditBuffer; production wiring (api.API.Initialize, when configured
+// with an audit-disk directory) calls installAuditDiskSink to swap it
+// for the durable AuditDiskBuffer per ADR 0006 D6.
 var (
 	auditBufferSingletonOnce sync.Once
 	auditBufferSingleton     *AuditBuffer
+
+	auditSinkMu       sync.RWMutex
+	auditSinkOverride auditSink
 )
 
-// defaultAuditBuffer returns the process-wide buffer, lazily
-// constructed on first use.
+// defaultAuditBuffer returns the process-wide in-memory buffer,
+// lazily constructed on first use. Tests interact directly with this
+// (Clear, etc.); production read-paths should go through
+// defaultAuditSink so they observe whichever sink is installed.
 func defaultAuditBuffer() *AuditBuffer {
 	auditBufferSingletonOnce.Do(func() {
 		auditBufferSingleton = NewAuditBuffer(defaultAuditBufferCapacity)
 	})
 	return auditBufferSingleton
+}
+
+// defaultAuditSink returns the active audit sink. When a disk-backed
+// buffer has been installed via installAuditDiskSink, that wins;
+// otherwise the in-memory ring is returned. Read-side handlers
+// (audit_v1_audit.go, audit_gate.go) and the chain producer go
+// through this accessor so the swap is transparent.
+func defaultAuditSink() auditSink {
+	auditSinkMu.RLock()
+	override := auditSinkOverride
+	auditSinkMu.RUnlock()
+	if override != nil {
+		return override
+	}
+	return defaultAuditBuffer()
+}
+
+// installAuditDiskSink swaps the active sink to a disk-backed buffer
+// and re-points the chain singleton at it, restoring the chain's
+// prevHash from the disk-backed head per ADR 0006 D3 (chain
+// continuity across restarts). Production callers invoke this once
+// at startup after OpenAuditDiskBuffer succeeds; tests invoke it
+// directly with a freshly-opened buffer.
+//
+// uninstallAuditDiskSink reverts to the in-memory ring; tests use
+// this in t.Cleanup to avoid cross-test bleed.
+func installAuditDiskSink(b *AuditDiskBuffer) {
+	auditSinkMu.Lock()
+	auditSinkOverride = b
+	auditSinkMu.Unlock()
+
+	// Re-anchor the chain singleton against the disk buffer's head.
+	chain := defaultAuditChain()
+	chain.replaceSink(b, b.HeadHashOnDisk())
+}
+
+// uninstallAuditDiskSink reverts to the in-memory ring. Used by
+// tests. Production never calls this — once disk-backed is on, it
+// stays on.
+func uninstallAuditDiskSink() {
+	auditSinkMu.Lock()
+	auditSinkOverride = nil
+	auditSinkMu.Unlock()
+
+	chain := defaultAuditChain()
+	chain.replaceSink(defaultAuditBuffer(), defs.ZeroPrevHash)
 }

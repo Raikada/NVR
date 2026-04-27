@@ -42,7 +42,7 @@ type AuditChain struct {
 
 	prevHash string
 
-	buffer *AuditBuffer
+	buffer auditSink
 }
 
 // NewAuditChain builds an AuditChain for an emitter. emitterID is the
@@ -57,6 +57,20 @@ func NewAuditChain(emitterKind defs.AuditEmitterKind, emitterID string, buffer *
 		prevHash:    defs.ZeroPrevHash,
 		buffer:      buffer,
 	}
+}
+
+// replaceSink swaps the chain's underlying sink and restores its
+// prevHash from the new sink's recovered head per ADR 0006 D3. Used
+// by installAuditDiskSink to anchor a recorder restart's chain head
+// to whatever the disk-backed buffer recovered. The new prevHash is
+// supplied by the caller (typically AuditDiskBuffer.HeadHashOnDisk);
+// passing defs.ZeroPrevHash resets the chain to a virgin origin and
+// is appropriate only on uninstall (tests).
+func (c *AuditChain) replaceSink(buffer auditSink, prevHash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buffer = buffer
+	c.prevHash = prevHash
 }
 
 // Append takes an input, stamps emitter/timestamps/id, computes the
