@@ -104,3 +104,15 @@ func TestV1RecorderCameraHooksPatchInvalidUUID(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, code)
 	require.Contains(t, string(body), "invalid camera id")
 }
+
+func TestV1RecorderCameraHooksPatchTenantMismatch(t *testing.T) {
+	cnf := tempConf(t, "paths:\n  cam_a:\n    source: publisher\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	cameraID := cameraIDFromPathName("cam_a")
+
+	patch := []byte(`{"tenant_id": "11111111-1111-1111-1111-111111111111"}`)
+	code, body := invokeCameraHooksHandler(api, http.MethodPatch, cameraID, patch)
+	require.Equal(t, http.StatusForbidden, code)
+	require.Contains(t, string(body), "tenant_id mismatch")
+}

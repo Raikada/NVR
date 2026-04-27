@@ -84,3 +84,15 @@ func TestV1RecorderSourceConfigPatchInvalidUUID(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, code)
 	require.Contains(t, string(body), "invalid camera id")
 }
+
+func TestV1RecorderCameraSourceConfigPatchTenantMismatch(t *testing.T) {
+	cnf := tempConf(t, "paths:\n  cam_a:\n    source: rpiCamera\n    rpiCameraCamID: 0\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	cameraID := cameraIDFromPathName("cam_a")
+
+	patch := []byte(`{"tenant_id": "11111111-1111-1111-1111-111111111111"}`)
+	code, body := invokeSourceConfigHandler(api, http.MethodPatch, cameraID, patch)
+	require.Equal(t, http.StatusForbidden, code)
+	require.Contains(t, string(body), "tenant_id mismatch")
+}
