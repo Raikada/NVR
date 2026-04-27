@@ -330,6 +330,13 @@ func CameraFromPath(
 func PathFromCamera(c Camera) (*conf.Path, error) {
 	p := &conf.Path{}
 
+	// Apply the recorder's standard per-path defaults first, then overlay
+	// Camera-derived fields. Without this, fields not represented on the
+	// canonical Camera (RecordPath template, RecordFormat, segment durations,
+	// publisher / on-demand timeouts) come through as zero values and fail
+	// conf.Path.validate.
+	p.SetDefaults()
+
 	// Path name (the conf-side primary key) round-trips from Camera.Name.
 	p.Name = c.Name
 

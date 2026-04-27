@@ -95,79 +95,75 @@ func (a *API) Initialize() error {
 	router.Use(a.middlewarePreflightRequests)
 	router.Use(a.middlewareAuth)
 
-	group := router.Group("/v3")
+	// The Raikada API roots at /v1 per ADR 0009 §D1. MediaMTX's /v3 lineage
+	// is not aliased; there is no deprecation window.
+	group := router.Group("/v1")
 
 	group.GET("/info", a.onInfo)
 
-	group.POST("/auth/jwks/refresh", a.onAuthJwksRefresh)
+	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
+	// ADR 0002 OQ10 keeps non-JWT credential mechanisms (mTLS,
+	// opaque-bearer-with-introspection, short-lived service tokens, hybrid)
+	// alive as candidates; the endpoint signals "refresh your cached
+	// issuer material now," whatever shape that material takes.
+	group.POST("/auth/refresh-issuer-material", a.onV1AuthRefreshIssuerMaterial)
 
-	group.GET("/config/global/get", a.onConfigGlobalGet)
-	group.PATCH("/config/global/patch", a.onConfigGlobalPatch)
+	// Cameras (ADR 0009 §D5 Cameras).
+	group.GET("/cameras", a.onV1CamerasList)
+	group.GET("/cameras/:id", a.onV1CamerasGet)
+	group.POST("/cameras", a.onV1CamerasPost)
+	group.PATCH("/cameras/:id", a.onV1CamerasPatch)
+	group.PUT("/cameras/:id", a.onV1CamerasPut)
+	group.DELETE("/cameras/:id", a.onV1CamerasDelete)
 
-	group.GET("/config/pathdefaults/get", a.onConfigPathDefaultsGet)
-	group.PATCH("/config/pathdefaults/patch", a.onConfigPathDefaultsPatch)
+	// Recording policies (ADR 0009 §D5 Recording policies).
+	group.GET("/recording-policies", a.onV1RecordingPoliciesList)
+	group.GET("/recording-policies/:id", a.onV1RecordingPoliciesGet)
+	group.POST("/recording-policies", a.onV1RecordingPoliciesPost)
+	group.PATCH("/recording-policies/:id", a.onV1RecordingPoliciesPatch)
+	group.DELETE("/recording-policies/:id", a.onV1RecordingPoliciesDelete)
 
-	group.GET("/config/paths/list", a.onConfigPathsList)
-	group.GET("/config/paths/get/*name", a.onConfigPathsGet)
-	group.POST("/config/paths/add/*name", a.onConfigPathsAdd)
-	group.PATCH("/config/paths/patch/*name", a.onConfigPathsPatch)
-	group.POST("/config/paths/replace/*name", a.onConfigPathsReplace)
-	group.DELETE("/config/paths/delete/*name", a.onConfigPathsDelete)
+	// Streams (ADR 0009 §D5 Streams) — unified runtime-session surface
+	// folding 25 protocol-specific endpoints into 3.
+	group.GET("/streams", a.onV1StreamsList)
+	group.GET("/streams/:id", a.onV1StreamsGet)
+	group.DELETE("/streams/:id", a.onV1StreamsDelete)
 
-	group.GET("/paths/list", a.onPathsList)
-	group.GET("/paths/get/*name", a.onPathsGet)
+	// Recordings (ADR 0009 §D5 Recordings).
+	group.GET("/recordings", a.onV1RecordingsList)
+	group.GET("/recordings/:id", a.onV1RecordingsGet)
+	group.GET("/recordings/:id/playback", a.onV1RecordingsPlayback)
+
+	// Recording segments (ADR 0009 §D5 Recording segments).
+	group.GET("/recording-segments", a.onV1RecordingSegmentsList)
+	group.GET("/recording-segments/:id", a.onV1RecordingSegmentsGet)
+	group.DELETE("/recording-segments/:id", a.onV1RecordingSegmentsDelete)
+
+	// Events (ADR 0009 §D5 Events).
+	group.GET("/events", a.onV1EventsList)
+	group.GET("/events/:id", a.onV1EventsGet)
+
+	// Health (ADR 0009 §D5 Health).
+	group.GET("/health", a.onV1HealthGet)
+
+	// Storage volumes (ADR 0009 §D5 Storage volumes).
+	group.GET("/storage-volumes", a.onV1StorageVolumesList)
+	group.GET("/storage-volumes/:id", a.onV1StorageVolumesGet)
+
+	// Recorder-localized escape hatch (ADR 0009 §D6).
+	group.GET("/recorder/config", a.onV1RecorderConfigGet)
+	group.PATCH("/recorder/config", a.onV1RecorderConfigPatch)
+	group.GET("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsGet)
+	group.PATCH("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsPatch)
+	group.GET("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigGet)
+	group.PATCH("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigPatch)
+	group.GET("/recorder/cameras/:id/hooks", a.onV1RecorderCameraHooksGet)
+	group.PATCH("/recorder/cameras/:id/hooks", a.onV1RecorderCameraHooksPatch)
 
 	if !interfaceIsEmpty(a.HLSServer) {
-		group.GET("/hlsmuxers/list", a.onHLSMuxersList)
-		group.GET("/hlsmuxers/get/*name", a.onHLSMuxersGet)
-		group.GET("/hlssessions/list", a.onHLSSessionsList)
-		group.GET("/hlssessions/get/:id", a.onHLSSessionsGet)
-		group.POST("/hlssessions/kick/:id", a.onHLSSessionsKick)
+		group.GET("/recorder/hls-muxers", a.onV1RecorderHLSMuxersList)
+		group.GET("/recorder/hls-muxers/:id", a.onV1RecorderHLSMuxersGet)
 	}
-
-	if !interfaceIsEmpty(a.RTSPServer) {
-		group.GET("/rtspconns/list", a.onRTSPConnsList)
-		group.GET("/rtspconns/get/:id", a.onRTSPConnsGet)
-		group.GET("/rtspsessions/list", a.onRTSPSessionsList)
-		group.GET("/rtspsessions/get/:id", a.onRTSPSessionsGet)
-		group.POST("/rtspsessions/kick/:id", a.onRTSPSessionsKick)
-	}
-
-	if !interfaceIsEmpty(a.RTSPSServer) {
-		group.GET("/rtspsconns/list", a.onRTSPSConnsList)
-		group.GET("/rtspsconns/get/:id", a.onRTSPSConnsGet)
-		group.GET("/rtspssessions/list", a.onRTSPSSessionsList)
-		group.GET("/rtspssessions/get/:id", a.onRTSPSSessionsGet)
-		group.POST("/rtspssessions/kick/:id", a.onRTSPSSessionsKick)
-	}
-
-	if !interfaceIsEmpty(a.RTMPServer) {
-		group.GET("/rtmpconns/list", a.onRTMPConnsList)
-		group.GET("/rtmpconns/get/:id", a.onRTMPConnsGet)
-		group.POST("/rtmpconns/kick/:id", a.onRTMPConnsKick)
-	}
-
-	if !interfaceIsEmpty(a.RTMPSServer) {
-		group.GET("/rtmpsconns/list", a.onRTMPSConnsList)
-		group.GET("/rtmpsconns/get/:id", a.onRTMPSConnsGet)
-		group.POST("/rtmpsconns/kick/:id", a.onRTMPSConnsKick)
-	}
-
-	if !interfaceIsEmpty(a.WebRTCServer) {
-		group.GET("/webrtcsessions/list", a.onWebRTCSessionsList)
-		group.GET("/webrtcsessions/get/:id", a.onWebRTCSessionsGet)
-		group.POST("/webrtcsessions/kick/:id", a.onWebRTCSessionsKick)
-	}
-
-	if !interfaceIsEmpty(a.SRTServer) {
-		group.GET("/srtconns/list", a.onSRTConnsList)
-		group.GET("/srtconns/get/:id", a.onSRTConnsGet)
-		group.POST("/srtconns/kick/:id", a.onSRTConnsKick)
-	}
-
-	group.GET("/recordings/list", a.onRecordingsList)
-	group.GET("/recordings/get/*name", a.onRecordingsGet)
-	group.DELETE("/recordings/deletesegment", a.onRecordingDeleteSegment)
 
 	a.httpServer = &httpp.Server{
 		Address:           a.Address,
@@ -206,6 +202,9 @@ func (a *API) Close() {
 
 // Log implements logger.Writer.
 func (a *API) Log(level logger.Level, format string, args ...any) {
+	if a.Parent == nil {
+		return
+	}
 	a.Parent.Log(level, "[API] "+format, args...)
 }
 
@@ -275,7 +274,11 @@ func (a *API) onInfo(ctx *gin.Context) {
 	})
 }
 
-func (a *API) onAuthJwksRefresh(ctx *gin.Context) {
+// onV1AuthRefreshIssuerMaterial handles POST /v1/auth/refresh-issuer-material.
+// Renamed from /v3/auth/jwks/refresh per ADR 0009 §D7 to be mechanism-neutral
+// — ADR 0002 OQ10 has not yet selected a credential mechanism, so the
+// endpoint name does not commit to JWT/JWKS specifically.
+func (a *API) onV1AuthRefreshIssuerMaterial(ctx *gin.Context) {
 	a.AuthManager.RefreshJWTJWKS()
 	a.writeOK(ctx)
 }

@@ -154,7 +154,7 @@ func TestInfo(t *testing.T) {
 	hc := &http.Client{Transport: tr}
 
 	var out map[string]any
-	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v3/info", nil, &out)
+	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/info", nil, &out)
 	require.Equal(t, map[string]any{
 		"tenantId": "00000000-0000-0000-0000-000000000000",
 		"started":  time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
@@ -187,7 +187,7 @@ func TestAuthJWKSRefresh(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	u, err := url.Parse("http://localhost:9997/v3/auth/jwks/refresh")
+	u, err := url.Parse("http://localhost:9997/v1/auth/refresh-issuer-material")
 	require.NoError(t, err)
 
 	httpRequest(t, hc, http.MethodPost, u.String(), nil, nil)
@@ -231,7 +231,7 @@ func TestAuthError(t *testing.T) {
 	defer tr.CloseIdleConnections()
 	hc := &http.Client{Transport: tr}
 
-	res, err := hc.Get("http://localhost:9997/v3/config/global/get")
+	res, err := hc.Get("http://localhost:9997/v1/recorder/config")
 	require.NoError(t, err)
 	defer res.Body.Close()
 
@@ -239,7 +239,7 @@ func TestAuthError(t *testing.T) {
 	require.Equal(t, `Basic realm="mediamtx"`, res.Header.Get("WWW-Authenticate"))
 	checkError(t, res.Body, "authentication error")
 
-	res, err = hc.Get("http://myuser:mypass@localhost:9997/v3/config/global/get")
+	res, err = hc.Get("http://myuser:mypass@localhost:9997/v1/recorder/config")
 	require.NoError(t, err)
 	defer res.Body.Close()
 

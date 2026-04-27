@@ -1,0 +1,90 @@
+package api //nolint:revive
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+
+	"github.com/bluenviron/mediamtx/internal/servers/hls"
+	"github.com/gin-gonic/gin"
+)
+
+// onV1RecorderHLSMuxersList serves /v1/recorder/hls-muxers — the
+// per-camera HLS muxer state. Recorder-internal observability; not
+// platform-canonical because muxer state is server-implementation-
+// specific (would have to be distorted to fit a generic Stream-or-
+// segment view) and the MS / Cloud tier doesn't need to project it.
+//
+// Rationale (D6.3): HLS muxer state describes how the recorder's HLS
+// server has chosen to slice and serve a single camera's output. It
+// changes whenever the muxer rebuilds (consumer (re)connect, codec
+// switch, segment rotation) and is meaningful only to operators
+// debugging the local HLS server. There is no canonical entity it
+// belongs to: Stream models a session, Recording models a stored span,
+// neither captures the muxer's transient internal state. Promoting it
+// to canonical would force the MS to model HLS-server internals.
+func (a *API) onV1RecorderHLSMuxersList(ctx *gin.Context) {
+	data, err := a.HLSServer.APIMuxersList()
+	if err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
+	data.ItemCount = len(data.Items)
+	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	if err != nil {
+		a.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+	data.PageCount = pageCount
+
+	tenantID := a.tenantID()
+	for i := range data.Items {
+		data.Items[i].TenantID = tenantID
+	}
+
+	ctx.JSON(http.StatusOK, data)
+}
+
+// onV1RecorderHLSMuxersGet serves /v1/recorder/hls-muxers/{id}. The
+// {id} segment is a canonical Camera UUID (per ADR 0009 §D5: the
+// canonical surface uses UUIDs throughout, including escape-hatch
+// endpoints that key on a camera). The legacy /v3/hlsmuxers/get/*name
+// keyed off the MediaMTX path-name string; this handler resolves the
+// UUID back to a path-name via cameraIDFromPathName so the underlying
+// hls.Server.APIMuxersGet (which still indexes by path-name internally)
+// keeps working.
+//
+// Rationale (D6.3): same as the list handler — HLS muxer state is
+// recorder-internal observability with no canonical entity.
+func (a *API) onV1RecorderHLSMuxersGet(ctx *gin.Context) {
+	cameraID, err := validateCameraID(ctx.Param("id"))
+	if err != nil {
+		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
+		return
+	}
+
+	a.mutex.RLock()
+	c := a.Conf
+	a.mutex.RUnlock()
+
+	pathName, ok := pathNameFromCameraID(c.Paths, cameraID)
+	if !ok {
+		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
+		return
+	}
+
+	data, err := a.HLSServer.APIMuxersGet(pathName)
+	if err != nil {
+		if errors.Is(err, hls.ErrMuxerNotFound) {
+			a.writeError(ctx, http.StatusNotFound, err)
+		} else {
+			a.writeError(ctx, http.StatusInternalServerError, err)
+		}
+		return
+	}
+
+	data.TenantID = a.tenantID()
+
+	ctx.JSON(http.StatusOK, data)
+}

@@ -182,6 +182,20 @@ type Path struct {
 	Name     string         `json:"name"`     // filled by Validate()
 	TenantID string         `json:"tenantId"` // filled by API handlers from the recorder's bootstrap tenant_id
 
+	// ID is the canonical Camera UUID for this path. Stamped in-memory at
+	// first read by the /v1/cameras handler (deterministic UUIDv5 derived
+	// from Name during the pre-MS phase per ADR 0009 §D4). Not serialized
+	// to mediamtx.yml — it's a runtime mapping, not on-disk config.
+	ID string `json:"-" yaml:"-"`
+
+	// RecordingPolicyID references a canonical RecordingPolicy (per ADR
+	// 0009 §D5 Recording-policies). The on-disk recording fields
+	// (Record, RecordPath, etc.) remain authoritative; this field is the
+	// in-memory linkage produced by SynthesizePoliciesFromPaths and used
+	// by the /v1/recording-policies handlers. Not serialized to
+	// mediamtx.yml.
+	RecordingPolicyID string `json:"-" yaml:"-"`
+
 	// General
 	Source                     string   `json:"source"`
 	SourceFingerprint          string   `json:"sourceFingerprint"`
@@ -314,6 +328,12 @@ type Path struct {
 	RunOnRecordSegmentCreate   string   `json:"runOnRecordSegmentCreate"`
 	RunOnRecordSegmentComplete string   `json:"runOnRecordSegmentComplete"`
 }
+
+// SetDefaults populates pconf with the recorder's standard per-path defaults.
+// Exported in Phase 2 of ADR 0009 so the /v1/cameras POST handler can apply
+// the same defaults the YAML load path applies before validating a path
+// constructed from a canonical Camera.
+func (pconf *Path) SetDefaults() { pconf.setDefaults() }
 
 func (pconf *Path) setDefaults() {
 	// General

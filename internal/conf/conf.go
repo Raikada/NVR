@@ -411,6 +411,17 @@ type Conf struct {
 	// Paths
 	OptionalPaths map[string]*OptionalPath `json:"paths"`
 	Paths         map[string]*Path         `json:"-"` // filled by Validate()
+
+	// RecordingPolicies is the in-memory canonical RecordingPolicy cache
+	// per ADR 0009 §D5 Recording-policies. Keyed by policy UUID. Values
+	// are *defs.RecordingPolicy; declared as `any` here to avoid an
+	// import cycle (defs imports conf). Not serialized to mediamtx.yml —
+	// the map is in-memory only and goes away on recorder restart, at
+	// which point synthesis re-runs from the existing per-camera
+	// recording fields. Cross-restart persistence can come in a
+	// follow-up; the pre-MS phase has no stable cross-restart IDs anyway
+	// per ADR 0009 §D4.
+	RecordingPolicies map[string]any `json:"-" yaml:"-"`
 }
 
 func (conf *Conf) setDefaults() {
