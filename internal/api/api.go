@@ -120,6 +120,8 @@ func (a *API) Initialize() error {
 	group.PATCH("/cameras/:id", a.onV1CamerasPatch)
 	group.PUT("/cameras/:id", a.onV1CamerasPut)
 	group.DELETE("/cameras/:id", a.onV1CamerasDelete)
+	// Pre-flight reachability probe for the manual-add UI.
+	group.POST("/cameras/probe", a.onV1CamerasProbe)
 
 	// Recording policies (ADR 0009 §D5 Recording policies).
 	group.GET("/recording-policies", a.onV1RecordingPoliciesList)
@@ -179,6 +181,12 @@ func (a *API) Initialize() error {
 	// config-restore is intentionally absent (see api_v1_recorder_system.go).
 	group.POST("/recorder/reboot", a.onV1RecorderRebootPost)
 	group.GET("/recorder/config-backup", a.onV1RecorderConfigBackup)
+	group.POST("/recorder/config-restore", a.onV1RecorderConfigRestore)
+	group.GET("/recorder/network-info", a.onV1RecorderNetworkInfo)
+	// Diagnostics suite (cross-platform; no shell-outs).
+	group.POST("/diagnostics/ping", a.onV1DiagnosticsPing)
+	group.POST("/diagnostics/ntp", a.onV1DiagnosticsNTP)
+	group.POST("/diagnostics/rtsp-probe", a.onV1DiagnosticsRTSPProbe)
 	group.GET("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsGet)
 	group.PATCH("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsPatch)
 	group.GET("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigGet)

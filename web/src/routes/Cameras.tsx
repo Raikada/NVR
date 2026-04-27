@@ -27,9 +27,9 @@ import {
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
-import { fetchCameras, deleteCamera, createCamera } from '../lib/api';
-import type { Camera as ApiCamera, CameraSourceType } from '../lib/api';
-import { useFetch } from '../lib/hooks';
+import { fetchCameras, deleteCamera, createCamera, fetchStreams, probeCameraSource } from '../lib/api';
+import type { Camera as ApiCamera, CameraSourceType, Stream } from '../lib/api';
+import { useFetch, usePoll } from '../lib/hooks';
 import type { AppState, ToastInput, UICamera } from '../lib/types';
 
 interface CamerasProps {
@@ -78,25 +78,27 @@ const VENDOR_DEFAULTS: Record<string, VendorDefaults> = {
   Generic: { user: 'admin', port: '554', path: '/live' },
 };
 
-// Translate canonical Camera (from /v1/cameras) into the UICamera
-// shape the list/drawer components expect. Runtime online → status;
-// fields the SPA cares about beyond canonical (resolution, fps,
-// codec) are derived stubs until /v1/streams wiring lands per the
-// stub list in docs/web-ui.md.
-function toUICamera(c: ApiCamera): UICamera {
+// Translate canonical Camera (from /v1/cameras) plus its active
+// Stream (from /v1/streams) into the UICamera shape the list and
+// drawer consume. Cameras without an active stream get '—' for
+// resolution / fps / codec.
+function toUICamera(c: ApiCamera, streamsByCamera: Record<string, Stream>): UICamera {
   const status: UICamera['status'] = c.runtime
     ? c.runtime.online
       ? 'online'
       : 'offline'
     : 'offline';
+  // Pick the first video track's metadata when a stream exists.
+  const stream = streamsByCamera[c.id];
+  const videoTrack = stream?.tracks?.find((t) => t.kind === 'video');
   return {
     id: c.id,
     name: c.name,
     ip: c.source_url,
     status,
-    resolution: '—', // STUB until /v1/streams wires up
-    fps: 0,
-    codec: '—',
+    resolution: videoTrack?.resolution ?? '—',
+    fps: videoTrack?.fps ?? 0,
+    codec: videoTrack?.codec ?? '—',
     vendor: undefined,
     user: c.credentials_ref ?? undefined,
   };
@@ -106,21 +108,29 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
   const [mode, setMode] = useState<Mode>('list');
   const [configCam, setConfigCam] = useState<UICamera | null>(null);
 
-  // Real /v1/cameras list. Refetches on add/delete via the helper.
+  // Real /v1/cameras list + /v1/streams. Streams polled every 5s
+  // so the resolution / fps / codec columns stay live as cameras
+  // come and go.
   const list = useFetch(() => fetchCameras(0, 100), []);
+  const streams = usePoll(fetchStreams, 5000, []);
+
+  // Index streams by camera_id for O(1) lookup in toUICamera.
+  const streamsByCamera: Record<string, Stream> = {};
+  for (const s of streams.data?.items ?? []) {
+    if (s.camera_id) streamsByCamera[s.camera_id] = s;
+  }
 
   // Mirror the canonical list into AppState.cameras so other routes
-  // (Overview's mini grid, the wizard) see the same data. STUB:
-  // the design's UICamera carries fields we don't have on canonical
-  // (resolution/fps/codec); those stay blank until /v1/streams wires.
+  // (Overview's mini grid, the wizard) see the same data.
   useEffect(() => {
     if (list.status === 'ready') {
       setState((s) => ({
         ...s,
-        cameras: list.data.items.map(toUICamera),
+        cameras: list.data.items.map((c) => toUICamera(c, streamsByCamera)),
       }));
     }
-  }, [list.status, list.status === 'ready' ? list.data : null, setState]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.status, list.status === 'ready' ? list.data : null, streams.data, setState]);
 
   async function bulkAdd(cams: UICamera[]) {
     // Discover flow surfaces an array of UICameras (mock-shape from
@@ -217,7 +227,10 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
   // Cameras the routes/components see. Prefer the live list
   // (canonical) once it arrives; fall back to the mock seed during
   // initial render so the UI doesn't flash an empty grid.
-  const cameras = list.status === 'ready' ? list.data.items.map(toUICamera) : state.cameras;
+  const cameras =
+    list.status === 'ready'
+      ? list.data.items.map((c) => toUICamera(c, streamsByCamera))
+      : state.cameras;
 
   return (
     <div
@@ -1107,31 +1120,46 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
     return Object.keys(e).length === 0;
   }
 
-  function probeDevice() {
+  async function probeDevice() {
     if (!validateStep0()) return;
     setProbe('busy');
-    window.setTimeout(() => {
-      const ok = Math.random() > 0.15;
-      if (ok) {
+    // Construct an RTSP URL from the form fields and call the
+    // recorder's /v1/cameras/probe endpoint, which performs a TCP
+    // dial against host:port and reports reachability + latency.
+    const sourceURL = `rtsp://${f.ip}:${f.port}${f.path}`;
+    try {
+      const res = await probeCameraSource({ source_url: sourceURL });
+      if (res.reachable) {
         setProbe({
           ok: true,
           vendor: f.vendor,
-          model: VENDOR_DEFAULTS[f.vendor]?.path ? `${f.vendor} device` : 'Generic ONVIF',
-          codec: 'H.264',
-          res: '1920×1080',
-          fps: 30,
-          onvif: f.vendor !== 'Generic',
+          model: `${res.host}:${res.port}`,
+          codec: `${res.latency_ms}ms`,
+          res: 'TCP OK',
+          fps: res.latency_ms,
         });
       } else {
-        setProbe({ ok: false, msg: 'Device unreachable — ICMP timeout' });
+        setProbe({ ok: false, msg: res.reason || 'unreachable' });
       }
-    }, 1400);
+    } catch (e) {
+      setProbe({ ok: false, msg: (e as Error).message });
+    }
   }
 
-  function testStream() {
+  // The "Test Stream" button on step 2 reuses the probe endpoint —
+  // we don't have a separate full stream test (would require
+  // opening a real recorder pipeline). Probe + auth-credentials-
+  // were-submitted is enough signal for the wizard to proceed.
+  async function testStream() {
     if (!validateStep1()) return;
     setStream('busy');
-    window.setTimeout(() => setStream(Math.random() > 0.2 ? 'ok' : 'fail'), 1700);
+    const sourceURL = `${f.protocol}://${f.ip}:${f.port}${f.path}`;
+    try {
+      const res = await probeCameraSource({ source_url: sourceURL });
+      setStream(res.reachable ? 'ok' : 'fail');
+    } catch {
+      setStream('fail');
+    }
   }
 
   function finalize() {

@@ -17,13 +17,23 @@ import {
 } from '../components/primitives';
 import type { StatusBadgeKind } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
-import { fetchHealth, fetchRecorderConfig } from '../lib/api';
+import { fetchHealth, fetchRecorderConfig, fetchNetworkInfo } from '../lib/api';
 import { useFetch, usePoll } from '../lib/hooks';
 import type { AppState } from '../lib/types';
 
 export function Network({ state }: { state: AppState }) {
   const config = useFetch(fetchRecorderConfig, []);
   const health = usePoll(fetchHealth, 5000, []);
+  // Fetch full network info (interfaces / DNS / bandwidth window
+  // stats) every 10 s. Cheaper than /v1/health and the data
+  // doesn't move minute-to-minute.
+  const netInfo = usePoll(fetchNetworkInfo, 10_000, []);
+  // Pick the primary interface to surface in the interface block:
+  // first non-loopback that is up. Falls back to whatever's first.
+  const primary =
+    netInfo.data?.interfaces.find((i) => i.is_up && !i.is_loopback) ??
+    netInfo.data?.interfaces[0];
+  const ipv4 = primary?.addresses?.find((a) => !a.includes(':'))?.split('/')[0];
 
   type PortStatus = true | false | 'warn';
   // Recorder's GlobalConf has bool toggles for the server families.
@@ -102,18 +112,23 @@ export function Network({ state }: { state: AppState }) {
           >
             INTERFACE · PRIMARY
           </SectionHeader>
-          {/* STUB: link / IPv4 / gateway / DNS / MAC / MTU / NTP /
-              VLAN are not surfaced by the recorder API. Would need
-              an OS-level probe extension. */}
+          {/* /v1/recorder/network-info — gopsutil-driven, cross-
+              platform. NTP source / VLAN / link speed aren't
+              currently surfaced; LINK shows up/down. Gateway
+              resolution depends on the OS routing table and isn't
+              uniformly available; falls back to bootstrap config. */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginTop: 6 }}>
-            <MiniBlock k="LINK" v="—" />
-            <MiniBlock k="IPV4" v={state.ip} />
-            <MiniBlock k="GATEWAY" v={state.gateway} />
-            <MiniBlock k="DNS" v="—" />
-            <MiniBlock k="MAC" v="—" />
-            <MiniBlock k="MTU" v="—" />
-            <MiniBlock k="NTP" v="—" />
-            <MiniBlock k="VLAN" v="—" />
+            <MiniBlock k="NAME" v={primary?.name ?? '—'} />
+            <MiniBlock k="LINK" v={primary ? (primary.is_up ? 'UP' : 'DOWN') : '—'} />
+            <MiniBlock k="IPV4" v={ipv4 ?? state.ip} />
+            <MiniBlock k="GATEWAY" v={state.gateway || '—'} />
+            <MiniBlock k="MAC" v={primary?.hardware_addr ?? '—'} />
+            <MiniBlock k="MTU" v={primary ? String(primary.mtu) : '—'} />
+            <MiniBlock
+              k="DNS"
+              v={netInfo.data?.dns?.length ? netInfo.data.dns.join(', ') : '—'}
+            />
+            <MiniBlock k="OS" v={netInfo.data?.platform ?? netInfo.data?.os ?? '—'} />
           </div>
         </Card>
         <Card>
@@ -158,29 +173,12 @@ export function Network({ state }: { state: AppState }) {
           >
             BANDWIDTH USAGE
           </SectionHeader>
-          {/* /v1/health.bandwidth — current sample only. PEAK and
-              AVG over a rolling window would need a recorder-side
-              ring buffer or Prometheus integration; not exposed
-              yet. STUB on those two cells. */}
+          {/* /v1/health.bandwidth (now) + /v1/recorder/network-info
+              .bandwidth (peak/avg over the rolling 24h window the
+              recorder samples on every /v1/health call). */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginTop: 8 }}>
             <Stat
-              label="INGRESS · NOW"
-              value={
-                health.data ? ((health.data.bandwidth.rx_bps * 8) / 1e6).toFixed(2) : '—'
-              }
-              unit="Mb/s"
-              tone="accent"
-            />
-            <Stat
-              label="EGRESS · NOW"
-              value={
-                health.data ? ((health.data.bandwidth.tx_bps * 8) / 1e6).toFixed(2) : '—'
-              }
-              unit="Mb/s"
-              tone="accent"
-            />
-            <Stat
-              label="TOTAL · NOW"
+              label="NOW"
               value={
                 health.data
                   ? (((health.data.bandwidth.rx_bps + health.data.bandwidth.tx_bps) * 8) / 1e6).toFixed(2)
@@ -188,7 +186,27 @@ export function Network({ state }: { state: AppState }) {
               }
               unit="Mb/s"
               tone="accent"
-              sub="PEAK / AVG NOT EXPOSED"
+              sub={
+                health.data
+                  ? `↓ ${((health.data.bandwidth.rx_bps * 8) / 1e6).toFixed(1)} ↑ ${((health.data.bandwidth.tx_bps * 8) / 1e6).toFixed(1)}`
+                  : ''
+              }
+            />
+            <Stat
+              label="PEAK · 24H"
+              value={
+                netInfo.data ? ((netInfo.data.bandwidth.peak_bps * 8) / 1e6).toFixed(2) : '—'
+              }
+              unit="Mb/s"
+              tone="accent"
+            />
+            <Stat
+              label="AVG · 24H"
+              value={
+                netInfo.data ? ((netInfo.data.bandwidth.avg_bps * 8) / 1e6).toFixed(2) : '—'
+              }
+              unit="Mb/s"
+              tone="accent"
             />
           </div>
         </Card>

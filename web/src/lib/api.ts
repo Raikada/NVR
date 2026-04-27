@@ -309,3 +309,109 @@ export const rebootRecorder = () => api.post<{ status: string }>('/recorder/rebo
 // it via a window.location-style redirect from the UI rather than
 // fetch + JSON, so the browser's native download flow takes over.
 export const configBackupURL = '/v1/recorder/config-backup';
+export const restoreConfig = (body: unknown) =>
+  api.post<{ status: string }>('/recorder/config-restore', body);
+
+/* ---------- /v1/recorder/network-info ---------- */
+
+export interface NetworkInterface {
+  name: string;
+  hardware_addr: string;
+  mtu: number;
+  is_up: boolean;
+  is_loopback: boolean;
+  addresses?: string[];
+}
+
+export interface BandwidthStats {
+  now_rx_bps: number;
+  now_tx_bps: number;
+  peak_bps: number;
+  avg_bps: number;
+  window_sec: number;
+}
+
+export interface NetworkInfo {
+  os: string;
+  platform: string;
+  hostname: string;
+  interfaces: NetworkInterface[];
+  dns?: string[];
+  bandwidth: BandwidthStats;
+}
+
+export const fetchNetworkInfo = () => api.get<NetworkInfo>('/recorder/network-info');
+
+/* ---------- /v1/cameras/probe ---------- */
+
+export interface CameraProbeRequest {
+  source_url: string;
+}
+export interface CameraProbeResponse {
+  reachable: boolean;
+  host: string;
+  port: number;
+  latency_ms: number;
+  reason?: string;
+}
+export const probeCameraSource = (body: CameraProbeRequest) =>
+  api.post<CameraProbeResponse>('/cameras/probe', body);
+
+/* ---------- /v1/diagnostics/* ---------- */
+
+export interface PingResponse {
+  target: string;
+  samples: { seq: number; ok: boolean; latency_ms: number; reason?: string }[];
+  avg_ms: number;
+  loss_pct: number;
+}
+export interface NtpResponse {
+  server: string;
+  ok: boolean;
+  offset_ms: number;
+  reason?: string;
+}
+export interface RTSPProbeResult {
+  path: string;
+  url: string;
+  reachable: boolean;
+  latency_ms: number;
+  reason?: string;
+}
+export interface RTSPProbeResponse {
+  results: RTSPProbeResult[];
+  ok_count: number;
+  total: number;
+}
+export const diagPing = (target: string, count = 4) =>
+  api.post<PingResponse>('/diagnostics/ping', { target, count });
+export const diagNTP = (server = 'pool.ntp.org') =>
+  api.post<NtpResponse>('/diagnostics/ntp', { server });
+export const diagRTSPProbe = () =>
+  api.post<RTSPProbeResponse>('/diagnostics/rtsp-probe');
+
+/* ---------- /v1/streams ---------- */
+//
+// We surface only the stream fields the Cameras list consumes for
+// the resolution/fps/codec columns. Real Stream entities are
+// richer (per ADR 0009 §D5 Streams) but we don't need it here.
+
+export interface StreamTrack {
+  kind: string;
+  codec: string;
+  resolution?: string; // e.g. "1920x1080" — present for video tracks
+  fps?: number;        // present for video tracks
+}
+
+export interface Stream {
+  id: string;
+  camera_id?: string;
+  protocol: string;
+  state: string;
+  tracks?: StreamTrack[];
+}
+
+export interface StreamList extends ListEnvelope<Stream> {}
+
+export const fetchStreams = () =>
+  api.get<StreamList>('/streams?items_per_page=200');

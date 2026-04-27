@@ -1,11 +1,16 @@
-// Diagnostics route — 5-test suite (ping / iperf3 / RTSP probe / NTP
-// drift / SMART) streamed into a terminal console. Faithful port of
-// the design's DiagnosticsRoute.
+// Diagnostics route — runs the recorder's /v1/diagnostics/* test
+// suite and streams results into a console panel.
+//
+// Tests are stdlib-based recorder-side handlers (TCP-handshake
+// ping, SNTP query, RTSP probe across configured cameras) — they
+// work the same on Linux, macOS, and Windows. Each test posts to
+// its endpoint and renders the results inline.
 
 import { useState } from 'react';
 import { Btn, Card, SectionHeader, StatusBadge } from '../components/primitives';
 import type { StatusBadgeKind } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
+import { diagPing, diagNTP, diagRTSPProbe } from '../lib/api';
 import type { AppState, ToastInput } from '../lib/types';
 
 interface DiagnosticsProps {
@@ -22,114 +27,113 @@ interface TestRow {
 }
 
 interface ConsoleLine {
-  k: 'cmd' | 'out' | 'space';
+  k: 'cmd' | 'out' | 'err' | 'space';
   v: string;
-}
-
-interface TestStep {
-  k: string;
-  cmd: string;
-  lines: string[];
-  val: string;
-  final?: TestStatus;
-}
-
-function sleep(ms: number) {
-  return new Promise<void>((r) => window.setTimeout(r, ms));
 }
 
 export function Diagnostics({ state, addToast }: DiagnosticsProps) {
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState<ConsoleLine[]>([]);
   const [tests, setTests] = useState<Record<string, TestRow>>({
-    ping: { label: 'Ping management server', status: 'idle', val: '' },
-    bandwidth: { label: 'Bandwidth to MS (iperf3)', status: 'idle', val: '' },
-    rtspProbe: { label: 'RTSP probe all cameras', status: 'idle', val: '' },
-    ntpDrift: { label: 'NTP drift check', status: 'idle', val: '' },
-    diskHealth: { label: 'Storage S.M.A.R.T.', status: 'idle', val: '' },
+    ping: { label: 'TCP ping (cloud / MS endpoint)', status: 'idle', val: '' },
+    ntp: { label: 'NTP drift (pool.ntp.org)', status: 'idle', val: '' },
+    rtspProbe: { label: 'RTSP probe (configured cameras)', status: 'idle', val: '' },
   });
+
+  function pushLine(l: ConsoleLine) {
+    setLines((prev) => [...prev, l]);
+  }
+  function setStatus(k: string, status: TestStatus, val: string) {
+    setTests((prev) => ({ ...prev, [k]: { ...prev[k], status, val } }));
+  }
 
   async function run() {
     setRunning(true);
     setLines([]);
-    const order: TestStep[] = [
-      {
-        k: 'ping',
-        cmd: 'ping -c 4 ' + (state.managementServer?.host || '10.0.1.21'),
-        lines: [
-          'PING 10.0.1.21 56(84) bytes of data.',
-          '64 bytes from 10.0.1.21: icmp_seq=1 ttl=64 time=12.3 ms',
-          '64 bytes from 10.0.1.21: icmp_seq=2 ttl=64 time=11.8 ms',
-          '64 bytes from 10.0.1.21: icmp_seq=3 ttl=64 time=12.1 ms',
-          '64 bytes from 10.0.1.21: icmp_seq=4 ttl=64 time=12.0 ms',
-          'rtt min/avg/max/mdev = 11.8/12.05/12.3/0.18 ms',
-        ],
-        val: 'avg 12 ms · 0% loss',
-      },
-      {
-        k: 'bandwidth',
-        cmd: 'iperf3 -c ms-prod-01.local -t 5',
-        lines: [
-          'Connecting to host ms-prod-01.local, port 5201',
-          '[  5]   0.00-1.00   sec   112 MBytes   938 Mbits/sec',
-          '[  5]   1.00-2.00   sec   113 MBytes   947 Mbits/sec',
-          '[  5]   2.00-3.00   sec   112 MBytes   941 Mbits/sec',
-          '[  5]   3.00-4.00   sec   113 MBytes   948 Mbits/sec',
-          '[  5]   4.00-5.00   sec   112 MBytes   940 Mbits/sec',
-          '[SUM]   0.00-5.00   sec   562 MBytes   943 Mbits/sec  sender',
-        ],
-        val: '943 Mb/s',
-      },
-      {
-        k: 'rtspProbe',
-        cmd: 'raikada rtsp-probe --all',
-        lines: [
-          'CAM-01  rtsp://10.0.1.41:554  OK  h264 1920x1080 @ 30fps',
-          'CAM-02  rtsp://10.0.1.42:554  OK  h264 1920x1080 @ 30fps',
-          'CAM-03  rtsp://10.0.1.43:554  OK  h264 1920x1080 @ 25fps',
-          'CAM-04  rtsp://10.0.1.44:554  UNREACHABLE (timeout)',
-          'CAM-05  rtsp://10.0.1.45:554  DEGRADED (packet loss 2.4%)',
-          'CAM-06  rtsp://10.0.1.46:554  OK  h264 2688x1520 @ 20fps',
-        ],
-        val: '5/6 OK',
-        final: 'warn',
-      },
-      {
-        k: 'ntpDrift',
-        cmd: 'chronyc tracking',
-        lines: [
-          'Reference ID    : A29FC801 (pool.ntp.org)',
-          'Stratum         : 2',
-          'System time     : 0.000003014 seconds slow',
-          'Last offset     : +0.000003127 seconds',
-          'Frequency       : 5.287 ppm slow',
-        ],
-        val: 'drift 3 ms',
-      },
-      {
-        k: 'diskHealth',
-        cmd: 'smartctl -H /dev/sda /dev/sdb',
-        lines: [
-          '/dev/sda: PASSED  (Seagate Ironwolf 2TB · 4,218 hours)',
-          '/dev/sdb: PASSED  (Seagate Ironwolf 2TB · 4,218 hours)',
-        ],
-        val: 'both PASSED',
-      },
-    ];
-    for (const step of order) {
-      setTests((t) => ({ ...t, [step.k]: { ...t[step.k], status: 'running' } }));
-      setLines((l) => [...l, { k: 'cmd', v: '$ ' + step.cmd }]);
-      await sleep(400);
-      for (const ln of step.lines) {
-        setLines((l) => [...l, { k: 'out', v: ln }]);
-        await sleep(180);
+    Object.keys(tests).forEach((k) => setStatus(k, 'idle', ''));
+
+    // 1. TCP ping. Target is the configured MS / Cloud endpoint
+    //    if present; falls back to a public host (1.1.1.1:443) so
+    //    standalone recorders still get a reachability signal.
+    const pingTarget = state.managementServer?.host || '1.1.1.1';
+    setStatus('ping', 'running', '');
+    pushLine({ k: 'cmd', v: `$ tcp-ping ${pingTarget}` });
+    try {
+      const res = await diagPing(pingTarget, 4);
+      for (const s of res.samples) {
+        if (s.ok) {
+          pushLine({ k: 'out', v: `  seq=${s.seq}  ${s.latency_ms} ms` });
+        } else {
+          pushLine({ k: 'err', v: `  seq=${s.seq}  FAIL — ${s.reason}` });
+        }
       }
-      setTests((t) => ({
-        ...t,
-        [step.k]: { ...t[step.k], status: step.final || 'ok', val: step.val },
-      }));
-      setLines((l) => [...l, { k: 'space', v: '' }]);
+      pushLine({
+        k: 'out',
+        v: `  avg ${res.avg_ms.toFixed(1)} ms · loss ${res.loss_pct.toFixed(0)}%`,
+      });
+      setStatus(
+        'ping',
+        res.loss_pct === 0 ? 'ok' : res.loss_pct < 50 ? 'warn' : 'error',
+        `avg ${res.avg_ms.toFixed(1)} ms · ${res.loss_pct.toFixed(0)}% loss`,
+      );
+    } catch (e) {
+      pushLine({ k: 'err', v: `  error: ${(e as Error).message}` });
+      setStatus('ping', 'error', (e as Error).message);
     }
+    pushLine({ k: 'space', v: '' });
+
+    // 2. NTP drift (SNTP query against pool.ntp.org).
+    setStatus('ntp', 'running', '');
+    pushLine({ k: 'cmd', v: `$ sntp-query pool.ntp.org` });
+    try {
+      const res = await diagNTP();
+      if (res.ok) {
+        pushLine({ k: 'out', v: `  offset ${res.offset_ms.toFixed(1)} ms` });
+        setStatus(
+          'ntp',
+          Math.abs(res.offset_ms) < 100 ? 'ok' : 'warn',
+          `offset ${res.offset_ms.toFixed(1)} ms`,
+        );
+      } else {
+        pushLine({ k: 'err', v: `  FAIL — ${res.reason}` });
+        setStatus('ntp', 'error', res.reason || 'failed');
+      }
+    } catch (e) {
+      pushLine({ k: 'err', v: `  error: ${(e as Error).message}` });
+      setStatus('ntp', 'error', (e as Error).message);
+    }
+    pushLine({ k: 'space', v: '' });
+
+    // 3. RTSP probe across every configured camera.
+    setStatus('rtspProbe', 'running', '');
+    pushLine({ k: 'cmd', v: `$ rtsp-probe --all` });
+    try {
+      const res = await diagRTSPProbe();
+      for (const r of res.results) {
+        if (r.reachable) {
+          pushLine({ k: 'out', v: `  ${r.path}  OK  ${r.latency_ms} ms — ${r.url}` });
+        } else {
+          pushLine({ k: 'err', v: `  ${r.path}  FAIL — ${r.reason ?? 'unreachable'} — ${r.url}` });
+        }
+      }
+      const status: TestStatus =
+        res.total === 0
+          ? 'idle'
+          : res.ok_count === res.total
+            ? 'ok'
+            : res.ok_count > 0
+              ? 'warn'
+              : 'error';
+      setStatus(
+        'rtspProbe',
+        status,
+        res.total === 0 ? 'no cameras configured' : `${res.ok_count}/${res.total} OK`,
+      );
+    } catch (e) {
+      pushLine({ k: 'err', v: `  error: ${(e as Error).message}` });
+      setStatus('rtspProbe', 'error', (e as Error).message);
+    }
+
     setRunning(false);
     addToast({
       kind: 'success',
@@ -164,7 +168,7 @@ export function Diagnostics({ state, addToast }: DiagnosticsProps) {
       <PageHeader
         breadcrumb="RECORDING SERVER / DIAGNOSTICS"
         title="Diagnostics"
-        sub="Run end-to-end checks of the recorder's network, storage, and camera links"
+        sub="Run end-to-end checks of the recorder's network and camera links"
         right={
           <Btn kind="primary" icon={running ? 'pause' : 'play'} disabled={running} onClick={run}>
             {running ? 'Running…' : 'Run All Tests'}
@@ -242,11 +246,7 @@ export function Diagnostics({ state, addToast }: DiagnosticsProps) {
                 letterSpacing: 1,
               }}
             >
-              raikada@
-              {state.paired
-                ? state.managementServer?.host?.split('.')[0] || 'rec01'
-                : 'rec01'}{' '}
-              ~
+              raikada@{state.hostname} ~
             </span>
           </div>
           <div
@@ -269,9 +269,11 @@ export function Diagnostics({ state, addToast }: DiagnosticsProps) {
                   color:
                     l.k === 'cmd'
                       ? '#F97316'
-                      : l.k === 'space'
-                        ? 'transparent'
-                        : 'var(--text-primary)',
+                      : l.k === 'err'
+                        ? '#EF4444'
+                        : l.k === 'space'
+                          ? 'transparent'
+                          : 'var(--text-primary)',
                   whiteSpace: 'pre',
                 }}
               >

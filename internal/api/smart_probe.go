@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/bluenviron/mediamtx/internal/defs"
@@ -164,13 +163,8 @@ type smartctlJSON struct {
 
 var smartProberSingleton = &smartProber{}
 
-// longestMountPrefix is the OS-specific mount-path resolver. Linux
-// reads /proc/mounts; other platforms return "" so the SMART probe
-// silently no-ops in dev / CI environments.
-//
-// (Implementation in smart_probe_linux.go; non-Linux build tag in
-// smart_probe_other.go.)
-
-// silence unused-import warning when this file's helpers aren't
-// used by a particular build.
-var _ = syscall.Stat_t{}
+// longestMountPrefix is the cross-platform mount-path resolver
+// (in host_sampler.go). gopsutil disk.Partitions handles the
+// per-OS branching, so smartctl receives the right device-path
+// shape on Linux (/dev/sda), macOS (/dev/disk0), and Windows
+// (\\.\PHYSICALDRIVE0).

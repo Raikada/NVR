@@ -11,21 +11,24 @@
 // as JSON (the same shape /v1/recorder/config emits). Lets an
 // operator capture a known-good state before making changes.
 //
-// config-restore is deliberately not implemented in this swing.
-// It's a destructive operation that needs careful thought around
-// atomic file replacement, validation rollback, and partial-state
-// recovery; queued as a follow-up. The UI's "Restore Config"
-// button stays a stub.
+// config-restore: admin-gated, audit-emitted. Accepts a JSON body
+// matching the same shape /v1/recorder/config GET emits, validates
+// it against the existing OptionalGlobal decoder + Conf.Validate
+// machinery, and applies it via the standard reload path. Failure
+// at any stage leaves the running config untouched.
 
 package api
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os/exec"
 	"runtime"
 	"time"
 
+	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/conf/jsonwrapper"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/gin-gonic/gin"
@@ -102,4 +105,55 @@ func (a *API) onV1RecorderConfigBackup(ctx *gin.Context) {
 		fmt.Sprintf(`attachment; filename="recorder-config-%s.json"`,
 			time.Now().UTC().Format("20060102-150405")))
 	ctx.JSON(http.StatusOK, c.Global())
+}
+
+func (a *API) onV1RecorderConfigRestore(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
+	body, err := readLimitedBody(ctx)
+	if err != nil {
+		a.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	// Decode through the same OptionalGlobal pathway PATCH uses,
+	// then patch a fresh Conf.Clone() with it. Validation runs the
+	// same Conf.Validate() machinery the bootstrap path uses; a
+	// validation failure leaves the running config untouched.
+	var optional conf.OptionalGlobal
+	if err := jsonwrapper.Decode(bytes.NewReader(body), &optional); err != nil {
+		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("decode config body: %w", err))
+		return
+	}
+
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+
+	newConf := a.Conf.Clone()
+	newConf.PatchGlobal(&optional)
+	if err := newConf.Validate(nil); err != nil {
+		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("validate restored config: %w", err))
+		return
+	}
+
+	a.Conf = newConf
+	a.emitAuditLocked(defs.AuditLogEntryInput{
+		ActorKind:    principalFromContext(ctx).PrincipalKind,
+		ActorID:      principalFromContext(ctx).Sub,
+		Action:       "recorder.config_restore",
+		Outcome:      defs.AuditOutcomeSuccess,
+		ResourceKind: "server",
+		Attributes:   map[string]string{"bytes": fmt.Sprintf("%d", len(body))},
+	})
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityWarning,
+		SubjectKind: defs.EventSubjectKindServer,
+		Message:     "recorder config restored from backup",
+		Attributes:  map[string]string{"surface": "/v1/recorder/config-restore"},
+	})
+
+	go a.Parent.APIConfigSet(newConf)
+	a.writeOK(ctx)
 }

@@ -27,8 +27,10 @@ import {
   patchIdentity,
   rebootRecorder,
   configBackupURL,
+  restoreConfig,
 } from '../lib/api';
 import { useFetch } from '../lib/hooks';
+import { useRef } from 'react';
 import type { AppState, ToastInput } from '../lib/types';
 
 interface SettingsProps {
@@ -102,6 +104,39 @@ export function Settings({ state, addToast }: SettingsProps) {
       body: 'Saving recorder config…',
       icon: 'download-cloud',
     });
+  }
+
+  // Restore: hidden <input type="file"> opens the OS file picker;
+  // the file's text contents POST to /v1/recorder/config-restore.
+  // Recorder validates against the same Conf.Validate machinery
+  // bootstrap uses; an invalid file is rejected and the running
+  // config stays untouched.
+  const restoreInputRef = useRef<HTMLInputElement>(null);
+  async function onRestoreFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset so picking the same file twice still triggers
+    if (!file) return;
+    if (!confirm(`Restore recorder config from ${file.name}? Running config will be replaced.`)) {
+      return;
+    }
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      await restoreConfig(parsed);
+      addToast({
+        kind: 'success',
+        title: 'RESTORED',
+        body: 'Config applied; recorder reloading',
+        icon: 'check-circle',
+      });
+    } catch (err) {
+      addToast({
+        kind: 'danger',
+        title: 'RESTORE FAILED',
+        body: (err as Error).message,
+        icon: 'x',
+      });
+    }
   }
 
   return (
@@ -266,24 +301,20 @@ export function Settings({ state, addToast }: SettingsProps) {
             <Btn kind="secondary" icon="download-cloud" onClick={downloadBackup}>
               Backup Config
             </Btn>
-            {/* STUB: config-restore is intentionally unimplemented
-                server-side until atomic-replacement + rollback are
-                designed. Button toasts a stub message rather than
-                pretending to work. */}
             <Btn
               kind="secondary"
               icon="upload-cloud"
-              onClick={() =>
-                addToast({
-                  kind: 'info',
-                  title: 'RESTORE NOT WIRED',
-                  body: 'Restore is a destructive op; queued for a careful follow-up',
-                  icon: 'info',
-                })
-              }
+              onClick={() => restoreInputRef.current?.click()}
             >
               Restore Config
             </Btn>
+            <input
+              ref={restoreInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={onRestoreFileChosen}
+              style={{ display: 'none' }}
+            />
             {/* STUB: factory reset needs an architectural decision
                 about what state survives. Button toasts. */}
             <Btn
