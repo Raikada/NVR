@@ -35,9 +35,14 @@ type APIHLSSession struct {
 }
 
 // APIHLSMuxerList is a list of HLS muxers.
+//
+// JSON tags are snake_case to match the canonical /v1 pagination
+// convention (item_count, page_count); see ADR 0009 OpenAPI spec
+// intro. The /v1/recorder/hls-muxers endpoint accepts the matching
+// items_per_page query parameter.
 type APIHLSMuxerList struct {
-	ItemCount int           `json:"itemCount"`
-	PageCount int           `json:"pageCount"`
+	ItemCount int           `json:"item_count"`
+	PageCount int           `json:"page_count"`
 	Items     []APIHLSMuxer `json:"items"`
 }
 

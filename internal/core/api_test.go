@@ -637,10 +637,13 @@ func TestAPIProtocolListGet(t *testing.T) {
 			cameraID := cameraIDFromPathName("mypath")
 
 			if ca == "hls muxers" {
-				// Escape-hatch list — keeps camelCase per ADR 0009 §D6 carve-out.
+				// Escape-hatch list — pagination keys are snake_case per the
+				// canonical /v1 convention; the per-muxer item shape retains
+				// camelCase for muxer-specific fields per the escape-hatch
+				// carve-out.
 				var muxers struct {
-					ItemCount int                `json:"itemCount"`
-					PageCount int                `json:"pageCount"`
+					ItemCount int                `json:"item_count"`
+					PageCount int                `json:"page_count"`
 					Items     []defs.APIHLSMuxer `json:"items"`
 				}
 				httpRequest(t, hc, http.MethodGet,

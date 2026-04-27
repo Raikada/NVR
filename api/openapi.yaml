@@ -1750,23 +1750,23 @@ components:
 
     HLSMuxerList:
       type: object
-      required: [itemCount, pageCount, items]
+      required: [item_count, page_count, items]
       properties:
-        itemCount:
+        item_count:
           type: integer
-        pageCount:
+        page_count:
           type: integer
         items:
           type: array
           items:
             $ref: '#/components/schemas/HLSMuxer'
       description: |
-        HLSMuxer list envelope. NOTE: this list endpoint inherits the
-        upstream MediaMTX camelCase pagination keys (`itemCount`,
-        `pageCount`) rather than the canonical snake_case used
-        elsewhere on /v1; the query parameter is similarly
-        `itemsPerPage` not `items_per_page`. Tracked as a Phase 3
-        follow-up alongside `codec_props`.
+        HLSMuxer list envelope. Pagination keys are snake_case per
+        the canonical /v1 convention (`item_count`, `page_count`);
+        the query parameter is `items_per_page`. The HLSMuxer item
+        shape itself retains MediaMTX-lineage camelCase for the
+        muxer-specific fields, per the escape-hatch rule on
+        recorder-internal observability shapes.
 
     RPiCameraSourceConfig:
       type: object
@@ -3138,17 +3138,17 @@ paths:
         Per-camera HLS muxer state. Recorder-internal observability;
         the canonical model has no place for muxer state. Only
         registered when the recorder is built with the HLS server
-        enabled. NOTE: this list endpoint inherits the upstream
-        MediaMTX camelCase pagination keys (`itemCount`,
-        `pageCount`, `itemsPerPage`); tracked as a Phase 3
-        follow-up.
+        enabled. Pagination keys (`item_count`, `page_count`,
+        `items_per_page`) are snake_case per the canonical /v1
+        convention; the per-muxer item shape retains camelCase for
+        muxer-specific fields per the escape-hatch carve-out.
       parameters:
         - name: page
           in: query
           required: false
           schema:
             type: integer
-        - name: itemsPerPage
+        - name: items_per_page
           in: query
           required: false
           schema:

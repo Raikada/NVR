@@ -32,7 +32,7 @@ func (a *API) onV1RecorderHLSMuxersList(ctx *gin.Context) {
 	}
 
 	data.ItemCount = len(data.Items)
-	pageCount, err := paginate(&data.Items, ctx.Query("itemsPerPage"), ctx.Query("page"))
+	pageCount, err := paginate(&data.Items, ctx.Query("items_per_page"), ctx.Query("page"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
