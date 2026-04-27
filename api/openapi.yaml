@@ -152,11 +152,15 @@ tags:
       per-segment delete. Scrub UX uses Recordings, not segments.
   - name: Events
     description: |
-      Canonical Event entries emitted by the recorder for camera
-      state changes, segment errors, storage failures, and auth
-      decisions. The buffer is in-memory; producer wiring is a
-      Phase-2-followup, so an unfilled buffer surfaces a top-level
-      `notice` field on the list response.
+      Canonical Event entries emitted by the recorder. The in-memory
+      ring buffer is fed by these wired producers: camera.online /
+      camera.offline (path lifecycle), auth.session_started /
+      auth.failed_login (request authentication), and config.applied /
+      policy.applied (camera, policy, and recorder-config writes).
+      Producers not yet wired: segment.write_failed and
+      storage.volume_full — both sit deeper in the recordstore /
+      cleaner subsystems. An empty list response carries a top-level
+      `notice` field describing this state.
   - name: Health
     description: |
       A single `HealthStatus` snapshot endpoint per ADR 0009 §D2.
@@ -2726,9 +2730,12 @@ paths:
         filter accepts either a bare severity or the `>=warning`
         form (semantics: events at or above this rank pass through).
 
-        Pre-2-followup the event-store buffer starts empty; in that
-        case the response carries a top-level `notice` field
-        flagging the gap.
+        Wired producer kinds: camera.online, camera.offline,
+        auth.session_started, auth.failed_login, config.applied,
+        policy.applied. Unwired (queued for follow-up):
+        segment.write_failed, storage.volume_full. An empty list
+        response surfaces a top-level `notice` field describing the
+        producer state.
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/ItemsPerPage'
