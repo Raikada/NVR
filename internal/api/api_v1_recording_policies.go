@@ -229,6 +229,22 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 	merged.UpdatedAt = time.Now().UTC()
 
 	a.Conf.RecordingPolicies[id.String()] = &merged
+
+	// Propagate the merged policy back to every camera that references it.
+	// Without this step, a PATCH that flips Enabled (or any other recording-
+	// related field on the policy) updates only the in-memory canonical
+	// state — the per-camera conf.Path.Record field stays stale and the
+	// recorder keeps recording (or fails to start). defs.ApplyPolicyToPath
+	// is the canonical translator: it stamps Record / RecordPath /
+	// RecordFormat / part / segment / delete-after fields from the policy
+	// onto each path.
+	for _, p := range a.Conf.Paths {
+		if p == nil || p.RecordingPolicyID != id.String() {
+			continue
+		}
+		defs.ApplyPolicyToPath(p, merged)
+	}
+
 	ctx.JSON(http.StatusOK, &merged)
 }
 

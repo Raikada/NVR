@@ -225,6 +225,59 @@ func TestV1RecordingPoliciesPatch(t *testing.T) {
 	require.Equal(t, "Renamed", p.Name)
 }
 
+// TestV1RecordingPoliciesPatchAppliesEnabledToConfPath: gap #12 closure.
+// PATCHing a policy to flip enabled must propagate to every conf.Path
+// whose RecordingPolicyID references this policy, so conf.Path.Record
+// reflects the new state. Without the propagation, the canonical surface
+// reports the new policy state but the recorder keeps recording (or
+// fails to start).
+func TestV1RecordingPoliciesPatchAppliesEnabledToConfPath(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n"+
+		"paths:\n"+
+		"  cam_a:\n"+
+		"    source: rtsp://192.0.2.1:554/s\n"+
+		"    record: yes\n"+
+		"  cam_b:\n"+
+		"    source: rtsp://192.0.2.2:554/s\n"+
+		"    record: yes\n")
+	api := &API{Conf: cnf}
+
+	// Trigger synthesis: cam_a + cam_b share recording config so they
+	// land on a single synthesized policy. Both paths get the same
+	// RecordingPolicyID stamped.
+	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
+	require.Equal(t, http.StatusOK, code)
+
+	require.True(t, api.Conf.Paths["cam_a"].Record, "pre-patch: cam_a recording")
+	require.True(t, api.Conf.Paths["cam_b"].Record, "pre-patch: cam_b recording")
+
+	policyID := api.Conf.Paths["cam_a"].RecordingPolicyID
+	require.NotEmpty(t, policyID)
+	require.Equal(t, policyID, api.Conf.Paths["cam_b"].RecordingPolicyID,
+		"both cameras share the same synthesized policy")
+
+	// Flip enabled to false.
+	patch, _ := json.Marshal(map[string]any{"enabled": false})
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "", policyID, patch)
+	require.Equal(t, http.StatusOK, code)
+
+	// Both cameras must now have Record=false; the canonical policy
+	// surface and the per-camera conf.Path stay in sync.
+	require.False(t, api.Conf.Paths["cam_a"].Record,
+		"post-patch: cam_a Record must reflect policy.Enabled=false")
+	require.False(t, api.Conf.Paths["cam_b"].Record,
+		"post-patch: cam_b Record must reflect policy.Enabled=false")
+
+	// Flip back to true.
+	patch, _ = json.Marshal(map[string]any{"enabled": true})
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "", policyID, patch)
+	require.Equal(t, http.StatusOK, code)
+	require.True(t, api.Conf.Paths["cam_a"].Record,
+		"re-flipped: cam_a Record back to true")
+	require.True(t, api.Conf.Paths["cam_b"].Record,
+		"re-flipped: cam_b Record back to true")
+}
+
 func TestV1RecordingPoliciesDelete(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf}
