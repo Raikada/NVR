@@ -14,6 +14,7 @@ import { SetupWizard } from './components/SetupWizard';
 import { PageHeader } from './components/PageHeader';
 import { Brackets, SectionHeader } from './components/primitives';
 import { Overview } from './routes/Overview';
+import { Cameras } from './routes/Cameras';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import type { AppState, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
@@ -89,6 +90,7 @@ export function App() {
           />
         );
       case 'cameras':
+        return <Cameras state={state} setState={setState} addToast={addToast} />;
       case 'pairing':
       case 'storage':
       case 'network':
