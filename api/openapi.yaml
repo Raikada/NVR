@@ -154,12 +154,14 @@ tags:
     description: |
       Canonical Event entries emitted by the recorder. The in-memory
       ring buffer is fed by these wired producers: camera.online /
-      camera.offline (path lifecycle), auth.session_started /
-      auth.failed_login (request authentication), and config.applied /
-      policy.applied (camera, policy, and recorder-config writes).
-      Producers not yet wired: segment.write_failed and
-      storage.volume_full — both sit deeper in the recordstore /
-      cleaner subsystems. An empty list response carries a top-level
+      camera.offline (path lifecycle), auth.failed_login (request
+      authentication), and config.applied / policy.applied (camera,
+      policy, and recorder-config writes). Producers not yet wired:
+      auth.session_started (the canonical kind implies per-session
+      semantics; the recorder has no AuthSession concept yet — see
+      ADR 0002 OQ10), segment.write_failed, and storage.volume_full
+      (the latter two sit deeper in the recordstore / cleaner
+      subsystems). An empty list response carries a top-level
       `notice` field describing this state.
   - name: Health
     description: |
@@ -2731,8 +2733,9 @@ paths:
         form (semantics: events at or above this rank pass through).
 
         Wired producer kinds: camera.online, camera.offline,
-        auth.session_started, auth.failed_login, config.applied,
-        policy.applied. Unwired (queued for follow-up):
+        auth.failed_login, config.applied, policy.applied. Unwired
+        (queued for follow-up): auth.session_started (per-session
+        semantics; needs ADR 0002 OQ10's session model first),
         segment.write_failed, storage.volume_full. An empty list
         response surfaces a top-level `notice` field describing the
         producer state.

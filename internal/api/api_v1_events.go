@@ -3,13 +3,13 @@
 // The recorder emits canonical Events at known trigger points and
 // surfaces them through this handler. Producers wired today:
 // camera.online / camera.offline (internal/core/path.go via the
-// pipeline-event helpers in event_publish.go), auth.session_started /
-// auth.failed_login (the api.go authentication middleware), and
-// config.applied / policy.applied (the /v1/cameras,
-// /v1/recording-policies, and /v1/recorder/config write handlers).
-// Producers NOT yet wired: segment.write_failed and storage.volume_full
-// — both sit deeper in the recordstore / cleaner subsystems and are
-// queued separately.
+// pipeline-event helpers in event_publish.go), auth.failed_login (the
+// api.go authentication middleware), and config.applied /
+// policy.applied (the /v1/cameras, /v1/recording-policies, and
+// /v1/recorder/config write handlers). Producers NOT yet wired:
+// auth.session_started (per-session semantics; needs ADR 0002 OQ10's
+// session model), segment.write_failed and storage.volume_full (both
+// sit deeper in the recordstore / cleaner subsystems).
 package api //nolint:revive
 
 import (

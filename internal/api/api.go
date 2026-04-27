@@ -279,21 +279,11 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		a.writeErrorNoLog(ctx, http.StatusUnauthorized, fmt.Errorf("authentication error"))
 		return
 	}
-
-	// Successful auth: publish auth.session_started. Severity info per
-	// domain-model.md (canonical kind example). The "session" subject
-	// kind matches the canonical Event vocabulary; the recorder doesn't
-	// yet carry a server-side session object (see ADR 0002 OQ10), so
-	// SubjectID is empty until that lands.
-	a.publishEvent(defs.EventInput{
-		Kind:        "auth.session_started",
-		Severity:    defs.EventSeverityInfo,
-		SubjectKind: defs.EventSubjectKindSession,
-		Message:     "API request authenticated",
-		Attributes: map[string]string{
-			"remote_addr": httpp.RemoteAddr(ctx),
-		},
-	})
+	// Note: no auth.session_started emit here. The canonical kind implies
+	// per-session emission, but the recorder has no AuthSession concept
+	// yet (ADR 0002 OQ10), so emitting on every authenticated request
+	// would produce per-request events under a per-session kind name —
+	// a semantic mismatch. Wired once a session model lands.
 }
 
 func (a *API) onInfo(ctx *gin.Context) {
