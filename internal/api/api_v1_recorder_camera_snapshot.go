@@ -69,13 +69,9 @@ func (a *API) onV1RecorderCameraSnapshot(ctx *gin.Context) {
 	a.mutex.RUnlock()
 
 	// UUID → path-name resolution: configured first, runtime fallback.
-	// Mirrors api_v1_recorder_hls_muxers.go's onV1RecorderHLSMuxersGet
-	// so that wildcard-only configs (e.g., `all_others`) still serve
-	// snapshots for runtime-active cameras.
-	pathName, ok := pathNameFromCameraID(c.Paths, cameraID)
-	if !ok {
-		pathName, ok = pathNameFromRuntimeHLSMuxers(a.HLSServer, cameraID)
-	}
+	// See resolveCameraPath; the runtime fallback ensures snapshots work
+	// for cameras served by wildcard-only configs (e.g., `all_others`).
+	pathName, ok := resolveCameraPath(c, a.HLSServer, cameraID)
 	if !ok {
 		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
 		return

@@ -4,6 +4,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
+	"github.com/bluenviron/mediamtx/internal/defs"
 )
 
 // cameraIDFromPathName generates a deterministic UUIDv5 (SHA-1 namespace)
@@ -54,6 +55,31 @@ func pathNameFromCameraID(paths map[string]*conf.Path, cameraID string) (string,
 		}
 	}
 	return "", false
+}
+
+// resolveCameraPath maps a canonical Camera UUID to a recorder path-name
+// using the configured-first / runtime-active-fallback pattern shared by
+// the recorder-localized escape-hatch handlers (/v1/recorder/hls-muxers/{id}
+// and /v1/recorder/cameras/{id}/snapshot live path).
+//
+// Configured paths are the happy path: a camera created via /v1/cameras
+// (or any MediaMTX-style path config) has a discrete conf.Path entry
+// whose name derives the requested cameraID. Wildcard config entries
+// (e.g., `all_others`) match many concrete on-disk paths and don't
+// appear in c.Paths — for those, the runtime HLS muxer table carries
+// the concrete path-name. We try configured first to avoid an
+// unnecessary HLS-server call when the discrete entry exists.
+//
+// nil c (or c.Paths nil) and nil hlsServer are tolerated — both legs
+// short-circuit to a miss without panicking. Returns "" / false when
+// neither lookup hits.
+func resolveCameraPath(c *conf.Conf, hlsServer defs.APIHLSServer, cameraID string) (string, bool) {
+	if c != nil {
+		if name, ok := pathNameFromCameraID(c.Paths, cameraID); ok {
+			return name, true
+		}
+	}
+	return pathNameFromRuntimeHLSMuxers(hlsServer, cameraID)
 }
 
 // validateCameraID parses a string param as a UUID. Returns the input
