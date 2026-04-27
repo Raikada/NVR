@@ -106,6 +106,51 @@ func TestV1RecorderConfigPatchTenantMismatch(t *testing.T) {
 	require.Contains(t, string(body), "tenant_id mismatch")
 }
 
+// TestV1RecorderConfigRecordingVolumesRoundTrip locks in the operator
+// flow for ADR 0009 §D5 priority overrides: PATCH a recordingVolumes
+// map onto /v1/recorder/config, then GET it back and confirm the
+// values round-trip through the persistence layer cleanly.
+func TestV1RecorderConfigRecordingVolumesRoundTrip(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{
+		Conf:   cnf,
+		Parent: &testParent{},
+	}
+
+	patch := []byte(`{"recordingVolumes": {"/srv/disk1": {"priority": 100}, "/srv/disk2": {"priority": 50}}}`)
+	code, _ := invokeRecorderConfigHandler(api, http.MethodPatch, patch)
+	require.Equal(t, http.StatusOK, code)
+
+	code, body := invokeRecorderConfigHandler(api, http.MethodGet, nil)
+	require.Equal(t, http.StatusOK, code)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(body, &out))
+
+	rv, ok := out["recordingVolumes"].(map[string]any)
+	require.True(t, ok, "recordingVolumes missing from GET body: %s", string(body))
+	d1, ok := rv["/srv/disk1"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(100), d1["priority"])
+	d2, ok := rv["/srv/disk2"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, float64(50), d2["priority"])
+}
+
+// TestV1RecorderConfigRecordingVolumesNegativeRejected confirms that
+// the conf.Validate() walk rejects negative priorities.
+func TestV1RecorderConfigRecordingVolumesNegativeRejected(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{
+		Conf:   cnf,
+		Parent: &testParent{},
+	}
+
+	patch := []byte(`{"recordingVolumes": {"/srv/disk1": {"priority": -3}}}`)
+	code, body := invokeRecorderConfigHandler(api, http.MethodPatch, patch)
+	require.Equal(t, http.StatusBadRequest, code)
+	require.Contains(t, string(body), "negative priority")
+}
+
 func TestV1RecorderConfigPatchHookCredentialWarning(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
 	warned := false

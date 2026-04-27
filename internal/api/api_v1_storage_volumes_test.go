@@ -193,6 +193,135 @@ func TestV1StorageVolumesGetNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// TestV1StorageVolumesPriorityFallback locks in the legacy behavior:
+// with no recordingVolumes overrides configured, /v1/storage-volumes
+// reports priorities equal to the deterministic mount-path-sort
+// index. ADR 0009 §D5 follow-up.
+func TestV1StorageVolumesPriorityFallback(t *testing.T) {
+	dir1, err := os.MkdirTemp("", "volprio-fb-1")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir1)
+	dir2, err := os.MkdirTemp("", "volprio-fb-2")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir2)
+
+	cnf := tempConf(t, "paths:\n"+
+		"  cam1:\n"+
+		"    recordPath: "+filepath.Join(dir1, "%path/%Y-%m-%d_%H-%M-%S-%f")+"\n"+
+		"  cam2:\n"+
+		"    recordPath: "+filepath.Join(dir2, "%path/%Y-%m-%d_%H-%M-%S-%f")+"\n")
+
+	a := &API{Conf: cnf}
+	srv := newV1StorageVolumesServer(t, a)
+
+	resp, err := http.Get(srv.URL + "/v1/storage-volumes")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var got storageVolumeListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 2)
+
+	// Items are sorted by mount path; priorities should be 0, 1.
+	require.Equal(t, 0, got.Items[0].Priority)
+	require.Equal(t, 1, got.Items[1].Priority)
+}
+
+// TestV1StorageVolumesPriorityOverride exercises the operator-set
+// override path: with recordingVolumes entries for both volumes,
+// /v1/storage-volumes reflects the configured priorities verbatim.
+func TestV1StorageVolumesPriorityOverride(t *testing.T) {
+	dir1, err := os.MkdirTemp("", "volprio-ov-1")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir1)
+	dir2, err := os.MkdirTemp("", "volprio-ov-2")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir2)
+
+	abs1, _ := filepath.Abs(dir1)
+	abs2, _ := filepath.Abs(dir2)
+
+	yml := "paths:\n" +
+		"  cam1:\n" +
+		"    recordPath: " + filepath.Join(dir1, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"  cam2:\n" +
+		"    recordPath: " + filepath.Join(dir2, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"recordingVolumes:\n" +
+		"  " + abs1 + ":\n" +
+		"    priority: 100\n" +
+		"  " + abs2 + ":\n" +
+		"    priority: 50\n"
+	cnf := tempConf(t, yml)
+
+	a := &API{Conf: cnf}
+	srv := newV1StorageVolumesServer(t, a)
+
+	resp, err := http.Get(srv.URL + "/v1/storage-volumes")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var got storageVolumeListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 2)
+
+	byMount := map[string]int{}
+	for _, v := range got.Items {
+		byMount[v.MountPath] = v.Priority
+	}
+	require.Equal(t, 100, byMount[abs1])
+	require.Equal(t, 50, byMount[abs2])
+}
+
+// TestV1StorageVolumesPriorityMixed verifies the per-volume
+// fallback: when only some volumes have explicit overrides, the
+// configured ones use their override and the others retain the
+// sort-index default.
+func TestV1StorageVolumesPriorityMixed(t *testing.T) {
+	dir1, err := os.MkdirTemp("", "volprio-mx-1")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir1)
+	dir2, err := os.MkdirTemp("", "volprio-mx-2")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir2)
+
+	abs1, _ := filepath.Abs(dir1)
+	abs2, _ := filepath.Abs(dir2)
+
+	yml := "paths:\n" +
+		"  cam1:\n" +
+		"    recordPath: " + filepath.Join(dir1, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"  cam2:\n" +
+		"    recordPath: " + filepath.Join(dir2, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"recordingVolumes:\n" +
+		"  " + abs2 + ":\n" +
+		"    priority: 7\n"
+	cnf := tempConf(t, yml)
+
+	a := &API{Conf: cnf}
+	srv := newV1StorageVolumesServer(t, a)
+
+	resp, err := http.Get(srv.URL + "/v1/storage-volumes")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var got storageVolumeListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 2)
+
+	byMount := map[string]int{}
+	for _, v := range got.Items {
+		byMount[v.MountPath] = v.Priority
+	}
+	// Items are deterministically sorted by mount path. abs1 is the
+	// volume without an override, so it gets its sort-index priority
+	// (which depends on lexicographic order of abs1 vs abs2). Compute
+	// the expected sort index here so the test stays robust against
+	// tempdir name variation.
+	expectedFallback := 0
+	if abs1 > abs2 {
+		expectedFallback = 1
+	}
+	require.Equal(t, expectedFallback, byMount[abs1])
+	require.Equal(t, 7, byMount[abs2])
+}
+
 func TestV1StorageVolumesGetBadID(t *testing.T) {
 	cnf := tempConf(t, "")
 	a := &API{Conf: cnf}
