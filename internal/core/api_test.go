@@ -83,8 +83,12 @@ func checkError(t *testing.T, msg string, body io.Reader) {
 // cameraIDFromPathName mirrors internal/api.cameraIDFromPathName: a
 // deterministic UUIDv5 (NameSpaceOID, path-name) so tests can address
 // cameras by canonical id without depending on internal API helpers.
-// Keep in sync with the helper in internal/api/api_v1_camera_id.go.
+// Empty input returns "" (matches the api helper's empty-input guard
+// from commit 112c9889). Keep in sync with internal/api/api_v1_camera_id.go.
 func cameraIDFromPathName(name string) string {
+	if name == "" {
+		return ""
+	}
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
