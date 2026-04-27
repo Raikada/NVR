@@ -124,48 +124,57 @@ labelled in source so future agents can find them with
 
 Recently retired (now wired to real `/v1/`):
 - Overview BANDWIDTH knob → `/v1/health.bandwidth` (rx_bps + tx_bps)
-- Network bandwidth row → same
+- Network bandwidth row NOW + PEAK/24H + AVG/24H →
+  `/v1/health.bandwidth` (now) + `/v1/recorder/network-info.bandwidth`
+  (24h rolling-window peak + avg)
+- Network interface block (NAME / LINK / IPV4 / MAC / MTU / DNS) →
+  `/v1/recorder/network-info` (gopsutil-driven, cross-platform)
 - Storage WRITE RATE stat + per-volume write-rate → `/v1/storage-volumes.write_bytes_per_second`
 - Storage `≈ N days at current rate` → derived from the above
 - Storage SMART hours / vendor / model / temperature →
-  `/v1/storage-volumes.smart` (best-effort smartctl shell-out)
+  `/v1/storage-volumes.smart` (best-effort smartctl shell-out,
+  cross-platform mount resolution)
 - Settings identity (hostname / timezone read-only, location editable) →
   `/v1/recorder/identity`
 - Settings firmware version display → `/v1/recorder/identity.firmware_version`
 - Settings Reboot button → `POST /v1/recorder/reboot`
 - Settings Backup Config button → `GET /v1/recorder/config-backup`
+- Settings Restore Config button → `POST /v1/recorder/config-restore`
+  (file picker → JSON body; recorder validates before applying)
 - Logs DEBUG severity filter → dropped (canonical events have no DEBUG tier)
 - Logs NETWORK source filter → dropped (no canonical subject kind models it)
+- Cameras list resolution / fps / codec columns → `/v1/streams` join
+  (active video track per camera_id)
+- Manual-add wizard "Probe Device" / "Test Stream" buttons →
+  `POST /v1/cameras/probe` (TCP-handshake reachability + latency)
+- Diagnostics route → `POST /v1/diagnostics/{ping,ntp,rtsp-probe}`
+  (stdlib-based, cross-platform; no shell-outs)
+- Cross-platform host metrics: cpu / mem / bandwidth samplers
+  rebuilt on gopsutil. Drops 11 per-OS build-tagged files;
+  Linux + macOS + Windows + BSD all work from one module.
 
 **Overview.**
-- `TEMP` mini-metric — no thermal sensor surface on `/v1/health`.
+- `TEMP` mini-metric — no thermal sensor surface. Cross-platform
+  thermal reading varies wildly by OS + hardware; deferred.
 - `STORAGE` stat tile — used/total still uses a mock 256 GB / 2 TB
-  pair. The values exist live on the Storage route (which uses
-  `/v1/storage-volumes`); plumbing the rolled-up totals into the
-  Overview tile is a small follow-up.
+  pair. The values exist live on the Storage route; plumbing the
+  rolled-up totals into the Overview tile is a small follow-up.
 - `EVENTS · 24H` stat — needs an event-count-by-window query the
   recorder doesn't surface yet.
 
 **Cameras.**
-- `resolution`, `fps`, `codec` columns — these come from the
-  active stream, not the canonical Camera. Wires up via
-  `/v1/streams`-aware row rendering.
 - ONVIF Discover panel — the WS-Discovery probe and identify
-  phases are entirely simulated. Real ONVIF discovery would need
-  a recorder-side subsystem that doesn't exist yet.
-- Manual-add wizard's "Probe Device" / "Test Stream" buttons —
-  the recorder validates the source URL on `POST /v1/cameras` but
-  has no separate pre-flight probe endpoint. Test buttons stay
-  simulated until that lands.
+  phases are entirely simulated. Real ONVIF discovery needs a
+  recorder-side subsystem (probably `internal/onvif/`) with
+  WS-Discovery + GetDeviceInformation handlers. Bounded but big.
 - Config drawer — the drawer's Recording / Motion / ONVIF Events /
   Advanced tabs collect state that has no 1:1 PATCH endpoint:
   - Recording mode, retention, pre/post-buffer → maps to
-    `RecordingPolicy`, which is its own resource. Drawer needs
-    to be split or the form needs a multi-resource save.
+    `RecordingPolicy`, a separate resource. Drawer split or
+    multi-resource save (small).
   - Motion zones, sensitivity → recorder doesn't model motion
     detection canonically yet.
-  - ONVIF events → recorder doesn't subscribe to ONVIF events
-    yet.
+  - ONVIF events → recorder doesn't subscribe to ONVIF events.
   - Advanced (NTP source, OSD, audio track) → recorder-internal,
     no canonical surface.
   Save button currently toasts "saved locally" and closes the
@@ -173,17 +182,19 @@ Recently retired (now wired to real `/v1/`):
 
 **Storage.**
 - Per-content-type breakdown (Continuous / Motion events / AI
-  detections) — recorder doesn't account by content type. Used-
-  vs-free is the live data we have.
+  detections) — recorder doesn't account by content type.
+  Used-vs-free is the live data we have. Real model extension
+  (`RecordingSegment.content_type`) is a recorder-side change.
 - "RETENTION" stat tile — surfaces via `RecordingPolicy.
-  RetentionDuration` once `/v1/recording-policies` wires up.
+  RetentionDuration` once a small UI fetch wires up.
 
 **Network.**
-- Interface block (LINK / DNS / MAC / MTU / NTP / VLAN) — needs
-  an OS-level network probe extension on the recorder.
-- Bandwidth stats `PEAK · 24H` / `AVG · 24H` — needs a recorder-
-  side rolling-window observer or Prometheus scrape integration.
-  `NOW` cells are wired to live bandwidth.
+- NTP / VLAN mini-blocks — neither is uniformly available across
+  OSes. NTP daemon configuration lives outside the recorder;
+  VLAN tagging is interface-specific and rarely exposed at the
+  Go-stdlib level.
+- Gateway field — falls back to bootstrap config. Cross-platform
+  routing-table query isn't standardized.
 - MS tunnel port row — depends on the pairing client landing.
 
 **Settings.**
@@ -192,9 +203,6 @@ Recently retired (now wired to real `/v1/`):
   signing, rollback semantics, update channel.
 - Auto-update / Telemetry toggles — stored locally only;
   recorder doesn't have the corresponding flags.
-- Restore Config — server-side intentionally not implemented in
-  this swing (destructive op; needs careful atomic-replacement
-  + rollback design). Button toasts a stub.
 - Factory Reset — no recorder endpoint; needs scope decision
   (what state survives?). Button toasts.
 
@@ -202,22 +210,16 @@ Recently retired (now wired to real `/v1/`):
 - LAN auto-discovery, pair-by-bearer-token, mTLS-cert badges,
   heartbeat / latency / tunnel mini-blocks — every field on
   this route depends on the Management Server tier existing. MS
-  is scaffold-only today (no code, no deployment). Whole route
-  stays mock until ADR 0008 (FRP broker) lands and the recorder
-  ↔ MS pairing client is built.
+  is scaffold-only today. Whole route stays mock until ADR 0008
+  (FRP broker) lands and the recorder ↔ MS pairing client is
+  built.
 
-**Diagnostics (whole route).**
-- `ping` / `iperf3` / `rtsp-probe` / `chronyc tracking` /
-  `smartctl` test runners — recorder has no diagnostic-runner
-  subsystem. Console output is canned. Adding a runner would
-  land as a recorder-side subsystem with its own ADR; not
-  blocked, but not started.
-
-**SetupWizard (overlay).**
-- Step 2 (Pair with MS) — same MS dependency as Pairing route.
-- Step 1 (Network preflight) — uses recorder bootstrap config
-  (state.ip, state.gateway) but the LINK / DNS / NTP / MTU /
-  UPnP rows are simulated checks.
+**SetupWizard step 2 (pair with MS).**
+- Same MS dependency as the Pairing route. The wizard's other
+  steps (Welcome / Network preflight / Add cameras / Finish)
+  are bounded — Network preflight could wire to
+  `/v1/recorder/network-info` + `/v1/diagnostics/ping` for real
+  checks, Add cameras to `/v1/cameras/probe` — small follow-ups.
 
 ## Mock data source
 
