@@ -69,23 +69,12 @@ func (a *API) onV1RecorderHLSMuxersGet(ctx *gin.Context) {
 	c := a.Conf
 	a.mutex.RUnlock()
 
-	// Resolve the canonical UUID to a path-name. Configured paths are the
-	// happy path: if the camera was created via /v1/cameras (or any
-	// MediaMTX-style path config) the cameraID derived from the path-name
-	// matches and pathNameFromCameraID hits.
-	//
-	// Wildcard config entries (e.g., `all_others`) and any path that
-	// became active without a discrete conf.Path entry are not in
-	// c.Paths. The HLS muxer table, however, is keyed by the runtime
-	// path-name — so a muxer is producing for cam_a even though c.Paths
-	// only carries `all_others`. Per the Phase 2 playback-URL convergence
-	// (api_v1_recordings.go's runtime-aware resolution), fall back to the
-	// runtime muxer list and match by deriving cameraID from each
-	// muxer's path-name.
-	pathName, ok := pathNameFromCameraID(c.Paths, cameraID)
-	if !ok {
-		pathName, ok = pathNameFromRuntimeHLSMuxers(a.HLSServer, cameraID)
-	}
+	// Resolve the canonical UUID to a path-name. See resolveCameraPath
+	// for the configured-first / runtime-fallback rationale; wildcard
+	// config entries (e.g., `all_others`) and any path that became active
+	// without a discrete conf.Path entry are picked up via the runtime
+	// muxer list.
+	pathName, ok := resolveCameraPath(c, a.HLSServer, cameraID)
 	if !ok {
 		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
 		return
