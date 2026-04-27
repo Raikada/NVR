@@ -265,6 +265,9 @@ func unmarshalSourceConfig(st defs.CameraSourceType, raw json.RawMessage) (defs.
 }
 
 func (a *API) onV1CamerasPost(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	cam, _, ok := a.decodeCameraBody(ctx)
 	if !ok {
 		return
@@ -336,12 +339,16 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 			"verb":      "create",
 		},
 	})
+	a.emitConfigAppliedLocked("camera", cam.ID, "create", map[string]string{"camera_id": cam.ID})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
 	ctx.JSON(http.StatusCreated, &cam2)
 }
 
 func (a *API) onV1CamerasPatch(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
@@ -434,12 +441,16 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 			"verb":      "update",
 		},
 	})
+	a.emitConfigAppliedLocked("camera", id, "update", map[string]string{"camera_id": id})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
 
 func (a *API) onV1CamerasPut(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
@@ -517,12 +528,16 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 			"verb":      "replace",
 		},
 	})
+	a.emitConfigAppliedLocked("camera", id, "replace", map[string]string{"camera_id": id})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
 
 func (a *API) onV1CamerasDelete(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
@@ -566,6 +581,7 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 			"verb":      "delete",
 		},
 	})
+	a.emitConfigAppliedLocked("camera", id, "delete", map[string]string{"camera_id": id})
 
 	a.writeOK(ctx)
 }

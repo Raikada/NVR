@@ -98,6 +98,9 @@ func (a *API) onV1RecorderCameraDefaultsGet(ctx *gin.Context) {
 // a message pointing to /v1/recording-policies — see the GET handler's
 // rationale.
 func (a *API) onV1RecorderCameraDefaultsPatch(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	body, ok := a.readTenantScopedBody(ctx)
 	if !ok {
 		return
@@ -139,6 +142,8 @@ func (a *API) onV1RecorderCameraDefaultsPatch(ctx *gin.Context) {
 
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
+
+	a.emitConfigAppliedLocked("server", "", "patch", map[string]string{"surface": "/v1/recorder/camera-defaults"})
 
 	a.writeOK(ctx)
 }

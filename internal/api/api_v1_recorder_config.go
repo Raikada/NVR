@@ -77,6 +77,9 @@ func (a *API) onV1RecorderConfigGet(ctx *gin.Context) {
 // Rationale (D6.3): recorder bootstrap configuration is not a canonical
 // entity; see onV1RecorderConfigGet for the full justification.
 func (a *API) onV1RecorderConfigPatch(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	body, ok := a.readTenantScopedBody(ctx)
 	if !ok {
 		return
@@ -131,6 +134,7 @@ func (a *API) onV1RecorderConfigPatch(ctx *gin.Context) {
 			"surface": "/v1/recorder/config",
 		},
 	})
+	a.emitConfigAppliedLocked("server", "", "patch", map[string]string{"surface": "/v1/recorder/config"})
 
 	// since reloading the configuration can cause the shutdown of the API,
 	// call it in a goroutine

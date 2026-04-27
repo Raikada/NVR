@@ -144,6 +144,9 @@ func (a *API) Initialize() error {
 	group.GET("/events", a.onV1EventsList)
 	group.GET("/events/:id", a.onV1EventsGet)
 
+	// Audit log (ADR 0006). GET-only — the chain is append-only.
+	group.GET("/audit", a.onV1AuditList)
+
 	// Clips (ADR 0009 §D5 follow-up; recorder-authoritative for
 	// preparation per ARCHITECTURE.md §5 item 6).
 	group.POST("/clips", a.onV1ClipsPost)
@@ -282,6 +285,20 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 				"remote_addr": httpp.RemoteAddr(ctx),
 			},
 		})
+		// Audit chain entry per ADR 0006 D1: every authentication
+		// attempt is audited, success and failure both. This is
+		// security-focused and lives alongside (not in place of) the
+		// auth.failed_login Event. ActorID is omitted: a failed-login
+		// audit entry must never carry the attempted credential's user
+		// field per data-classification.md cross-cutting rule 8.
+		a.emitAuthDecision(
+			defs.AuditOutcomeFailure,
+			defs.AuditActorKindUnauthenticated,
+			"",
+			httpp.RemoteAddr(ctx),
+			"",
+			map[string]string{"reason": "authentication failed"},
+		)
 
 		// wait some seconds to delay brute force attacks
 		<-time.After(auth.PauseAfterError)
@@ -289,6 +306,22 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		a.writeErrorNoLog(ctx, http.StatusUnauthorized, fmt.Errorf("authentication error"))
 		return
 	}
+	// Successful authentication: emit an audit entry per ADR 0006 D1.
+	// The recorder's auth manager today resolves to a single
+	// privileged principal (no per-user session model — ADR 0002
+	// OQ10), so actor_kind is service_account and actor_id is empty.
+	// When the session model lands, the actor kind / id come from the
+	// resolved principal. No per-request auth.session_started Event
+	// (semantic mismatch — see note below); the audit entry is the
+	// security-focused record.
+	a.emitAuthDecision(
+		defs.AuditOutcomeSuccess,
+		defs.AuditActorKindServiceAccount,
+		"",
+		httpp.RemoteAddr(ctx),
+		"",
+		nil,
+	)
 	// Note: no auth.session_started emit here. The canonical kind implies
 	// per-session emission, but the recorder has no AuthSession concept
 	// yet (ADR 0002 OQ10), so emitting on every authenticated request

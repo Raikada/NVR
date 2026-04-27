@@ -159,6 +159,9 @@ func (a *API) onV1RecordingPoliciesGet(ctx *gin.Context) {
 }
 
 func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	body, err := readLimitedBody(ctx)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
@@ -209,11 +212,15 @@ func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
 			"verb":      "create",
 		},
 	})
+	a.emitConfigAppliedLocked("recording_policy", policy.ID, "create", map[string]string{"policy_id": policy.ID})
 
 	ctx.JSON(http.StatusCreated, &policy)
 }
 
 func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	id, err := uuid.Parse(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid policy id: %w", err))
@@ -312,11 +319,15 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 			"verb":      "update",
 		},
 	})
+	a.emitConfigAppliedLocked("recording_policy", merged.ID, "update", map[string]string{"policy_id": merged.ID})
 
 	ctx.JSON(http.StatusOK, &merged)
 }
 
 func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	id, err := uuid.Parse(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid policy id: %w", err))
@@ -364,6 +375,7 @@ func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
 			"verb":      "delete",
 		},
 	})
+	a.emitConfigAppliedLocked("recording_policy", id.String(), "delete", map[string]string{"policy_id": id.String()})
 
 	a.writeOK(ctx)
 }
