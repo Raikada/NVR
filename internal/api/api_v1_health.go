@@ -141,6 +141,13 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	}
 	in.Network = probe.Sample(msEndpoint, cloudEndpoint)
 
+	// Bandwidth — process-level network IO summed across non-loopback
+	// interfaces. First call returns (0, 0) and primes the sampler;
+	// subsequent calls return real bytes-per-second over the wall-
+	// clock interval since the previous /v1/health request.
+	rxBps, txBps := bandwidthSamplerSingleton.Sample()
+	in.Bandwidth = defs.HealthStatusBandwidth{RxBps: rxBps, TxBps: txBps}
+
 	// recordingServerID: the recorder doesn't yet surface a server-
 	// scoped UUID through conf.Conf (no `recording_server_id` field
 	// today; see Phase 1 translator notes). We pass empty and let the

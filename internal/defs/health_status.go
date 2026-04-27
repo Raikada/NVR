@@ -43,6 +43,18 @@ type HealthStatusNetwork struct {
 	LastSyncAt                *time.Time `json:"last_sync_at,omitempty"`
 }
 
+// HealthStatusBandwidth is the process-level network bandwidth block
+// of a HealthStatus snapshot. Both rates are bytes-per-second over
+// the wall-clock interval since the previous /v1/health request,
+// summed across every non-loopback interface the recorder process
+// can see (so a multi-NIC host shows aggregate throughput, which
+// matches what an operator expects from a "how busy is the
+// recorder's network" reading).
+type HealthStatusBandwidth struct {
+	RxBps float64 `json:"rx_bps"`
+	TxBps float64 `json:"tx_bps"`
+}
+
 // HealthStatus is the canonical HealthStatus entity exposed at
 // /v1/health per ADR 0009 §D2.
 //
@@ -62,8 +74,9 @@ type HealthStatus struct {
 	CamerasRecording int `json:"cameras_recording"`
 	CamerasOffline   int `json:"cameras_offline"`
 
-	Storage []HealthStatusStorage `json:"storage,omitempty"`
-	Network HealthStatusNetwork   `json:"network"`
+	Storage   []HealthStatusStorage `json:"storage,omitempty"`
+	Network   HealthStatusNetwork   `json:"network"`
+	Bandwidth HealthStatusBandwidth `json:"bandwidth"`
 
 	Overall HealthStatusOverall `json:"overall"`
 }

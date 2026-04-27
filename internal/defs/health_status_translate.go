@@ -20,8 +20,9 @@ type HealthStatusInput struct {
 	CamerasRecording int
 	CamerasOffline   int
 
-	Storage []HealthStatusStorage
-	Network HealthStatusNetwork
+	Storage   []HealthStatusStorage
+	Network   HealthStatusNetwork
+	Bandwidth HealthStatusBandwidth
 
 	// Overall is optional; if empty, BuildHealthStatus derives a
 	// classification from CamerasOffline / Storage states using a
@@ -67,6 +68,7 @@ func BuildHealthStatus(
 		CamerasOffline:    in.CamerasOffline,
 		Storage:           in.Storage,
 		Network:           in.Network,
+		Bandwidth:         in.Bandwidth,
 		Overall:           overall,
 	}
 }

@@ -48,4 +48,33 @@ type StorageVolume struct {
 	LastCheckedAt time.Time `json:"last_checked_at"`
 
 	Priority int `json:"priority"`
+
+	// WriteBytesPerSecond is the recorder's recent write throughput
+	// to this volume, computed from used_bytes deltas across
+	// successive /v1/storage-volumes calls. Optional — populated
+	// only after the second sample arrives. Negative values
+	// (retention pruned faster than recorder wrote) are clamped to
+	// zero so the field surfaces only positive write activity.
+	WriteBytesPerSecond *int64 `json:"write_bytes_per_second,omitempty"`
+
+	// SMART is best-effort drive metadata sourced from a `smartctl`
+	// shell-out. Populated when smartctl is on PATH and the
+	// underlying mount resolves to a block device; absent
+	// otherwise. Operators on hosts without smartmontools see no
+	// SMART block (graceful degradation).
+	SMART *StorageVolumeSMART `json:"smart,omitempty"`
+}
+
+// StorageVolumeSMART carries the subset of S.M.A.R.T. attributes
+// the configuration UI surfaces today. Fields are omitted from the
+// wire shape when smartctl couldn't determine them, so consumers
+// must treat each field as optional.
+type StorageVolumeSMART struct {
+	Device        string `json:"device,omitempty"`
+	ModelFamily   string `json:"model_family,omitempty"`
+	ModelName     string `json:"model_name,omitempty"`
+	SerialNumber  string `json:"serial_number,omitempty"`
+	PowerOnHours  *int64 `json:"power_on_hours,omitempty"`
+	HealthPassed  *bool  `json:"health_passed,omitempty"`
+	TemperatureC  *int   `json:"temperature_c,omitempty"`
 }

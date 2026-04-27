@@ -219,15 +219,24 @@ func (a *API) collectStorageVolumes(c *conf.Conf) []defs.StorageVolume {
 		if rv, ok := c.RecordingVolumes[mp]; ok && rv != nil && rv.Priority != nil {
 			priority = *rv.Priority
 		}
+		// Bytes-per-second since the last sample; nil on first
+		// sighting or when retention pruned faster than recorder
+		// wrote (delta clamps to zero in the latter case).
+		writeRate := volumeRateObserverSingleton.Sample(mp, used, nowUTC())
+		// Best-effort SMART probe; nil when smartctl isn't
+		// available or when mp doesn't resolve to a block device.
+		smart := smartProberSingleton.Probe(mp)
 		in := defs.StorageVolumeInput{
-			MountPath:     mp,
-			Kind:          volumeKindForMountPath(mp),
-			CapacityBytes: capacity,
-			UsedBytes:     used,
-			ReservedBytes: 0,
-			Status:        status,
-			LastCheckedAt: nowUTC(),
-			Priority:      priority,
+			MountPath:           mp,
+			Kind:                volumeKindForMountPath(mp),
+			CapacityBytes:       capacity,
+			UsedBytes:           used,
+			ReservedBytes:       0,
+			Status:              status,
+			LastCheckedAt:       nowUTC(),
+			Priority:            priority,
+			WriteBytesPerSecond: writeRate,
+			SMART:               smart,
 		}
 		out = append(out, defs.BuildStorageVolume(in, volumeIDFromMountPath(mp), ""))
 	}

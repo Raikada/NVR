@@ -18,6 +18,9 @@ type StorageVolumeInput struct {
 	Status        StorageVolumeStatus
 	LastCheckedAt time.Time
 	Priority      int
+
+	WriteBytesPerSecond *int64
+	SMART               *StorageVolumeSMART
 }
 
 // BuildStorageVolume synthesizes a canonical StorageVolume from internal
@@ -37,15 +40,17 @@ func BuildStorageVolume(in StorageVolumeInput, volumeID, recordingServerID strin
 		status = StorageVolumeStatusHealthy
 	}
 	return StorageVolume{
-		ID:                volumeID,
-		RecordingServerID: recordingServerID,
-		MountPath:         in.MountPath,
-		Kind:              in.Kind,
-		CapacityBytes:     in.CapacityBytes,
-		UsedBytes:         in.UsedBytes,
-		ReservedBytes:     in.ReservedBytes,
-		Status:            status,
-		LastCheckedAt:     checked,
-		Priority:          in.Priority,
+		ID:                  volumeID,
+		RecordingServerID:   recordingServerID,
+		MountPath:           in.MountPath,
+		Kind:                in.Kind,
+		CapacityBytes:       in.CapacityBytes,
+		UsedBytes:           in.UsedBytes,
+		ReservedBytes:       in.ReservedBytes,
+		Status:              status,
+		LastCheckedAt:       checked,
+		Priority:            in.Priority,
+		WriteBytesPerSecond: in.WriteBytesPerSecond,
+		SMART:               in.SMART,
 	}
 }

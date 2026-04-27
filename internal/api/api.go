@@ -170,6 +170,15 @@ func (a *API) Initialize() error {
 	// Recorder-localized escape hatch (ADR 0009 §D6).
 	group.GET("/recorder/config", a.onV1RecorderConfigGet)
 	group.PATCH("/recorder/config", a.onV1RecorderConfigPatch)
+	// Identity card (UI-driven; small additive surface that pairs the
+	// hostname/timezone read-only signals with the operator-set
+	// location field on conf.ServerLocation).
+	group.GET("/recorder/identity", a.onV1RecorderIdentityGet)
+	group.PATCH("/recorder/identity", a.onV1RecorderIdentityPatch)
+	// System actions for the Settings page. Admin-gated + audited.
+	// config-restore is intentionally absent (see api_v1_recorder_system.go).
+	group.POST("/recorder/reboot", a.onV1RecorderRebootPost)
+	group.GET("/recorder/config-backup", a.onV1RecorderConfigBackup)
 	group.GET("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsGet)
 	group.PATCH("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsPatch)
 	group.GET("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigGet)

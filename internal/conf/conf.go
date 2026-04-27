@@ -261,6 +261,13 @@ type Conf struct {
 	ManagementServerEndpoint string `json:"managementServerEndpoint"`
 	CloudEndpoint            string `json:"cloudEndpoint"`
 
+	// ServerLocation is an operator-set free-form label for where
+	// this recorder is physically deployed (e.g. "Warehouse A —
+	// Rack 2"). Surfaced on the configuration UI's identity card
+	// and in the /v1/recorder/identity response. Optional;
+	// untouched recorders return an empty string.
+	ServerLocation string `json:"serverLocation"`
+
 	// General
 	LogLevel            LogLevel        `json:"logLevel"`
 	LogDestinations     LogDestinations `json:"logDestinations"`
