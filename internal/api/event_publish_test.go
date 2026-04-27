@@ -46,6 +46,45 @@ func TestPublishEvent_CameraPOSTEmitsConfigApplied(t *testing.T) {
 	require.Equal(t, "info", sev)
 }
 
+// TestPublishCameraOnline_ResolvesAgainstPipelineTarget exercises the
+// pipeline-side helper. Sets a pipeline target, publishes, and asserts
+// the event landed in the configured store with the expected camera-id
+// derivation and tenant id from the resolver.
+func TestPublishCameraOnline_ResolvesAgainstPipelineTarget(t *testing.T) {
+	resetEventStoreSingleton(t)
+
+	store := NewEventStore(0)
+	const tenantID = "11111111-2222-3333-4444-555555555555"
+	SetPipelineEventTarget(store, func() string { return tenantID })
+	t.Cleanup(func() { SetPipelineEventTarget(nil, nil) })
+
+	PublishCameraOnline("evt_pipeline_cam")
+	require.Equal(t, 1, store.Len())
+
+	snap := store.Snapshot()
+	got := snap[0]
+	require.Equal(t, "camera.online", string(got.Kind))
+	require.Equal(t, "info", string(got.Severity))
+	require.Equal(t, cameraIDFromPathName("evt_pipeline_cam"), got.SubjectID)
+	require.Equal(t, tenantID, got.TenantID)
+	require.Equal(t, "evt_pipeline_cam", got.Attributes["path_name"])
+}
+
+// TestPublishCameraOffline_FallsBackToDefaultStore confirms the helper
+// falls back to defaultEventStore when no pipeline target is set, and
+// emits a warning-severity offline event.
+func TestPublishCameraOffline_FallsBackToDefaultStore(t *testing.T) {
+	resetEventStoreSingleton(t)
+	SetPipelineEventTarget(nil, nil)
+	t.Cleanup(func() { SetPipelineEventTarget(nil, nil) })
+
+	PublishCameraOffline("evt_offline_cam")
+
+	_, subjectID, sev := findEventByKind(t, "camera.offline")
+	require.Equal(t, cameraIDFromPathName("evt_offline_cam"), subjectID)
+	require.Equal(t, "warning", sev)
+}
+
 // TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied verifies the
 // matching policy.applied emission on /v1/recording-policies POST.
 func TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied(t *testing.T) {

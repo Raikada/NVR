@@ -17,8 +17,53 @@
 package api //nolint:revive
 
 import (
+	"sync"
+
 	"github.com/bluenviron/mediamtx/internal/defs"
 )
+
+// pipelineEventTarget holds the EventStore and tenant-id resolver used
+// by pipeline-side publish helpers (PublishCameraOnline, etc.). Set
+// once at startup by core.go via SetPipelineEventTarget so pipeline
+// callers don't have to thread an EventStore reference through their
+// own initialization.
+//
+// If unset, the pipeline helpers fall back to defaultEventStore() with
+// an empty tenant id. That keeps tests usable without explicit setup.
+var (
+	pipelineMu       sync.RWMutex
+	pipelineStore    *EventStore
+	pipelineTenantFn func() string
+)
+
+// SetPipelineEventTarget configures where pipeline-emitted Events go
+// and how to resolve the recorder's tenant id at publish time. Called
+// once during recorder startup, after the API and recorder config are
+// initialized. Safe to call again to reconfigure (e.g., on tenant
+// rebinding); replaces both fields atomically.
+func SetPipelineEventTarget(store *EventStore, tenantIDFn func() string) {
+	pipelineMu.Lock()
+	defer pipelineMu.Unlock()
+	pipelineStore = store
+	pipelineTenantFn = tenantIDFn
+}
+
+// pipelineTarget returns the configured store and tenant id, or sane
+// defaults (defaultEventStore() and empty tenant id) when nothing has
+// been wired yet. Used internally by the pipeline publish helpers.
+func pipelineTarget() (*EventStore, string) {
+	pipelineMu.RLock()
+	defer pipelineMu.RUnlock()
+	store := pipelineStore
+	if store == nil {
+		store = defaultEventStore()
+	}
+	tenantID := ""
+	if pipelineTenantFn != nil {
+		tenantID = pipelineTenantFn()
+	}
+	return store, tenantID
+}
 
 // publishEvent is the thin wrapper around EventStore.Publish for
 // callers that do NOT hold a.mutex (e.g., the auth middleware). It
@@ -52,17 +97,18 @@ func (a *API) publishEventLocked(in defs.EventInput) {
 	defaultEventStore().Publish(in, "", tenantID, "")
 }
 
-// PublishCameraOnline is the API-side helper for camera.online events
-// emitted by the path manager. Lives in internal/api so pipeline
-// packages don't construct defs.EventInput themselves; the caller
-// passes the path/camera id and any reason string.
+// PublishCameraOnline is the pipeline-side helper for camera.online
+// Events. Pipeline code (path.go) calls this at the moment a path
+// transitions to online; the helper resolves the EventStore and
+// tenant id from the package-level pipeline target configured at
+// startup, derives the canonical Camera UUID from the path-name, and
+// publishes. Severity info per the domain-model.md examples.
 //
-// The function is deliberately unattached to a *API receiver so
-// pipeline-side callers (which only have an *EventStore reference)
-// can invoke it without hauling the API surface across the
-// import boundary. Recording-server and site ids stay empty per the
-// shared convention in api_v1_health.go::recordingServerID.
-func PublishCameraOnline(store *EventStore, tenantID, cameraID, pathName string) {
+// Recording-server and site ids stay empty per the shared convention
+// in api_v1_health.go::recordingServerID — they land when the MS-
+// pairing client surfaces a server-scoped UUID through conf.Conf.
+func PublishCameraOnline(pathName string) {
+	store, tenantID := pipelineTarget()
 	if store == nil {
 		return
 	}
@@ -70,7 +116,7 @@ func PublishCameraOnline(store *EventStore, tenantID, cameraID, pathName string)
 		Kind:        "camera.online",
 		Severity:    defs.EventSeverityInfo,
 		SubjectKind: defs.EventSubjectKindCamera,
-		SubjectID:   cameraID,
+		SubjectID:   cameraIDFromPathName(pathName),
 		Message:     "camera came online",
 		Attributes: map[string]string{
 			"path_name": pathName,
@@ -78,11 +124,14 @@ func PublishCameraOnline(store *EventStore, tenantID, cameraID, pathName string)
 	}, "", tenantID, "")
 }
 
-// PublishCameraOffline is the API-side helper for camera.offline
-// events emitted by the path manager. Severity is warning per
-// domain-model.md: a camera going offline is a noteworthy operational
-// state, not a normal info-level transition.
-func PublishCameraOffline(store *EventStore, tenantID, cameraID, pathName string) {
+// PublishCameraOffline is the pipeline-side helper for camera.offline
+// Events. Severity is warning per domain-model.md: a camera going
+// offline is a noteworthy operational state, not a normal info-level
+// transition. Pipeline callers should guard against emit-when-never-
+// online (e.g., check pa.source != nil before calling) so a path that
+// has never come online doesn't emit a spurious offline event.
+func PublishCameraOffline(pathName string) {
+	store, tenantID := pipelineTarget()
 	if store == nil {
 		return
 	}
@@ -90,7 +139,7 @@ func PublishCameraOffline(store *EventStore, tenantID, cameraID, pathName string
 		Kind:        "camera.offline",
 		Severity:    defs.EventSeverityWarning,
 		SubjectKind: defs.EventSubjectKindCamera,
-		SubjectID:   cameraID,
+		SubjectID:   cameraIDFromPathName(pathName),
 		Message:     "camera went offline",
 		Attributes: map[string]string{
 			"path_name": pathName,
@@ -98,12 +147,11 @@ func PublishCameraOffline(store *EventStore, tenantID, cameraID, pathName string
 	}, "", tenantID, "")
 }
 
-// DefaultEventStore exposes the package-wide singleton to pipeline
-// callers that don't have a per-API store reference. The orchestrator
-// (core.go) pulls this once at startup and threads it into the path
-// manager via the existing dependency-injection seam. Returning the
-// same singleton both the API handlers and the pipeline producers
-// publish into keeps /v1/events coherent across both producer paths.
+// DefaultEventStore exposes the package-wide singleton so callers
+// that don't construct an *API can publish into the same store the
+// /v1/events surface serves from. core.go uses this in
+// SetPipelineEventTarget; tests use it via defaultEventStore() in the
+// same package.
 func DefaultEventStore() *EventStore {
 	return defaultEventStore()
 }

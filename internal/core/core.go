@@ -709,6 +709,19 @@ func (p *Core) createResources(initial bool) error {
 			return err
 		}
 		p.api = i
+
+		// Wire the pipeline-side Event publish target so path.go's
+		// camera.online / camera.offline emitters land in the same
+		// EventStore that /v1/events serves from. Tenant id resolves
+		// dynamically against the current recorder conf so reloads
+		// pick up changes; the brief TOCTOU window during a reload is
+		// acceptable for an Event's tenant_id field.
+		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
+			if p.conf == nil {
+				return ""
+			}
+			return p.conf.TenantID
+		})
 	}
 
 	if initial && p.confPath != "" {

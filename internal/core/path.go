@@ -12,6 +12,7 @@ import (
 
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 
+	"github.com/bluenviron/mediamtx/internal/api"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
@@ -862,6 +863,10 @@ func (pa *path) setAvailable(
 		pa.Log(logger.Info, "stream is available, %s", defs.MediasInfo(pa.stream.Desc.Medias))
 	} else {
 		pa.Log(logger.Info, "stream is available and online, %s", defs.MediasInfo(pa.stream.Desc.Medias))
+		// Emit canonical camera.online Event alongside the existing log
+		// line. AlwaysAvailable paths skip the emit because their
+		// "available" state isn't bound to a real upstream camera.
+		api.PublishCameraOnline(pa.confName)
 	}
 
 	pa.parent.setPathReady(pa)
@@ -884,6 +889,13 @@ func (pa *path) consumeOnHoldRequests() {
 }
 
 func (pa *path) setNotAvailable() {
+	// Emit camera.offline only if this path was actually online —
+	// setNotAvailable is called from several startup-failure paths where
+	// the camera never came online, and a spurious offline event would
+	// be misleading. isOnline() returns true when source != nil.
+	if pa.isOnline() && !pa.conf.AlwaysAvailable {
+		api.PublishCameraOffline(pa.confName)
+	}
 	pa.parent.setPathNotReady(pa)
 
 	for r := range pa.readers {
