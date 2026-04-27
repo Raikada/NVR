@@ -150,6 +150,20 @@ tags:
       Canonical RecordingSegment entities — the storage-level unit of
       recorded footage. Used primarily for storage-ops listings and
       per-segment delete. Scrub UX uses Recordings, not segments.
+  - name: Clips
+    description: |
+      Canonical Clip entities — user-defined, persistent saved-moment
+      ranges. The recorder is authoritative for preparing the export
+      artifact (stitching source segments into a single mp4, writing
+      it to local storage, computing checksums, serving the download).
+      Clips override policy-driven retention: source segments cannot
+      be pruned while the clip is requested/preparing/ready.
+
+      Pre-MS phase: `requested_by` is the empty string. Stitching
+      uses a byte-wise concatenation of fmp4 fragments today; a
+      proper fmp4-to-mp4 remux is queued as a follow-up. The
+      limitation is surfaced via the `notice` field on each Clip
+      response.
   - name: Events
     description: |
       Canonical Event entries emitted by the recorder. The in-memory
@@ -1453,6 +1467,169 @@ components:
               items:
                 $ref: '#/components/schemas/Recording'
 
+    ClipState:
+      type: string
+      enum: [requested, preparing, ready, failed, expired, deleted]
+
+    ClipContainer:
+      type: string
+      enum: [mp4, fmp4, mpegts]
+
+    Clip:
+      type: object
+      description: |
+        Canonical Clip entity per platform/docs/domain-model.md. A
+        user-defined, persistent reference to a time range of recorded
+        media. The recorder is authoritative for preparing the export
+        artifact (stitching source segments, writing the export file,
+        computing checksums, serving the download) and for retaining
+        the source segments for the lifetime of the clip — overriding
+        normal policy retention.
+
+        Pre-MS phase: `requested_by` is the empty string in this
+        build because there is no on-recorder User authoritative
+        source. Once the Management Server lands, this field carries
+        the canonical user id of the requester.
+
+        Recorder-internal `export_path` and `download_token_ref`
+        fields exist on the canonical entity but never appear in this
+        wire shape per the data-classification rules.
+      required:
+        - id
+        - tenant_id
+        - site_id
+        - recording_server_id
+        - camera_id
+        - requested_by
+        - label
+        - range_started_at
+        - range_ended_at
+        - duration
+        - requested_at
+        - state
+        - container
+        - source_segment_ids
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+        requested_by:
+          type: string
+          description: |
+            Canonical User id of the requester. Empty string in the
+            pre-MS phase (no recorder-side User authoritative source).
+        label:
+          type: string
+        description:
+          type: string
+        range_started_at:
+          type: string
+          format: date-time
+        range_ended_at:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        requested_at:
+          type: string
+          format: date-time
+        prepared_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Null means "retain until explicitly deleted."
+        state:
+          $ref: '#/components/schemas/ClipState'
+        failure_reason:
+          type: string
+        container:
+          $ref: '#/components/schemas/ClipContainer'
+        size_bytes:
+          type: integer
+          format: int64
+        checksum:
+          type: string
+          description: Algorithm-prefixed, e.g. `sha256:...`.
+        source_segment_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        notice:
+          type: string
+          description: |
+            Operational note. The current recorder uses a byte-wise
+            concatenation of fmp4 fragments as the stitching strategy
+            (playable by ffmpeg-class players, may require remux for
+            QuickTime-style players); this field surfaces that
+            limitation. A future ADR will replace the concat strategy
+            with a proper fmp4-to-mp4 remux.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ClipCreateRequest:
+      type: object
+      required:
+        - camera_id
+        - label
+        - range_started_at
+        - range_ended_at
+      properties:
+        camera_id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        description:
+          type: string
+        range_started_at:
+          type: string
+          format: date-time
+        range_ended_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        requested_by:
+          type: string
+          description: |
+            Forward-compatible: stored as-is on the Clip. Empty
+            string in the pre-MS phase.
+
+    ClipList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Clip'
+            notice:
+              type: string
+
     PlaybackHandle:
       type: object
       description: |
@@ -2715,6 +2892,200 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Segment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Clips ====================================================
+
+  /v1/clips:
+    get:
+      tags: [Clips]
+      summary: List clips.
+      description: |
+        Returns the recorder's authoritative view of clips. Filtered
+        by `camera_id` and/or `state`.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: camera_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/ClipState'
+      responses:
+        '200':
+          description: Clip list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClipList'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [Clips]
+      summary: Create a clip and start asynchronous preparation.
+      description: |
+        Creates a clip in `requested` state and spawns a preparation
+        worker. The worker transitions the clip through `preparing`
+        to `ready` (or `failed`); poll GET /v1/clips/{id} for the
+        final state.
+
+        Source segments are resolved at create time and pinned: the
+        recorder will not prune any RecordingSegment listed in the
+        clip's `source_segment_ids` while the clip is in
+        requested/preparing/ready state, even when those segments
+        are older than the policy retention window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClipCreateRequest'
+      responses:
+        '201':
+          description: Clip created (preparation may still be running).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clip'
+        '400':
+          description: |
+            Invalid request body, invalid range, or no recording
+            segments overlap the requested range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/clips/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Clips]
+      summary: Get a clip.
+      responses:
+        '200':
+          description: Clip detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Clip'
+        '400':
+          description: Invalid clip id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Clip not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Clips]
+      summary: Soft-delete a clip.
+      description: |
+        Sets `state` to `deleted`, releasing the source-segment pins
+        the clip held. The export artifact is removed best-effort.
+        The clip row stays queryable (state=deleted) for audit per
+        the platform's soft-delete convention.
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Invalid clip id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Clip not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/clips/{id}/download:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: token
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          Short-lived download token. Real validation is a
+          Phase-2-followup; today the recorder accepts any
+          `placeholder-<id>` token (matching the `/v1/recordings/{id}
+          /playback` placeholder convention).
+    get:
+      tags: [Clips]
+      summary: Download the stitched clip bytes.
+      description: |
+        Returns the stitched export artifact with
+        `Content-Type: video/mp4`. The clip must be in `ready`
+        state; other states return 409.
+      responses:
+        '200':
+          description: Stitched clip bytes.
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid clip id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Clip not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Clip is not in `ready` state.
           content:
             application/json:
               schema:

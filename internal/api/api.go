@@ -143,6 +143,14 @@ func (a *API) Initialize() error {
 	group.GET("/events", a.onV1EventsList)
 	group.GET("/events/:id", a.onV1EventsGet)
 
+	// Clips (ADR 0009 §D5 follow-up; recorder-authoritative for
+	// preparation per ARCHITECTURE.md §5 item 6).
+	group.POST("/clips", a.onV1ClipsPost)
+	group.GET("/clips", a.onV1ClipsList)
+	group.GET("/clips/:id", a.onV1ClipsGet)
+	group.DELETE("/clips/:id", a.onV1ClipsDelete)
+	group.GET("/clips/:id/download", a.onV1ClipsDownload)
+
 	// Health (ADR 0009 §D5 Health).
 	group.GET("/health", a.onV1HealthGet)
 
