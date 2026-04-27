@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
 	"github.com/gin-gonic/gin"
 )
@@ -91,5 +92,27 @@ func (a *API) onV1RecorderCameraSnapshot(ctx *gin.Context) {
 
 	// No caching — every call returns the freshest available fragment.
 	ctx.Header("Cache-Control", "no-store")
+
+	// Try to produce a real JPEG via the system ffmpeg binary. When
+	// ffmpeg is on PATH, the snapshot endpoint returns image/jpeg —
+	// the format clients expect for thumbnails / evidence captures.
+	// When it isn't, or the conversion fails for some reason, we fall
+	// back to the raw fragment bytes (the original behavior) and
+	// surface the format on a header so callers can branch.
+	jpegBytes, jerr := snapshotJPEGFromFragment(ctx.Request.Context(), data)
+	if jerr == nil {
+		ctx.Header("X-Snapshot-Format", "jpeg")
+		ctx.Data(http.StatusOK, "image/jpeg", jpegBytes)
+		return
+	}
+	if !errors.Is(jerr, errFFmpegUnavailable) {
+		// ffmpeg was on PATH but the run failed — log the underlying
+		// reason so operators can debug without losing the snapshot
+		// response. Fall through to the raw-fragment fallback.
+		a.Log(logger.Warn, "snapshot jpeg conversion failed for camera %s: %v", cameraID, jerr)
+		ctx.Header("X-Snapshot-Format", "hls-fragment-fallback")
+	} else {
+		ctx.Header("X-Snapshot-Format", "hls-fragment")
+	}
 	ctx.Data(http.StatusOK, contentType, data)
 }

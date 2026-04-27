@@ -3618,18 +3618,33 @@ paths:
           runtime-active muxers as fallback.
     get:
       tags: [Recorder]
-      summary: Most recent media fragment for a camera.
+      summary: Most recent video keyframe for a camera (JPEG when ffmpeg is available).
       description: |
-        Returns the most recent finalized HLS segment the recorder is
-        producing for the camera. The response body is the **raw HLS
-        fragment** (typically fragmented MP4 for the fMP4 variants or
-        an MPEG-TS segment for the MPEG-TS variant) — not a JPEG
-        still. Producing a JPEG would require demuxing the segment,
-        decoding a video frame, and re-encoding through an image
-        encoder; the recorder declines to take that dependency, so
-        the snapshot endpoint exposes the muxer's raw segment bytes
-        instead. The exact `Content-Type` reflects what the muxer
-        emits (commonly `video/mp4` or `video/MP2T`).
+        Returns the most recent video keyframe for the camera, encoded
+        as JPEG when a system `ffmpeg` binary is available on the
+        recorder host's `PATH`, or as the raw HLS fragment when it is
+        not. The response shape is signaled by the `X-Snapshot-Format`
+        header:
+
+          * `jpeg` — Body is `image/jpeg`. The recorder shelled out to
+            ffmpeg, decoded the most recent fragment, and emitted a
+            single JPEG keyframe. This is the typical "thumbnail" or
+            "save-this-frame" response operators expect.
+          * `hls-fragment` — ffmpeg is not on PATH. Body is the raw
+            HLS fragment with the muxer's content type
+            (`video/mp4` for fMP4, `video/MP2T` for MPEG-TS). For fMP4
+            the init segment is concatenated into the body so the
+            blob is self-decodable; for MPEG-TS the segment is
+            already self-contained. Clients that want a still must
+            decode externally (`ffmpeg -i <body> -frames:v 1 -f mjpeg
+            pipe:1` is the same one-liner the recorder runs internally
+            when ffmpeg is present).
+          * `hls-fragment-fallback` — ffmpeg was on PATH but the
+            conversion run failed. Body is the raw fragment as in
+            `hls-fragment`. The recorder logs the underlying ffmpeg
+            error; this branch is rare and indicates either an
+            ffmpeg-version incompatibility or a non-decodable
+            fragment.
 
         Placement (ADR 0009 §D6.3): no canonical `Snapshot` entity
         exists, and defining one would be ADR-level work, so this
@@ -3638,19 +3653,39 @@ paths:
         — useful to LAN tools and operator dashboards but not
         promoted to a tier-shared canonical surface.
 
-        No caching: each call returns the freshest available
-        fragment. Returns 503 when the camera resolves but the HLS
-        muxer is not currently producing media (no instance, no
-        segments yet, or content didn't become available within the
-        snapshot deadline).
+        Operators who want JPEG output install `ffmpeg` on the
+        recorder host. The recorder shells out to it the same way it
+        does for `runOn*` hooks; no cgo, no build-time toolchain
+        change. If ffmpeg is not installed the endpoint stays
+        functional and returns the raw fragment.
+
+        No caching: each call returns the freshest available frame.
+        Returns 503 when the camera resolves but the HLS muxer is not
+        currently producing media.
       responses:
         '200':
           description: |
-            Raw segment bytes. The `Content-Type` header reflects the
-            muxer's output (e.g. `video/mp4` for fMP4 variants,
-            `video/MP2T` for MPEG-TS). Treat the body as opaque
-            binary; it is **not** a still image.
+            Body is either `image/jpeg` (when ffmpeg is available) or
+            the muxer's raw fragment (when it is not). The
+            `X-Snapshot-Format` response header (`jpeg`,
+            `hls-fragment`, or `hls-fragment-fallback`) tells clients
+            which branch ran.
+          headers:
+            X-Snapshot-Format:
+              description: |
+                Which response branch produced the body. `jpeg` =
+                ffmpeg-converted JPEG. `hls-fragment` = ffmpeg
+                unavailable; raw fragment + (for fMP4) init segment.
+                `hls-fragment-fallback` = ffmpeg attempt failed; raw
+                fragment as in `hls-fragment`.
+              schema:
+                type: string
+                enum: [jpeg, hls-fragment, hls-fragment-fallback]
           content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
             video/mp4:
               schema:
                 type: string

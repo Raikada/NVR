@@ -92,7 +92,27 @@ func (m *muxer) apiSnapshot() (data []byte, contentType string, err error) {
 		return nil, "", ErrMuxerNoContent
 	}
 
-	// Step 3: segment bytes.
+	// Step 3a (fMP4 only): fetch init segment if EXT-X-MAP is present.
+	// fMP4 media segments contain only moof+mdat boxes; codec init data
+	// (SPS/PPS, profile, dimensions — the moov box) lives in a separate
+	// init segment referenced by EXT-X-MAP. A snapshot caller doing
+	// downstream decoding (especially the JPEG-conversion path in the
+	// /v1 handler) needs init+media concatenated as a complete CMAF
+	// file. MPEG-TS variants don't carry EXT-X-MAP — TS segments are
+	// self-contained — and skip this fetch.
+	var initBody []byte
+	if initURI, hasInit := mapInitURI(varBody); hasInit {
+		initCode, _, ib, err := instance.snapshotFetch(initURI, deadline)
+		if err != nil {
+			return nil, "", err
+		}
+		if initCode != http.StatusOK {
+			return nil, "", fmt.Errorf("init segment fetch returned %d", initCode)
+		}
+		initBody = ib
+	}
+
+	// Step 3b: segment bytes.
 	segCode, segCT, segBody, err := instance.snapshotFetch(segURI, deadline)
 	if err != nil {
 		return nil, "", err
@@ -101,7 +121,44 @@ func (m *muxer) apiSnapshot() (data []byte, contentType string, err error) {
 		return nil, "", fmt.Errorf("segment fetch returned %d", segCode)
 	}
 
+	if len(initBody) > 0 {
+		out := make([]byte, 0, len(initBody)+len(segBody))
+		out = append(out, initBody...)
+		out = append(out, segBody...)
+		return out, segCT, nil
+	}
 	return segBody, segCT, nil
+}
+
+// mapInitURI scans an HLS media playlist for the EXT-X-MAP:URI="..."
+// directive and returns the unquoted URI. Present only on fMP4
+// variants (init segment) and absent on MPEG-TS variants.
+func mapInitURI(playlist []byte) (string, bool) {
+	scanner := bufio.NewScanner(bytes.NewReader(playlist))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "#EXT-X-MAP:") {
+			continue
+		}
+		// Format: #EXT-X-MAP:URI="init.mp4"[,BYTERANGE="..."]
+		// Extract the URI value between the first pair of double quotes.
+		i := strings.Index(line, `URI="`)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(`URI="`):]
+		j := strings.Index(rest, `"`)
+		if j < 0 {
+			continue
+		}
+		uri := rest[:j]
+		if uri == "" {
+			continue
+		}
+		return uri, true
+	}
+	return "", false
 }
 
 // snapshotFetch issues a single in-process request against the
