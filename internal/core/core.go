@@ -397,8 +397,10 @@ func (p *Core) createResources(initial bool) error {
 	if p.recordCleaner == nil &&
 		atLeastOneRecordDeleteAfter(p.conf.Paths) {
 		p.recordCleaner = &recordcleaner.Cleaner{
-			PathConfs: p.conf.Paths,
-			Parent:    p,
+			PathConfs:             p.conf.Paths,
+			Parent:                p,
+			PublishVolumeFull:     api.PublishStorageVolumeFull,
+			PublishVolumeDegraded: api.PublishStorageVolumeDegraded,
 		}
 		p.recordCleaner.Initialize()
 	}
