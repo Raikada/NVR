@@ -1648,22 +1648,24 @@ components:
         Playback connection material returned by
         `GET /v1/recordings/{id}/playback`. The actual stream comes
         through the existing media protocols; this endpoint just
-        hands the client a URL + short-lived token.
-      required: [url, token, expires_at]
+        hands the client a URL bounded by `expires_at`.
+
+        Authentication note: per ADR 0011 the recorder does not issue
+        tokens. Clients reuse the user JWT they already hold from
+        Cloud/MS when fetching the URL — the playback `/get` endpoint
+        validates via the existing auth.Manager. ADR 0009 §D5 listed a
+        `token` field on this shape; that field has been dropped on
+        the wire to keep the contract honest with ADR 0011.
+      required: [url, expires_at]
       properties:
         url:
           type: string
-        token:
-          type: string
-          x-classification: credential
-          description: |
-            Short-lived bearer token for the playback URL. NOTE: the
-            current recorder ships a placeholder token; real bearer
-            issuance is a Phase-2-followup. Do not depend on the
-            token being cryptographically meaningful today.
         expires_at:
           type: string
           format: date-time
+          description: |
+            Validity bound on `url`. Clients should re-request the
+            playback handle after this instant.
 
     # ----- Event ----------------------------------------------------
 
@@ -3178,16 +3180,6 @@ paths:
         schema:
           type: string
           format: uuid
-      - name: token
-        in: query
-        required: false
-        schema:
-          type: string
-        description: |
-          Short-lived download token. Real validation is a
-          Phase-2-followup; today the recorder accepts any
-          `placeholder-<id>` token (matching the `/v1/recordings/{id}
-          /playback` placeholder convention).
     get:
       tags: [Clips]
       summary: Download the stitched clip bytes.
@@ -3195,6 +3187,10 @@ paths:
         Returns the stitched export artifact with
         `Content-Type: video/mp4`. The clip must be in `ready`
         state; other states return 409.
+
+        Authentication: per ADR 0011 the recorder does not issue
+        per-download tokens; this endpoint is gated by the same JWT
+        validation middleware as the rest of the `/v1` surface.
       responses:
         '200':
           description: Stitched clip bytes.
@@ -3205,12 +3201,6 @@ paths:
                 format: binary
         '400':
           description: Invalid clip id.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '401':
-          description: Invalid token.
           content:
             application/json:
               schema:

@@ -405,11 +405,16 @@ func (a *API) onV1RecordingsGet(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, row)
 }
 
-// v1PlaybackResponse is the canonical playback-handle shape per ADR 0009
-// §D5: { url, token, expires_at }.
+// v1PlaybackResponse is the canonical playback-handle shape: { url,
+// expires_at }. ADR 0009 §D5 originally specified a `token` field; ADR
+// 0011 subsequently established that the recorder does not issue tokens
+// (it is purely a validator). Clients reuse the user JWT they already
+// hold from Cloud/MS when fetching the playback URL — the recorder's
+// playback `/get` endpoint authenticates via the existing auth.Manager.
+// The token field has been dropped to keep the wire contract honest;
+// `expires_at` is retained as the validity bound on the URL.
 type v1PlaybackResponse struct {
 	URL       string    `json:"url"`
-	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -476,19 +481,14 @@ func (a *API) onV1RecordingsPlayback(ctx *gin.Context) {
 		url += fmt.Sprintf("&duration=%s", dur.String())
 	}
 
-	// TODO Phase 2 follow-up: the playback server has no token validator
-	// today. We emit a deterministic placeholder so clients can pin the
-	// shape, but the value is NOT cryptographically meaningful. Wiring a
-	// real bearer requires touching internal/playback (currently off-
-	// limits per Phase 2C constraints) plus an ADR 0009 amendment for
-	// the token format. Tracked as Phase 2 follow-up in the ADR closure
-	// notes.
-	token := "placeholder-" + r.ID
+	// Per ADR 0011: the recorder does not issue tokens. Clients send
+	// their existing user JWT directly to the playback `/get` endpoint,
+	// which validates via auth.Manager. expires_at bounds how long the
+	// caller should treat this URL as valid before re-requesting.
 	expiresAt := time.Now().UTC().Add(5 * time.Minute)
 
 	ctx.JSON(http.StatusOK, &v1PlaybackResponse{
 		URL:       url,
-		Token:     token,
 		ExpiresAt: expiresAt,
 	})
 }

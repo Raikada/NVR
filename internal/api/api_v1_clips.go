@@ -295,17 +295,10 @@ func (a *API) onV1ClipsDownload(ctx *gin.Context) {
 		return
 	}
 
-	// Token validation matches the placeholder pattern from
-	// /v1/recordings/{id}/playback. Real validation requires the
-	// recorder-side token store that ADR 0002 OQ10 will introduce;
-	// today we accept any `token=placeholder-<id>` query parameter
-	// or no token, mirroring the recordings playback shape so
-	// clients can pin the surface.
-	tok := ctx.Query("token")
-	if tok != "" && !strings.HasPrefix(tok, "placeholder-") {
-		a.writeError(ctx, http.StatusUnauthorized, errors.New("invalid token"))
-		return
-	}
+	// Per ADR 0011: the recorder does not issue tokens. Authentication
+	// for clip download is handled by the JWT-validation middleware on
+	// the API surface (ADR 0010 / ADR 0011); no per-download token is
+	// minted here.
 
 	f, err := os.Open(c.ExportPath)
 	if err != nil {

@@ -682,10 +682,15 @@ re-synthesizes on recorder restart per ADR 0009 §D8 closure notes.
 
 Limitations / Phase-2 follow-ups:
 
-- The playback `token` returned today is a deterministic placeholder
-  (`placeholder-<recording_id>`); real bearer issuance requires
-  touching `internal/playback`, which was off-limits in Phase 2C.
-  Tracked as a Phase-2 follow-up.
+- The playback handle no longer carries a `token` field. ADR 0009
+  §D5 originally specified `{ url, token, expires_at }`; ADR 0011
+  subsequently established that the recorder is purely a token
+  validator and does not issue tokens. Clients reuse the user JWT
+  they already hold from Cloud/MS when fetching the URL — the
+  recorder's playback `/get` endpoint authenticates via the existing
+  `auth.Manager`. The wire shape is now `{ url, expires_at }`.
+  Captured here as a divergence from ADR 0009's literal text;
+  candidate for an ADR 0009 amendment in the next pass.
 - `RecordingSegment.ended_at` is left zero pre-Phase-2-followup;
   `recordstore`'s public surface doesn't expose per-segment end
   timestamps, and using the next segment's `started_at` as a

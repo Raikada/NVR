@@ -285,7 +285,6 @@ func TestV1RecordingsPlayback(t *testing.T) {
 
 	var got struct {
 		URL       string    `json:"url"`
-		Token     string    `json:"token"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	require.NoError(t, json.NewDecoder(pb.Body).Decode(&got))
@@ -293,8 +292,6 @@ func TestV1RecordingsPlayback(t *testing.T) {
 		"playback URL must reference recorder's playback bind address: got %q", got.URL)
 	require.True(t, strings.Contains(got.URL, "path=cam1"),
 		"playback URL must reference path: got %q", got.URL)
-	require.True(t, strings.HasPrefix(got.Token, "placeholder-"),
-		"placeholder token format documented as Phase 2 follow-up: got %q", got.Token)
 	require.True(t, got.ExpiresAt.After(time.Now()),
 		"expires_at must be in the future")
 }
