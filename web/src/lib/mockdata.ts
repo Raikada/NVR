@@ -31,6 +31,63 @@ export function seedEvents(): MockEvent[] {
   ];
 }
 
+/* ---------- Logs (live-tail mock) ---------- */
+
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+export type LogSource = 'SYSTEM' | 'CAMERA' | 'RECORDER' | 'NETWORK';
+
+export interface MockLog {
+  id: string;
+  time: string;
+  level: LogLevel;
+  source: LogSource;
+  msg: string;
+  fields: Record<string, string | number>;
+}
+
+let logCounter = 1000;
+
+function genLog(ts: number): MockLog {
+  const templates: { l: LogLevel; s: LogSource; m: string; f: Record<string, string | number> }[] = [
+    { l: 'info', s: 'CAMERA', m: 'CAM-0{n} RTSP handshake complete', f: { transport: 'tcp', rtt_ms: 14, resolution: '1920x1080' } },
+    { l: 'info', s: 'RECORDER', m: 'Segment rotated — CAM-0{n} — 4.2 MB', f: { segment: 'seg-{r}.mp4', duration_s: 60, codec: 'h264' } },
+    { l: 'warn', s: 'CAMERA', m: 'CAM-0{n} packet loss 2.4%', f: { rtp_loss_pct: 2.4, consecutive_drops: 7 } },
+    { l: 'info', s: 'SYSTEM', m: 'Rules sync from ms-prod-01.local', f: { rules_applied: 7, took_ms: 142 } },
+    { l: 'debug', s: 'NETWORK', m: 'ARP refresh for 10.0.1.0/24', f: { responded: 18 } },
+    { l: 'error', s: 'CAMERA', m: 'CAM-0{n} authentication failed', f: { http_status: 401, scheme: 'digest' } },
+    { l: 'info', s: 'RECORDER', m: 'AI detection — person — CAM-0{n}', f: { model: 'yolov8n', confidence: 0.87, bbox: '[412,301,618,792]' } },
+    { l: 'info', s: 'SYSTEM', m: 'NTP step +3 ms', f: { server: 'pool.ntp.org' } },
+  ];
+  const t = templates[Math.floor(Math.random() * templates.length)];
+  const n = Math.floor(Math.random() * 6) + 1;
+  const d = new Date(ts);
+  const fields: Record<string, string | number> = {};
+  for (const [k, v] of Object.entries(t.f)) {
+    fields[k] = typeof v === 'string'
+      ? v.replace('{r}', Math.floor(Math.random() * 9999).toString().padStart(4, '0'))
+      : v;
+  }
+  return {
+    id: 'log' + ++logCounter,
+    time: d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0'),
+    level: t.l,
+    source: t.s,
+    msg: t.m.replace('{n}', String(n)),
+    fields,
+  };
+}
+
+export function seedLogs(n: number): MockLog[] {
+  const arr: MockLog[] = [];
+  const now = Date.now();
+  for (let i = n; i > 0; i--) arr.push(genLog(now - i * 3500));
+  return arr;
+}
+
+export function nextLog(): MockLog {
+  return genLog(Date.now());
+}
+
 let eventCounter = 100;
 
 export function nextEvent(): MockEvent {

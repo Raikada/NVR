@@ -11,10 +11,14 @@ import { TopBar } from './components/TopBar';
 import { IconRail } from './components/IconRail';
 import { ToastStack } from './components/Toast';
 import { SetupWizard } from './components/SetupWizard';
-import { PageHeader } from './components/PageHeader';
-import { Brackets, SectionHeader } from './components/primitives';
 import { Overview } from './routes/Overview';
 import { Cameras } from './routes/Cameras';
+import { Pairing } from './routes/Pairing';
+import { Storage } from './routes/Storage';
+import { Network } from './routes/Network';
+import { Logs } from './routes/Logs';
+import { Diagnostics } from './routes/Diagnostics';
+import { Settings } from './routes/Settings';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import type { AppState, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
@@ -92,12 +96,17 @@ export function App() {
       case 'cameras':
         return <Cameras state={state} setState={setState} addToast={addToast} />;
       case 'pairing':
+        return <Pairing state={state} setState={setState} addToast={addToast} />;
       case 'storage':
+        return <Storage />;
       case 'network':
+        return <Network state={state} />;
       case 'logs':
+        return <Logs addToast={addToast} />;
       case 'diagnostics':
+        return <Diagnostics state={state} addToast={addToast} />;
       case 'settings':
-        return <RoutePlaceholder route={route} />;
+        return <Settings state={state} addToast={addToast} />;
     }
   })();
 
@@ -131,58 +140,3 @@ export function App() {
   );
 }
 
-// Placeholder for routes that have not been ported yet. Removed as
-// each route lands in subsequent commits.
-function RoutePlaceholder({ route }: { route: Route }) {
-  const titles: Record<Route, string> = {
-    overview: 'Overview',
-    cameras: 'Cameras',
-    pairing: 'Management Server Pairing',
-    storage: 'Storage',
-    network: 'Network',
-    logs: 'Logs',
-    diagnostics: 'Diagnostics',
-    settings: 'Settings',
-  };
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        minWidth: 0,
-        background: 'var(--bg-primary)',
-        overflow: 'auto',
-      }}
-    >
-      <PageHeader breadcrumb={`RECORDING SERVER / ${route.toUpperCase()}`} title={titles[route]} />
-      <div style={{ padding: 20 }}>
-        <div
-          style={{
-            position: 'relative',
-            padding: 24,
-            background: 'var(--bg-secondary)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            maxWidth: 520,
-          }}
-        >
-          <Brackets />
-          <SectionHeader>NOT YET PORTED</SectionHeader>
-          <p
-            style={{
-              fontFamily: 'var(--font-sans)',
-              fontSize: 13,
-              color: 'var(--text-secondary)',
-              lineHeight: 1.6,
-              margin: 0,
-            }}
-          >
-            The {titles[route]} route lands in a follow-up commit per the staged
-            handoff plan. The shell, Overview, and Setup Wizard are wired today.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
