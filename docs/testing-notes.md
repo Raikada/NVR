@@ -175,6 +175,17 @@ For full reliable coverage: `make test`.
 
 After any restructure that moves docs between repos, grep the full
 tree by pattern (e.g. `grep -rn -E '\.\./docs/|\.\./CLAUDE\.md' .`)
-rather than preselected files or directories — the 2026-04-26
+rather than preselected files or directories. The 2026-04-26
 restructure caught references missed by the initial scoped inventory
-only because Phase 6 verification re-grepped the full tree.
+only because Phase 6 verification re-grepped the full tree (recorder
+commit `1bc0c12c`).
+
+Pattern grep is necessary but not sufficient. Mechanical substitution
+by pattern misses files at different directory depths: a uniform
+`../docs/` → `../platform/docs/` substitution doesn't catch a file
+that needs `../../platform/docs/` because it lives one directory
+deeper than the rest. The F3 fix (recorder commit `5cfc0d52`)
+corrected `recorder/api/openapi.yaml` for exactly this reason.
+Resolve each updated path against the filesystem after substitution —
+`for p in <changed-paths>; do [ -e "$p" ] && echo OK || echo BROKEN; done`
+is sufficient to catch the entire class.
