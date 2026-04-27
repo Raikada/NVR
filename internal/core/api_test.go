@@ -58,7 +58,10 @@ func httpRequest(t *testing.T, hc *http.Client, method string, ur string, in any
 	require.NoError(t, err)
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusOK {
+	// Accept any 2xx — POST /v1/cameras returns 201 Created per REST
+	// convention (ADR 0009), and other future canonical endpoints may
+	// return 202/204 as appropriate.
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		t.Errorf("bad status code: %d", res.StatusCode)
 	}
 

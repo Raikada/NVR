@@ -1,8 +1,6 @@
 package core
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"regexp"
 	"testing"
@@ -193,21 +191,14 @@ func TestPathManagerConfigHotReload(t *testing.T) {
 	// (specific camera takes over from the wildcard) is independent of
 	// the record flag and is what we still verify.
 	//
-	// Note: POST /v1/cameras returns 201 Created (canonical REST semantics)
-	// rather than the old 200 OK; we issue the request directly so we don't
-	// trip the httpRequest helper's "expect 200" assertion.
-	postBody, err := json.Marshal(map[string]any{
-		"name":        "undefined_stream",
-		"source_type": "publish",
-	})
-	require.NoError(t, err)
-	postReq, err := http.NewRequest(http.MethodPost,
-		"http://localhost:9997/v1/cameras", bytes.NewReader(postBody))
-	require.NoError(t, err)
-	postRes, err := hc.Do(postReq)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusCreated, postRes.StatusCode)
-	postRes.Body.Close()
+	// POST /v1/cameras returns 201 Created (canonical REST semantics);
+	// httpRequest accepts any 2xx so the canonical status flows through
+	// without a per-call workaround.
+	httpRequest(t, hc, http.MethodPost, "http://localhost:9997/v1/cameras",
+		map[string]any{
+			"name":        "undefined_stream",
+			"source_type": "publish",
+		}, nil)
 
 	// Give the system time to process the configuration change
 	time.Sleep(200 * time.Millisecond)
