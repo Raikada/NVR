@@ -326,7 +326,10 @@ components:
       description: |
         Source-mode discriminator for `Camera`. Renamed from the
         legacy `transport` per ADR 0009 §"Camera amendment". Drives
-        the `source_config` discriminated union.
+        the `source_config` discriminated union. `mpegts_udp` was
+        added per ADR 0009 §D9 (the OQ6 ratification) to distinguish
+        MPEG-TS-over-UDP from raw RTP-with-SDP — covers `udp://`,
+        `udp+mpegts://`, and `unix+mpegts://` source URLs.
       enum:
         - rtsp
         - rtsps
@@ -334,6 +337,7 @@ components:
         - rtmps
         - srt
         - rtp
+        - mpegts_udp
         - whep
         - hls
         - file

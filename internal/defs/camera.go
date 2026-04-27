@@ -10,7 +10,8 @@ import (
 // every MediaMTX source mode the recorder supports today.
 type CameraSourceType string
 
-// Camera source types per ADR 0009 §"Canonical model amendments → Camera".
+// Camera source types per ADR 0009 §"Canonical model amendments → Camera"
+// (with mpegts_udp added per D9 — the OQ6 ratification).
 const (
 	CameraSourceTypeRTSP      CameraSourceType = "rtsp"
 	CameraSourceTypeRTSPS     CameraSourceType = "rtsps"
@@ -18,6 +19,7 @@ const (
 	CameraSourceTypeRTMPS     CameraSourceType = "rtmps"
 	CameraSourceTypeSRT       CameraSourceType = "srt"
 	CameraSourceTypeRTP       CameraSourceType = "rtp"
+	CameraSourceTypeMpegTSUDP CameraSourceType = "mpegts_udp"
 	CameraSourceTypeWHEP      CameraSourceType = "whep"
 	CameraSourceTypeHLS       CameraSourceType = "hls"
 	CameraSourceTypeFile      CameraSourceType = "file"

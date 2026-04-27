@@ -52,11 +52,12 @@ func sourceTypeFromConfSource(src string) CameraSourceType {
 	case strings.HasPrefix(src, "udp://") ||
 		strings.HasPrefix(src, "udp+mpegts://") ||
 		strings.HasPrefix(src, "unix+mpegts://"):
-		// MPEG-TS-over-UDP carries no canonical source_type of its own; it is
-		// surfaced as "file" today since it's a local-pipe-style ingest.
-		// TODO Phase 2: confirm this mapping with the orchestrator; ADR 0009's
-		// 12-value enum does not enumerate "mpegts" explicitly.
-		return CameraSourceTypeFile
+		// MPEG-TS-over-UDP per ADR 0009 §D9 (OQ6 ratification): the
+		// 13-value source_type enum gained `mpegts_udp` to distinguish
+		// MPEG-TS-over-UDP from raw RTP-with-SDP. The bare `udp://`
+		// scheme defaults to MPEG-TS framing in MediaMTX; the explicit
+		// `udp+mpegts://` and `unix+mpegts://` schemes name it directly.
+		return CameraSourceTypeMpegTSUDP
 	default:
 		// Fall back to "file" for any unrecognized source string. The
 		// current set above is exhaustive over MediaMTX's path.go validate()
