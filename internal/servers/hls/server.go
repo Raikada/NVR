@@ -59,6 +59,17 @@ type serverAPIMuxersGetReq struct {
 	res  chan serverAPIMuxersGetRes
 }
 
+type serverAPIMuxerSnapshotRes struct {
+	data        []byte
+	contentType string
+	err         error
+}
+
+type serverAPIMuxerSnapshotReq struct {
+	name string
+	res  chan serverAPIMuxerSnapshotRes
+}
+
 type serverAPISessionsListRes struct {
 	data *defs.APIHLSSessionList
 	err  error
@@ -136,8 +147,9 @@ type Server struct {
 	chPathNotReady    chan defs.Path
 	chGetMuxer        chan serverGetMuxerReq
 	chCloseMuxer      chan *muxer
-	chAPIMuxerList    chan serverAPIMuxersListReq
-	chAPIMuxerGet     chan serverAPIMuxersGetReq
+	chAPIMuxerList     chan serverAPIMuxersListReq
+	chAPIMuxerGet      chan serverAPIMuxersGetReq
+	chAPIMuxerSnapshot chan serverAPIMuxerSnapshotReq
 	chAPISessionsList chan serverAPISessionsListReq
 	chAPISessionsGet  chan serverAPISessionsGetReq
 	chAPISessionsKick chan serverAPISessionsKickReq
@@ -156,6 +168,7 @@ func (s *Server) Initialize() error {
 	s.chCloseMuxer = make(chan *muxer)
 	s.chAPIMuxerList = make(chan serverAPIMuxersListReq)
 	s.chAPIMuxerGet = make(chan serverAPIMuxersGetReq)
+	s.chAPIMuxerSnapshot = make(chan serverAPIMuxerSnapshotReq)
 	s.chAPISessionsList = make(chan serverAPISessionsListReq)
 	s.chAPISessionsGet = make(chan serverAPISessionsGetReq)
 	s.chAPISessionsKick = make(chan serverAPISessionsKickReq)
@@ -290,6 +303,20 @@ outer:
 			}
 
 			req.res <- serverAPIMuxersGetRes{data: muxer.apiItem()}
+
+		case req := <-s.chAPIMuxerSnapshot:
+			mux, ok := s.muxers[req.name]
+			if !ok {
+				req.res <- serverAPIMuxerSnapshotRes{err: ErrMuxerNotFound}
+				continue
+			}
+
+			// apiSnapshot blocks on HTTP I/O (up to snapshotDeadline x3).
+			// Run it off the run-loop so the server stays responsive.
+			go func(m *muxer, res chan serverAPIMuxerSnapshotRes) {
+				data, ct, err := m.apiSnapshot()
+				res <- serverAPIMuxerSnapshotRes{data: data, contentType: ct, err: err}
+			}(mux, req.res)
 
 		case req := <-s.chAPISessionsList:
 			data := &defs.APIHLSSessionList{
@@ -427,6 +454,31 @@ func (s *Server) APIMuxersGet(name string) (*defs.APIHLSMuxer, error) {
 
 	case <-s.ctx.Done():
 		return nil, fmt.Errorf("terminated")
+	}
+}
+
+// APIMuxerSnapshot implements defs.APIHLSServer. It returns the
+// raw bytes of the most recent finalized HLS segment for the muxer
+// keyed by `name` (the MediaMTX path-name), along with the content
+// type gohlslib emitted (typically video/mp4 for fMP4 variants or
+// video/MP2T for MPEG-TS). Returns ErrMuxerNotFound for an unknown
+// path, ErrMuxerNoContent if the muxer is not currently producing
+// media (no instance, no segments, or content unavailable within
+// the snapshot deadline). The /v1/recorder/cameras/{id}/snapshot
+// API handler maps these to 404 / 503 respectively.
+func (s *Server) APIMuxerSnapshot(name string) ([]byte, string, error) {
+	req := serverAPIMuxerSnapshotReq{
+		name: name,
+		res:  make(chan serverAPIMuxerSnapshotRes),
+	}
+
+	select {
+	case s.chAPIMuxerSnapshot <- req:
+		res := <-req.res
+		return res.data, res.contentType, res.err
+
+	case <-s.ctx.Done():
+		return nil, "", fmt.Errorf("terminated")
 	}
 }
 

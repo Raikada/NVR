@@ -13,6 +13,12 @@ type APIHLSServer interface {
 	APISessionsKick(uuid.UUID) error
 	APIMuxersList() (*APIHLSMuxerList, error)
 	APIMuxersGet(string) (*APIHLSMuxer, error)
+	// APIMuxerSnapshot returns the raw bytes of the most recent
+	// finalized HLS segment for the muxer at the given path, plus the
+	// content type the muxer emits (e.g. video/mp4 for fMP4 variants,
+	// video/MP2T for MPEG-TS). Backs the
+	// /v1/recorder/cameras/{id}/snapshot escape-hatch endpoint.
+	APIMuxerSnapshot(string) ([]byte, string, error)
 }
 
 // APIHLSSessionList is a list of HLS sessions.

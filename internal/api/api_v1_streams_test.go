@@ -199,6 +199,10 @@ func (s *streamsTestHLSServer) APIMuxersGet(name string) (*defs.APIHLSMuxer, err
 	return m, nil
 }
 
+func (s *streamsTestHLSServer) APIMuxerSnapshot(_ string) ([]byte, string, error) {
+	return nil, "", hls.ErrMuxerNotFound
+}
+
 // v1StreamsFixture builds a populated API with one stream per protocol
 // cluster and returns the API plus the IDs of every stream created plus the
 // path-name strings used (for camera_id derivation checks).

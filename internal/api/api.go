@@ -164,6 +164,7 @@ func (a *API) Initialize() error {
 	if !interfaceIsEmpty(a.HLSServer) {
 		group.GET("/recorder/hls-muxers", a.onV1RecorderHLSMuxersList)
 		group.GET("/recorder/hls-muxers/:id", a.onV1RecorderHLSMuxersGet)
+		group.GET("/recorder/cameras/:id/snapshot", a.onV1RecorderCameraSnapshot)
 	}
 
 	a.httpServer = &httpp.Server{

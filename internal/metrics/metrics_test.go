@@ -89,6 +89,10 @@ func (dummyHLSServer) APIMuxersGet(string) (*defs.APIHLSMuxer, error) {
 	panic("unused")
 }
 
+func (dummyHLSServer) APIMuxerSnapshot(string) ([]byte, string, error) {
+	panic("unused")
+}
+
 func (dummyHLSServer) APISessionsList() (*defs.APIHLSSessionList, error) {
 	return &defs.APIHLSSessionList{
 		ItemCount: 1,
@@ -351,6 +355,10 @@ func (emptyHLSServer) APIMuxersList() (*defs.APIHLSMuxerList, error) {
 }
 
 func (emptyHLSServer) APIMuxersGet(string) (*defs.APIHLSMuxer, error) {
+	panic("unused")
+}
+
+func (emptyHLSServer) APIMuxerSnapshot(string) ([]byte, string, error) {
 	panic("unused")
 }
 
