@@ -1,4 +1,4 @@
-openapi: 3.0.0
+openapi: 3.0.3
 
 info:
   version: 1.0.0
@@ -11,7 +11,91 @@ info:
     and by LAN clients when authorized. Off-LAN clients reach this
     surface via the Cloud-brokered FRP tunnel.
 
-    Schemas describe what the current implementation actually returns.
+    **/v1 reshape (ADR 0009).** This document describes the canonical
+    `/v1/...` API per ADR 0009. The MediaMTX-lineage `/v3` surface is
+    gone; there is no deprecation window and no alias. Every endpoint
+    keys on canonical UUIDs (per ADR 0009 §D4); every request and
+    response shape uses **snake_case** JSON keys. The single small
+    legacy carve-out is `Stream.tracks[].codec_props`: those nine
+    discriminated codec sub-shapes inherit the upstream MediaMTX
+    camelCase JSON tags (`channelCount`, `sampleRate`, `bitDepth`,
+    `muLaw`) and have not been renamed; the inconsistency is tracked
+    as a Phase 3 follow-up.
+
+    **In-house error envelope (D15).** Errors return the in-house
+    `{ status: "error", error: <message> }` shape, not RFC 7807
+    `application/problem+json`. Successful writes that have nothing to
+    say return `{ status: "ok" }`. The decision to keep the in-house
+    shape is documented in canonical-divergence D15 and a future
+    platform-API-contracts ADR will revisit it.
+
+    **`tenant_id` on responses (D1).** Every detail-level response and
+    every list item carries a `tenant_id` field identifying the tenant
+    the recorder is bound to. The value comes from the recorder's
+    bootstrap config and is the same for every response from a given
+    recorder. List wrappers themselves do not carry the field; their
+    items do. Snake_case throughout the canonical /v1 surface — the
+    older /v3 surface used `tenantId` (camelCase); both forms recorded
+    here for archaeology, only the snake_case form survives.
+
+    **`tenant_id` on requests.** PATCH / POST / PUT bodies on /v1
+    accept an optional `tenant_id` field. If present and matching the
+    recorder's bound tenant the request proceeds; if present and
+    mismatched the recorder returns 403. If omitted, the recorder uses
+    its own tenant id implicitly. The escape-hatch endpoints under
+    `/v1/recorder/...` accept the same `tenant_id` field on PATCH
+    bodies (some of those handlers historically used the camelCase
+    `tenantId` form internally; the wire surface now mirrors the
+    canonical snake_case key).
+
+    **Source-URL redaction (D4).** `Camera.source_url` and the
+    `source` field returned by `/v1/recorder/camera-defaults` have any
+    embedded userinfo (`user:pass@host`) replaced with
+    `redacted:redacted@host` on responses. The recorder still accepts
+    full credential-bearing URLs on writes; only the response side is
+    redacted. The full canonical fix (split into `source_url` +
+    `credentials_ref`) lives in ADR 0009; the
+    `Camera.credentials_ref` field is now present.
+
+    **`query_string` redaction (D12).** Every Stream-level
+    `query_string` field — both on `Stream` itself and on any nested
+    descriptors — runs through a pre-serialization redaction step.
+    Values for keys matching `token`, `password`, `key`, or `secret`
+    (case-insensitive substring) are replaced with the literal
+    `redacted` before the response is emitted; the keys themselves
+    remain visible so a reviewer can see that a sensitive parameter
+    was present without seeing what it was. Other keys pass through
+    unchanged. Per-key visibility makes this a defense-in-depth
+    filter, not a hard guarantee — clients should not rely on it for
+    credential confidentiality.
+
+    **`remote_addr` redaction.** `Stream.remote_addr` and any nested
+    remote-addr fields (e.g.
+    `Stream.protocol_specific.transport_connections[].remote_addr` on
+    RTSP streams; WebRTC ICE candidate descriptors) are PII and are
+    replaced with the literal `redacted` on responses. A future
+    fine-grained role permission (`session.pii.read`) may unmask them
+    for callers that hold it; until that catalog lands, the value is
+    redacted unconditionally. See canonical-divergence D5.
+
+    **Discriminated unions.** Three canonical types carry
+    discriminated payloads:
+
+    - `Camera.source_config` — discriminator field `source_type` on
+      the parent `Camera` (not inside `source_config`).
+    - `Stream.protocol_specific` — discriminator field `protocol` on
+      the parent `Stream`.
+    - `Stream.tracks[].codec_props` — discriminator field `codec` on
+      the parent `tracks[]` element.
+
+    OpenAPI 3.0's `discriminator` keyword requires the discriminator
+    to live inside each variant; the canonical Raikada placement puts
+    it on the parent. The schemas below model each union as `oneOf`
+    without a strict `discriminator` property, with the parent's
+    discriminator field documenting which variant applies. Generators
+    that need a strict discriminator should read the discriminator
+    field off the parent.
+
     Per-field classifications follow `../../platform/docs/data-classification.md`.
     **Operational is the default**: schemas and fields without an
     explicit `x-classification` are Operational. Only divergent
@@ -20,80 +104,76 @@ info:
     `../../platform/docs/domain-model.md` are tracked separately in
     `../docs/canonical-divergences.md`.
 
-    **`tenantId` on responses.** Every detail-level response and every
-    list item carries a `tenantId` field identifying the tenant the
-    recorder is bound to. The value comes from the recorder's
-    bootstrap config and is the same for every response from a given
-    recorder. List wrappers themselves do not carry the field; their
-    items do. This closes canonical-divergence D1.
-
-    **`tenantId` on requests.** Patch / add / replace bodies on the
-    `/v3/config/*` endpoints accept an optional `tenantId` field. If
-    present and matching the recorder's bound tenant the request
-    proceeds; if present and mismatched the recorder returns 403. If
-    omitted, the recorder uses its own tenant id implicitly.
-
-    **`query` field redaction (D12).** Every session / connection
-    response that exposes a `query` field — `HLSSession.query`,
-    `RTSPSession.query`, `RTMPConn.query`, `SRTConn.query`,
-    `WebRTCSession.query` — runs the value through a pre-serialization
-    redaction step. Values for keys matching `token`, `password`,
-    `key`, or `secret` (case-insensitive substring) are replaced with
-    the literal `redacted` before the response is emitted; the keys
-    themselves remain visible so a reviewer can see that a sensitive
-    parameter was present without seeing what it was. Other keys
-    pass through unchanged. Per-key visibility makes this a
-    defense-in-depth filter, not a hard guarantee — clients should
-    not rely on it for credential confidentiality.
-
 servers:
   - url: http://localhost:9997
     description: Default LAN-side listener.
 
 tags:
-  - name: General
-    description: Top-level recorder identity and metadata.
-  - name: Authentication
+  - name: Info
+    description: Recorder identity and metadata.
+  - name: Auth
     description: |
       Auth-system administration endpoints. Currently a single
-      JWKS-refresh hook. The recorder validates inbound credentials
-      via a global middleware on every endpoint; see the security
-      section for accepted credential types.
-  - name: Configuration
+      issuer-material refresh hook (renamed mechanism-neutrally from
+      the legacy `/v3/auth/jwks/refresh`). The recorder validates
+      inbound credentials via a global middleware on every endpoint;
+      see the security section for accepted credential types.
+  - name: Cameras
     description: |
-      Persistent configuration of the recorder — global settings,
-      path defaults, and per-path entries. Bodies on these endpoints
-      use MediaMTX-internal `Path` shapes; the eventual mapping to
-      canonical `Camera` and `RecordingPolicy` entities is tracked in
-      `recorder/docs/canonical-divergences.md`.
-  - name: Paths
+      Canonical Camera entities. Cameras are owned by the Management
+      Server when one is paired; the recorder caches and reports.
+      Per ADR 0009 §D3 each Camera response carries a small `runtime`
+      block (`online`, `available`, `last_online_at`) that answers
+      the most common UI question without forcing a separate
+      `/v1/streams` call.
+  - name: RecordingPolicies
     description: |
-      Runtime view of currently-known media paths (live state, not
-      configuration). In Raikada-canonical terms each path corresponds
-      loosely to a `Camera` plus its active `Stream`s; the alignment
-      is incomplete and is tracked in `canonical-divergences.md`.
-  - name: HLS
-    description: HLS muxers and active HLS playback sessions.
-  - name: RTSP
+      Canonical RecordingPolicy entities. Multiple cameras share a
+      policy by referencing its `id` from `Camera.recording_policy_id`.
+      DELETE rejects when any camera still references the policy.
+  - name: Streams
     description: |
-      RTSP and RTSPS connections, sessions, and session-kick. Both
-      protocol variants share handlers; routes differ only in the
-      `rtspsconns` / `rtspssessions` prefix for the secure variant.
-  - name: RTMP
-    description: |
-      RTMP and RTMPS connections and connection-kick. Both protocol
-      variants share handlers; routes differ only in the `rtmpsconns`
-      prefix for the secure variant.
-  - name: SRT
-    description: SRT connections and connection-kick.
-  - name: WebRTC
-    description: WebRTC sessions and session-kick.
+      Active runtime sessions across every protocol the recorder
+      serves (RTSP/RTSPS, RTMP/RTMPS, SRT, WebRTC, HLS). The unified
+      `/v1/streams` surface folds in 25 protocol-specific endpoints
+      from the legacy /v3 surface; per-protocol detail lives on the
+      response in `protocol_specific`, not in the URL. `DELETE` is
+      the canonical kick verb for a runtime resource.
   - name: Recordings
     description: |
-      On-disk recording listings and per-segment delete. Each item
-      corresponds loosely to a `RecordingSegment` in the canonical
-      domain model; the current shape is a small subset and is tracked
-      in `canonical-divergences.md`.
+      Canonical Recording entities — continuous spans of recorded
+      footage. The client/scrub primitive. List omits the embedded
+      segment array; GET-by-id includes it. Playback handles are
+      issued by `/v1/recordings/{id}/playback`.
+  - name: RecordingSegments
+    description: |
+      Canonical RecordingSegment entities — the storage-level unit of
+      recorded footage. Used primarily for storage-ops listings and
+      per-segment delete. Scrub UX uses Recordings, not segments.
+  - name: Events
+    description: |
+      Canonical Event entries emitted by the recorder for camera
+      state changes, segment errors, storage failures, and auth
+      decisions. The buffer is in-memory; producer wiring is a
+      Phase-2-followup, so an unfilled buffer surfaces a top-level
+      `notice` field on the list response.
+  - name: Health
+    description: |
+      A single `HealthStatus` snapshot endpoint per ADR 0009 §D2.
+      Fine-grained metrics live in the Prometheus surface and are
+      out of scope here.
+  - name: StorageVolumes
+    description: |
+      Read-only StorageVolume listings. Volume-bootstrap configuration
+      lives in `/v1/recorder/config` per the escape-hatch boundary;
+      this surface is observability only.
+  - name: Recorder
+    description: |
+      Recorder-localized escape hatch per ADR 0009 §D6. Bounded
+      single namespace at `/v1/recorder/...`. Five sub-resources:
+      operational config, camera defaults, RPi-camera source-config,
+      per-camera shell hooks, and HLS muxer state. The MS does not
+      project this namespace upward; it is recorder-internal.
 
 security:
   - basicAuth: []
@@ -114,17 +194,41 @@ components:
       bearerFormat: JWT
       description: |
         Standard JWT bearer token. Validated against JWKS held by the
-        recorder's auth manager. Use `POST /v3/auth/jwks/refresh` to
-        force a JWKS reload after key rotation.
+        recorder's auth manager. Use
+        `POST /v1/auth/refresh-issuer-material` to force a JWKS
+        reload after key rotation.
 
         Note: a `Bearer` token that happens to contain a colon (e.g.
         the upstream MediaMTX `user:pass` convention) is treated
         opaquely as a token here, not as colon-separated credentials.
         Clients that need username+password authentication must use
         `basicAuth`. See D6 in
-        `recorder/docs/canonical-divergences.md` for history.
+        `recorder/docs/canonical-divergences.md`.
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+      description: Zero-based page index.
+    ItemsPerPage:
+      name: items_per_page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+      description: |
+        Items per page; default 100. The list-response wrapper
+        carries `item_count` (total before pagination), `page_count`,
+        and the windowed `items` array.
 
   schemas:
+    # ----- Status / envelope shapes ---------------------------------
+
     OKStatus:
       type: string
       enum: [ok]
@@ -133,824 +237,1559 @@ components:
       type: string
       enum: [error]
 
-    PathSourceType:
-      type: string
-      enum:
-      - hlsSource
-      - redirect
-      - rpiCameraSource
-      - rtmpConn
-      - rtmpsConn
-      - rtmpSource
-      - rtspSession
-      - rtspSource
-      - rtspsSession
-      - srtConn
-      - srtSource
-      - mpegtsSource
-      - rtpSource
-      - webRTCSession
-      - webRTCSource
-
-    PathReaderType:
-      type: string
-      enum:
-      - hlsSession
-      - rtmpConn
-      - rtmpsConn
-      - rtspConn
-      - rtspSession
-      - rtspsConn
-      - rtspsSession
-      - srtConn
-      - webRTCSession
-
-    PathTrackCodec:
-      type: string
-      enum:
-      - AV1
-      - VP9
-      - VP8
-      - H265
-      - H264
-      - MPEG-4 Video
-      - MPEG-1/2 Video
-      - M-JPEG
-      - Opus
-      - Vorbis
-      - MPEG-4 Audio
-      - MPEG-4 Audio LATM
-      - MPEG-1/2 Audio
-      - AC3
-      - Speex
-      - G726
-      - G722
-      - G711
-      - LPCM
-      - MPEG-TS
-      - KLV
-      - Generic
-
-    AlwaysAvailableTrackCodec:
-      type: string
-      enum:
-      - AV1
-      - VP9
-      - H265
-      - H264
-      - MPEG4Audio
-      - Opus
-      - G711
-      - LPCM
-
-    AuthAction:
-      type: string
-      enum:
-      - publish
-      - read
-      - playback
-      - api
-      - metrics
-      - pprof
-
-    AuthMethod:
-      type: string
-      enum: [internal, http, jwt]
-
-    Encryption:
-      type: string
-      enum: [no, optional, strict]
-
-    HLSVariant:
-      type: string
-      enum: [mpegts, fmp4, lowLatency]
-
-    LogDestination:
-      type: string
-      enum: [stdout, file, syslog]
-
-    LogLevel:
-      type: string
-      enum: [error, warn, info, debug]
-
-    RecordFormat:
-      type: string
-      enum: [fmp4, mpegts]
-
-    RTSPAuthMethod:
-      type: string
-      enum: [basic, digest]
-
-    RTSPRangeType:
-      type: string
-      enum: ['', clock, npt, smpte]
-
-    RTSPTransport:
-      type: string
-      enum: [udp, multicast, tcp, automatic]
-
-    RTMPConnState:
-      type: string
-      enum: [idle, read, publish]
-
-    RTSPSessionState:
-      type: string
-      enum: [idle, read, publish]
-
-    SRTConnState:
-      type: string
-      enum: [idle, read, publish]
-
-    WebRTCSessionState:
-      type: string
-      enum: [read, publish]
-
     OK:
       type: object
+      description: |
+        Successful-write envelope. Used for `DELETE` and PATCH calls
+        that have no body to return. Per canonical-divergence D15
+        this is an in-house shape, not RFC 7807.
+      required: [status]
       properties:
         status:
           $ref: '#/components/schemas/OKStatus'
 
     Error:
       type: object
+      description: |
+        In-house error envelope. The HTTP status code carries the
+        primary signal; `error` is a free-form human-readable
+        message. Per canonical-divergence D15 a future
+        platform-API-contracts ADR may migrate this to RFC 7807.
+      required: [status, error]
       properties:
         status:
           $ref: '#/components/schemas/ErrorStatus'
         error:
           type: string
 
+    PaginationListWrapper:
+      type: object
+      description: |
+        Common pagination envelope. Concrete list responses substitute
+        their own item type for `items[]`.
+      required: [item_count, page_count, items]
+      properties:
+        item_count:
+          type: integer
+          description: Total items matching the query, before pagination.
+        page_count:
+          type: integer
+          description: Total page count for the current `items_per_page`.
+        items:
+          type: array
+          items: {}
+
+    # ----- Info -----------------------------------------------------
+
     Info:
       type: object
+      required: [tenant_id, version, started]
       properties:
-        tenantId:
+        tenant_id:
           type: string
           description: |
             Tenant the recorder is bound to. Set in the bootstrap
             config until the pairing flow lands per ADR 0002.
-            Tracked as canonical-divergence D1 (resolved).
+            Closes canonical-divergence D1.
         version:
           type: string
+          description: Recorder build version string.
         started:
           type: string
+          format: date-time
+          description: Recorder process start time.
 
-    AuthInternalUser:
-      type: object
-      properties:
-        user:
-          type: string
-        pass:
-          type: string
-        ips:
-          type: array
-          items:
-            type: string
-        permissions:
-          type: array
-          items:
-            $ref: '#/components/schemas/AuthInternalUserPermission'
+    # ----- Enumerations --------------------------------------------
 
-    AuthInternalUserPermission:
-      type: object
-      properties:
-        action:
-          $ref: '#/components/schemas/AuthAction'
-        path:
-          type: string
+    CameraSourceType:
+      type: string
+      description: |
+        Source-mode discriminator for `Camera`. Renamed from the
+        legacy `transport` per ADR 0009 §"Camera amendment". Drives
+        the `source_config` discriminated union.
+      enum:
+        - rtsp
+        - rtsps
+        - rtmp
+        - rtmps
+        - srt
+        - rtp
+        - whep
+        - hls
+        - file
+        - redirect
+        - publish
+        - rpi_camera
 
-    GlobalConf:
-      type: object
-      properties:
-        # Identity
-        tenantId:
-          type: string
-          description: |
-            Tenant the recorder is bound to. Required in the bootstrap
-            config. Patch requests may include this field; if present
-            it must match the recorder's bound tenant or the request
-            is rejected with 403.
+    CameraTransport:
+      type: string
+      description: Transport mode for RTSP/RTSPS/RTMP/RTMPS/SRT pull sources.
+      enum:
+        - tcp
+        - udp
+        - udp_multicast
 
-        # General
-        logLevel:
-          $ref: '#/components/schemas/LogLevel'
-        logDestinations:
-          type: array
-          items:
-            $ref: '#/components/schemas/LogDestination'
-        logStructured:
-          type: boolean
-        logFile:
-          type: string
-        sysLogPrefix:
-          type: string
-        dumpPackets:
-          type: boolean
-        readTimeout:
-          type: string
-        writeTimeout:
-          type: string
-        readBufferCount:
-          type: integer
-          format: int64
-          nullable: true
-          deprecated: true
-        writeQueueSize:
-          type: integer
-          format: int64
-        udpMaxPayloadSize:
-          type: integer
-          format: int64
-        udpReadBufferSize:
-          type: integer
-          format: uint64
-        runOnConnect:
-          type: string
-        runOnConnectRestart:
-          type: boolean
-        runOnDisconnect:
-          type: string
+    StreamProtocol:
+      type: string
+      description: |
+        Wire protocol of an active Stream. Extends the legacy
+        `protocol` enum with `rtsps` / `rtmps` to track TLS variants
+        per ADR 0009 §"Stream amendments".
+      enum:
+        - rtsp
+        - rtsps
+        - rtmp
+        - rtmps
+        - srt
+        - webrtc
+        - hls
 
-        # Authentication
-        authMethod:
-          $ref: '#/components/schemas/AuthMethod'
-        authInternalUsers:
-          type: array
-          items:
-            $ref: '#/components/schemas/AuthInternalUser'
-        authHTTPAddress:
-          type: string
-        externalAuthenticationURL:
-          type: string
-          nullable: true
-          deprecated: true
-        authHTTPFingerprint:
-          type: string
-        authHTTPExclude:
-          type: array
-          items:
-            $ref: '#/components/schemas/AuthInternalUserPermission'
-        authJWTJWKS:
-          type: string
-        authJWTJWKSFingerprint:
-          type: string
-        authJWTClaimKey:
-          type: string
-        authJWTInHTTPQuery:
-          type: boolean
-          nullable: true
-          deprecated: true
-        authJWTIssuer:
-          type: string
-        authJWTAudience:
-          type: string
-        authJWTExclude:
-          type: array
-          items:
-            $ref: '#/components/schemas/AuthInternalUserPermission'
+    StreamDirection:
+      type: string
+      description: |
+        Whether this Stream publishes media to the recorder or reads
+        media from it. New in ADR 0009.
+      enum:
+        - publish
+        - read
 
-        # Control API
-        api:
-          type: boolean
-        apiAddress:
-          type: string
-        apiEncryption:
-          type: boolean
-        apiServerKey:
-          type: string
-        apiServerCert:
-          type: string
-        apiAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        apiAllowOrigins:
-          type: array
-          items:
-            type: string
-        apiTrustedProxies:
-          type: array
-          items:
-            type: string
+    StreamState:
+      type: string
+      description: |
+        Canonical lifecycle state per `domain-model.md` §Stream.
+        Protocol-specific state (RTMP idle/read/publish, etc.) lives
+        on `protocol_specific`, not here.
+      enum:
+        - connecting
+        - active
+        - stalled
+        - ended
+        - errored
 
-        # Metrics
-        metrics:
-          type: boolean
-        metricsAddress:
-          type: string
-        metricsEncryption:
-          type: boolean
-        metricsServerKey:
-          type: string
-        metricsServerCert:
-          type: string
-        metricsAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        metricsAllowOrigins:
-          type: array
-          items:
-            type: string
-        metricsTrustedProxies:
-          type: array
-          items:
-            type: string
+    StreamTrackKind:
+      type: string
+      enum:
+        - video
+        - audio
+        - metadata
 
-        # PPROF
-        pprof:
-          type: boolean
-        pprofAddress:
-          type: string
-        pprofEncryption:
-          type: boolean
-        pprofServerKey:
-          type: string
-        pprofServerCert:
-          type: string
-        pprofAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        pprofAllowOrigins:
-          type: array
-          items:
-            type: string
-        pprofTrustedProxies:
-          type: array
-          items:
-            type: string
+    RTSPTransport:
+      type: string
+      description: Transport mode of an RTSP / RTSPS session.
+      enum:
+        - tcp
+        - udp
+        - udp_multicast
 
-        # Playback server
-        playback:
-          type: boolean
-        playbackAddress:
-          type: string
-        playbackEncryption:
-          type: boolean
-        playbackServerKey:
-          type: string
-        playbackServerCert:
-          type: string
-        playbackAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        playbackAllowOrigins:
-          type: array
-          items:
-            type: string
-        playbackTrustedProxies:
-          type: array
-          items:
-            type: string
+    RTMPState:
+      type: string
+      enum:
+        - idle
+        - read
+        - publish
 
-        # RTSP server
-        rtsp:
-          type: boolean
-        rtspDisable:
-          type: boolean
-          nullable: true
-          deprecated: true
-        protocols:
-          type: array
-          nullable: true
-          items:
-            type: string
-            enum: [udp, multicast, tcp]
-          deprecated: true
-        rtspTransports:
-          type: array
-          items:
-            type: string
-            enum: [udp, multicast, tcp]
-        encryption:
-          type: string
-          nullable: true
-          deprecated: true
-          allOf:
-            - $ref: '#/components/schemas/Encryption'
-        rtspEncryption:
-          $ref: '#/components/schemas/Encryption'
-        rtspAddress:
-          type: string
-        rtspsAddress:
-          type: string
-        rtpAddress:
-          type: string
-        rtcpAddress:
-          type: string
-        multicastIPRange:
-          type: string
-        multicastRTPPort:
-          type: integer
-          format: int64
-        multicastRTCPPort:
-          type: integer
-          format: int64
-        srtpAddress:
-          type: string
-        srtcpAddress:
-          type: string
-        multicastSRTPPort:
-          type: integer
-          format: int64
-        multicastSRTCPPort:
-          type: integer
-          format: int64
-        rtspServerKey:
-          type: string
-        rtspServerCert:
-          type: string
-        authMethods:
-          type: array
-          nullable: true
-          items:
-            $ref: '#/components/schemas/RTSPAuthMethod'
-          deprecated: true
-        rtspAuthMethods:
-          type: array
-          items:
-            $ref: '#/components/schemas/RTSPAuthMethod'
-        rtspUDPReadBufferSize:
-          type: integer
-          format: uint64
-          nullable: true
-          deprecated: true
+    RecordingPolicyMode:
+      type: string
+      enum:
+        - continuous
+        - motion
+        - schedule
+        - event_triggered
+        - off
 
-        # RTMP server
-        rtmp:
-          type: boolean
-        rtmpDisable:
-          type: boolean
-          nullable: true
-          deprecated: true
-        rtmpEncryption:
-          $ref: '#/components/schemas/Encryption'
-        rtmpAddress:
-          type: string
-        rtmpsAddress:
-          type: string
-        rtmpServerKey:
-          type: string
-        rtmpServerCert:
-          type: string
+    RecordingPolicyContainer:
+      type: string
+      enum:
+        - fmp4
+        - mpegts
 
-        # HLS server
-        hls:
-          type: boolean
-        hlsDisable:
-          type: boolean
-          nullable: true
-          deprecated: true
-        hlsAddress:
-          type: string
-        hlsEncryption:
-          type: boolean
-        hlsServerKey:
-          type: string
-        hlsServerCert:
-          type: string
-        hlsAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        hlsAllowOrigins:
-          type: array
-          items:
-            type: string
-        hlsTrustedProxies:
-          type: array
-          items:
-            type: string
-        hlsAlwaysRemux:
-          type: boolean
-        hlsVariant:
-          $ref: '#/components/schemas/HLSVariant'
-        hlsSegmentCount:
-          type: integer
-          format: int64
-        hlsSegmentDuration:
-          type: string
-        hlsPartDuration:
-          type: string
-        hlsSegmentMaxSize:
-          type: string
-        hlsDirectory:
-          type: string
-        hlsMuxerCloseAfter:
-          type: string
+    RecordingState:
+      type: string
+      description: |
+        Recording lifecycle: `active → sealed`; `sealed → archived |
+        deleted`; `(any) → failed`.
+      enum:
+        - active
+        - sealed
+        - archived
+        - failed
+        - deleted
 
-        # WebRTC server
-        webrtc:
-          type: boolean
-        webrtcDisable:
-          type: boolean
-          nullable: true
-          deprecated: true
-        webrtcAddress:
-          type: string
-        webrtcEncryption:
-          type: boolean
-        webrtcServerKey:
-          type: string
-        webrtcServerCert:
-          type: string
-        webrtcAllowOrigin:
-          type: string
-          nullable: true
-          deprecated: true
-        webrtcAllowOrigins:
-          type: array
-          items:
-            type: string
-        webrtcTrustedProxies:
-          type: array
-          items:
-            type: string
-        webrtcLocalUDPAddress:
-          type: string
-        webrtcLocalTCPAddress:
-          type: string
-        webrtcIPsFromInterfaces:
-          type: boolean
-        webrtcIPsFromInterfacesList:
-          type: array
-          items:
-            type: string
-        webrtcAdditionalHosts:
-          type: array
-          items:
-            type: string
-        webrtcICEServers2:
-          type: array
-          items:
-            $ref: '#/components/schemas/WebRTCICEServer'
-        webrtcSTUNGatherTimeout:
-          type: string
-        webrtcHandshakeTimeout:
-          type: string
-        webrtcTrackGatherTimeout:
-          type: string
-        webrtcICEUDPMuxAddress:
-          type: string
-          nullable: true
-          deprecated: true
-        webrtcICETCPMuxAddress:
-          type: string
-          nullable: true
-          deprecated: true
-        webrtcICEHostNAT1To1IPs:
-          type: array
-          nullable: true
-          items:
-            type: string
-          deprecated: true
-        webrtcICEServers:
-          type: array
-          nullable: true
-          items:
-            type: string
-          deprecated: true
+    RecordingSegmentContainer:
+      type: string
+      enum:
+        - fmp4
+        - mpegts
 
-        # SRT server
-        srt:
-          type: boolean
-        srtAddress:
-          type: string
+    RecordingSegmentState:
+      type: string
+      enum:
+        - recording
+        - sealed
+        - archived
+        - deleted
 
-        # Record (deprecated)
-        record:
-          type: boolean
-          nullable: true
-          deprecated: true
-        recordPath:
-          type: string
-          nullable: true
-          deprecated: true
-        recordFormat:
-          type: string
-          nullable: true
-          deprecated: true
-          allOf:
-            - $ref: '#/components/schemas/RecordFormat'
-        recordPartDuration:
-          type: string
-          nullable: true
-          deprecated: true
-        recordSegmentDuration:
-          type: string
-          nullable: true
-          deprecated: true
-        recordDeleteAfter:
-          type: string
-          nullable: true
-          deprecated: true
+    EventSeverity:
+      type: string
+      enum:
+        - debug
+        - info
+        - warning
+        - error
+        - critical
 
-    PathConf:
+    EventSubjectKind:
+      type: string
+      enum:
+        - camera
+        - stream
+        - segment
+        - volume
+        - server
+        - user
+        - session
+
+    StorageVolumeKind:
+      type: string
+      enum:
+        - internal_disk
+        - external_disk
+        - network_share
+        - ramdisk
+
+    StorageVolumeStatus:
+      type: string
+      enum:
+        - healthy
+        - degraded
+        - full
+        - missing
+        - read_only
+
+    HealthStatusOverall:
+      type: string
+      enum:
+        - healthy
+        - degraded
+        - unhealthy
+
+    HealthStatusVolumeState:
+      type: string
+      enum:
+        - healthy
+        - degraded
+        - full
+        - read_only
+
+    # ----- Camera --------------------------------------------------
+
+    CameraOnDemand:
       type: object
       description: |
-        MediaMTX-internal path configuration. Carries the recorder's
-        per-path settings as serialized in `mediamtx.yml`. Exposing
-        this shape at the public API surface is a canonical-rule
-        violation (ADR 0001 R5: MediaMTX-internal types must not leak
-        across boundaries); the canonical replacement is a `Camera`
-        plus a `RecordingPolicy` per the domain model. Resolution
-        will require its own ADR — the translation is non-trivial.
-        Tracked in `recorder/docs/canonical-divergences.md`.
-
-        Fields default to **Sensitive**; fields that may carry
-        embedded camera credentials (`source`) are **Credential** and
-        should be redacted in logs.
-      x-classification: sensitive
+        On-demand activation. The camera's source starts only after
+        a consumer connects, and tears down after `close_after` of
+        inactivity.
+      required: [enabled, start_timeout, close_after]
       properties:
-        tenantId:
+        enabled:
+          type: boolean
+        start_timeout:
           type: string
-        name:
+          description: Go duration string (e.g. `10s`, `2m`).
+        close_after:
+          type: string
+          description: Go duration string.
+
+    CameraAlwaysAvailable:
+      type: object
+      description: |
+        File-based fallback served when the configured source is
+        offline.
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        file:
           type: string
           x-classification: sensitive
+          description: |
+            Recorder-local path to the fallback file. Sensitive per
+            data-classification.md (filesystem layout).
+        tracks:
+          type: array
+          items:
+            type: string
 
-        # General
-        source:
+    CameraRuntime:
+      type: object
+      description: |
+        Recorder-reported runtime block per ADR 0009 §D3. **Read-only
+        at the API**: writes ignore this block.
+      required: [online, available]
+      properties:
+        online:
+          type: boolean
+        available:
+          type: boolean
+        last_online_at:
+          type: string
+          format: date-time
+
+    SourceConfigRTSP:
+      type: object
+      description: |
+        `source_config` variant for `source_type=rtsp` /
+        `source_type=rtsps`.
+      properties:
+        transport:
+          $ref: '#/components/schemas/CameraTransport'
+        passphrase:
           type: string
           x-classification: credential
           description: |
-            Source URL for the path. May contain embedded credentials
-            (e.g. `rtsp://user:pass@camera/stream`) on **input**;
-            **on output the userinfo portion is redacted** to
-            `redacted:redacted@host` per D4 in
-            `recorder/docs/canonical-divergences.md`. The recorder
-            still accepts full credential-bearing URLs in PATCH /
-            POST bodies; it just does not return them. The full
-            canonical split into `Camera.source_url` (Sensitive,
-            credential-free) plus `Camera.credentials_ref`
-            (Operational pointer to a Credential-classified secret)
-            lands with ADR 0009.
-        sourceFingerprint:
+            Optional pull-side passphrase. Held under the credential
+            store via `credentials_ref` in the canonical model; this
+            inline form is recorder-local.
+
+    SourceConfigRTMP:
+      type: object
+      description: |
+        `source_config` variant for `source_type=rtmp` /
+        `source_type=rtmps`.
+      properties:
+        transport:
+          $ref: '#/components/schemas/CameraTransport'
+
+    SourceConfigSRT:
+      type: object
+      description: '`source_config` variant for `source_type=srt`.'
+      properties:
+        transport:
+          $ref: '#/components/schemas/CameraTransport'
+        passphrase:
+          type: string
+          x-classification: credential
+
+    SourceConfigWHEP:
+      type: object
+      description: |
+        `source_config` variant for `source_type=whep`. Bearer token
+        held under a credential-store ref, not inlined.
+      properties:
+        bearer_token_ref:
+          type: string
+          description: |
+            Opaque reference into the credential store. The
+            referenced material is Credential-classified; the ref
+            itself is Operational.
+
+    SourceConfigRedirect:
+      type: object
+      description: '`source_config` variant for `source_type=redirect`.'
+      required: [target]
+      properties:
+        target:
+          type: string
+
+    SourceConfigFile:
+      type: object
+      description: '`source_config` variant for `source_type=file`.'
+      required: [path]
+      properties:
+        path:
           type: string
           x-classification: sensitive
-        sourceOnDemand:
+          description: Recorder-local path to the source file.
+
+    SourceConfigPublish:
+      type: object
+      description: |
+        `source_config` variant for `source_type=publish`. Empty
+        canonical sub-shape — a publish path simply waits for
+        any-protocol publish.
+      additionalProperties: false
+
+    SourceConfigRPiCamera:
+      type: object
+      description: |
+        `source_config` variant for `source_type=rpi_camera`. Empty
+        canonical marker per ADR 0009. The real ~30-field RPi-camera
+        configuration lives in the recorder-localized escape hatch at
+        `/v1/recorder/cameras/{id}/source-config`.
+      additionalProperties: false
+
+    SourceConfigRTP:
+      type: object
+      description: |
+        `source_config` variant for `source_type=rtp`. Empty canonical
+        sub-shape; the SDP descriptor location is captured by
+        `Camera.source_url`.
+      additionalProperties: false
+
+    SourceConfigHLS:
+      type: object
+      description: |
+        `source_config` variant for `source_type=hls`. Empty canonical
+        sub-shape; HLS pulls do not carry extra knobs today.
+      additionalProperties: false
+
+    SourceConfig:
+      description: |
+        Discriminated union of source-mode-specific options on
+        `Camera`. The discriminator is `source_type` on the parent
+        `Camera`, not a field inside this object — OpenAPI 3.0's
+        strict `discriminator` keyword requires the discriminator
+        field to live inside each variant, which the canonical
+        Raikada model does not. Consumers must read `source_type`
+        off the parent to pick a variant.
+      oneOf:
+        - $ref: '#/components/schemas/SourceConfigRTSP'
+        - $ref: '#/components/schemas/SourceConfigRTMP'
+        - $ref: '#/components/schemas/SourceConfigSRT'
+        - $ref: '#/components/schemas/SourceConfigWHEP'
+        - $ref: '#/components/schemas/SourceConfigRedirect'
+        - $ref: '#/components/schemas/SourceConfigFile'
+        - $ref: '#/components/schemas/SourceConfigPublish'
+        - $ref: '#/components/schemas/SourceConfigRPiCamera'
+        - $ref: '#/components/schemas/SourceConfigRTP'
+        - $ref: '#/components/schemas/SourceConfigHLS'
+
+    Camera:
+      type: object
+      description: |
+        Canonical Camera entity. The MS owns Camera authoritatively;
+        the recorder caches and reports. Closes canonical-divergences
+        D2 / D3 / D7.
+      required:
+        - id
+        - tenant_id
+        - site_id
+        - recording_server_id
+        - name
+        - source_type
+        - source_url
+        - use_absolute_timestamp
+        - override_publisher
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          x-classification: sensitive
+          description: |
+            Operator-given name. Sensitive per data-classification.md
+            ("Front Door", "Server Room A" — descriptive of the
+            customer's premises).
+        source_type:
+          $ref: '#/components/schemas/CameraSourceType'
+        source_url:
+          type: string
+          x-classification: sensitive
+          description: |
+            URL structure (host/port/path). Plaintext credentials
+            must never appear here in production; on the response
+            side any embedded userinfo is replaced with
+            `redacted:redacted@host` (canonical-divergence D4
+            mitigation).
+        credentials_ref:
+          type: string
+          description: |
+            Opaque reference into the credential store. The field
+            itself is Operational; the referenced material (camera
+            password, etc.) is Credential.
+        source_config:
+          $ref: '#/components/schemas/SourceConfig'
+        recording_policy_id:
+          type: string
+          format: uuid
+          description: References a `RecordingPolicy.id`.
+        on_demand:
+          $ref: '#/components/schemas/CameraOnDemand'
+        max_readers:
+          type: integer
+          description: Concurrent-consumer cap.
+        fallback_camera_id:
+          type: string
+          format: uuid
+        always_available:
+          $ref: '#/components/schemas/CameraAlwaysAvailable'
+        source_fingerprint:
+          type: string
+          description: Pinned upstream TLS certificate fingerprint.
+        use_absolute_timestamp:
           type: boolean
-        sourceOnDemandStartTimeout:
+        override_publisher:
+          type: boolean
+        runtime:
+          $ref: '#/components/schemas/CameraRuntime'
+        created_at:
           type: string
-        sourceOnDemandCloseAfter:
+          format: date-time
+        updated_at:
           type: string
-        maxReaders:
+          format: date-time
+
+    CameraList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Camera'
+
+    # ----- RecordingPolicy ----------------------------------------
+
+    RecordingPolicyScheduleWindow:
+      type: object
+      required: [days, start, end]
+      properties:
+        days:
+          type: array
+          items:
+            type: string
+        start:
+          type: string
+          description: Local-time HH:MM start.
+        end:
+          type: string
+          description: Local-time HH:MM end.
+
+    RecordingPolicySchedule:
+      type: object
+      required: [timezone, windows]
+      properties:
+        timezone:
+          type: string
+        windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecordingPolicyScheduleWindow'
+
+    RecordingPolicy:
+      type: object
+      description: |
+        Canonical RecordingPolicy entity. Multiple cameras may share
+        a policy. The MS owns RecordingPolicy authoritatively; the
+        recorder caches and enforces. Adds `part_duration`,
+        `max_part_size`, and `record_path_template` per ADR 0009.
+      required:
+        - id
+        - tenant_id
+        - name
+        - mode
+        - retention_duration
+        - min_segment_duration
+        - max_segment_duration
+        - container
+        - enabled
+        - part_duration
+        - max_part_size
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          x-classification: sensitive
+        mode:
+          $ref: '#/components/schemas/RecordingPolicyMode'
+        schedule:
+          $ref: '#/components/schemas/RecordingPolicySchedule'
+        retention_duration:
+          type: string
+          description: Go duration string (e.g. `168h` for 7 days).
+        min_segment_duration:
+          type: string
+        max_segment_duration:
+          type: string
+        container:
+          $ref: '#/components/schemas/RecordingPolicyContainer'
+        pre_event_buffer:
+          type: string
+        post_event_buffer:
+          type: string
+        enabled:
+          type: boolean
+        part_duration:
+          type: string
+          description: fMP4 part duration.
+        max_part_size:
           type: integer
           format: int64
-        srtReadPassphrase:
+          description: fMP4 part size cap (bytes).
+        record_path_template:
           type: string
-        fallback:
+          description: |
+            Recorder-local on-disk path-name template. May carry
+            tenant/site/camera placeholders; never customer-PII.
+        created_at:
           type: string
-          nullable: true
-          deprecated: true
-        useAbsoluteTimestamp:
-          type: boolean
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
-        # Always available
-        alwaysAvailable:
-          type: boolean
-        alwaysAvailableTracks:
-          type: array
-          items:
-            $ref: '#/components/schemas/AlwaysAvailableTrack'
-        alwaysAvailableFile:
+    RecordingPolicyList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/RecordingPolicy'
+
+    # ----- Stream + protocol_specific -----------------------------
+
+    APIPathTrackCodecPropsAV1:
+      type: object
+      description: codec_props variant for codec=AV1.
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        profile:
+          type: integer
+        level:
+          type: integer
+        tier:
+          type: integer
+
+    APIPathTrackCodecPropsVP9:
+      type: object
+      description: codec_props variant for codec=VP9.
+      properties:
+        profile:
+          type: integer
+
+    APIPathTrackCodecPropsH265:
+      type: object
+      description: codec_props variant for codec=H265.
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        profile:
+          type: string
+        level:
           type: string
 
-        # Record
-        record:
-          type: boolean
-        playback:
-          type: boolean
-          nullable: true
-          deprecated: true
-        recordPath:
+    APIPathTrackCodecPropsH264:
+      type: object
+      description: codec_props variant for codec=H264.
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        profile:
           type: string
-        recordFormat:
-          $ref: '#/components/schemas/RecordFormat'
-        recordPartDuration:
-          type: string
-        recordMaxPartSize:
-          type: string
-        recordSegmentDuration:
-          type: string
-        recordDeleteAfter:
+        level:
           type: string
 
-        # Authentication (deprecated)
-        publishUser:
-          type: string
-          nullable: true
-          deprecated: true
-        publishPass:
-          type: string
-          nullable: true
-          deprecated: true
-        publishIPs:
-          type: array
-          nullable: true
-          items:
-            type: string
-          deprecated: true
-        readUser:
-          type: string
-          nullable: true
-          deprecated: true
-        readPass:
-          type: string
-          nullable: true
-          deprecated: true
-        readIPs:
-          type: array
-          nullable: true
-          items:
-            type: string
-          deprecated: true
+    APIPathTrackCodecPropsOpus:
+      type: object
+      description: |
+        codec_props variant for codec=Opus. NOTE: the JSON keys
+        retain MediaMTX-lineage **camelCase** (`channelCount`),
+        unlike the snake_case used elsewhere on the canonical /v1
+        surface. Tracked as a Phase 3 follow-up.
+      properties:
+        channelCount:
+          type: integer
 
-        # Publisher source
-        overridePublisher:
-          type: boolean
-        disablePublisherOverride:
-          type: boolean
-          nullable: true
-          deprecated: true
-        srtPublishPassphrase:
-          type: string
-        rtspDemuxMpegts:
-          type: boolean
+    APIPathTrackCodecPropsMPEG4Audio:
+      type: object
+      description: |
+        codec_props variant for codec=MPEG-4 Audio. JSON keys retain
+        camelCase (`sampleRate`, `channelCount`).
+      properties:
+        sampleRate:
+          type: integer
+        channelCount:
+          type: integer
 
-        # RTSP source
-        rtspTransport:
+    APIPathTrackCodecPropsAC3:
+      type: object
+      description: |
+        codec_props variant for codec=AC3. JSON keys retain camelCase.
+      properties:
+        sampleRate:
+          type: integer
+        channelCount:
+          type: integer
+
+    APIPathTrackCodecPropsG711:
+      type: object
+      description: |
+        codec_props variant for codec=G711. JSON keys retain camelCase
+        (`muLaw`, `sampleRate`, `channelCount`).
+      properties:
+        muLaw:
+          type: boolean
+        sampleRate:
+          type: integer
+        channelCount:
+          type: integer
+
+    APIPathTrackCodecPropsLPCM:
+      type: object
+      description: |
+        codec_props variant for codec=LPCM. JSON keys retain camelCase
+        (`bitDepth`, `sampleRate`, `channelCount`).
+      properties:
+        bitDepth:
+          type: integer
+        sampleRate:
+          type: integer
+        channelCount:
+          type: integer
+
+    APIPathTrackCodecProps:
+      description: |
+        Discriminated union of codec-specific properties. The
+        discriminator is `codec` on the parent `tracks[]` element,
+        not inside this object. NOTE: variant fields use camelCase
+        JSON keys for compatibility with the upstream MediaMTX shape;
+        the rest of the canonical /v1 surface uses snake_case. This
+        inconsistency is tracked as a Phase 3 follow-up.
+      oneOf:
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsAV1'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsVP9'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsH265'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsH264'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsOpus'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsMPEG4Audio'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsAC3'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsG711'
+        - $ref: '#/components/schemas/APIPathTrackCodecPropsLPCM'
+
+    StreamTrack:
+      type: object
+      description: |
+        One track on an active Stream. The flat fields (`width`,
+        `height`, `fps`, `bitrate_kbps`) are a denormalized summary
+        of the discriminated `codec_props` detail.
+      required: [kind, codec]
+      properties:
+        kind:
+          $ref: '#/components/schemas/StreamTrackKind'
+        codec:
+          type: string
+        width:
+          type: integer
+        height:
+          type: integer
+        fps:
+          type: number
+          format: double
+        bitrate_kbps:
+          type: integer
+        codec_props:
+          $ref: '#/components/schemas/APIPathTrackCodecProps'
+
+    TransportConnection:
+      type: object
+      description: |
+        One RTSP-level transport connection. Folded into
+        `Stream.protocol_specific.transport_connections[]` for
+        RTSP / RTSPS streams. Replaces the standalone RTSPConn /
+        RTSPSConn endpoints in the legacy /v3 surface.
+      required: [id, remote_addr, bytes_inbound, bytes_outbound]
+      properties:
+        id:
+          type: string
+          format: uuid
+        remote_addr:
+          type: string
+          x-classification: pii
+          description: |
+            Peer address. Replaced with the literal `redacted` on
+            responses (canonical-divergence D5).
+        tunnel:
+          type: string
+        bytes_inbound:
+          type: integer
+          format: int64
+        bytes_outbound:
+          type: integer
+          format: int64
+
+    ProtocolSpecificRTSP:
+      type: object
+      description: |
+        protocol_specific variant for `protocol=rtsp` /
+        `protocol=rtsps`. The TLS distinction lives on
+        `Stream.protocol`; this shape is shared.
+      required:
+        - transport
+        - profile
+        - rtp_packets_inbound
+        - rtp_packets_lost
+        - rtp_packets_in_error
+        - rtp_jitter
+        - rtcp_packets_inbound
+        - rtcp_packets_in_error
+        - rtp_packets_outbound
+        - rtp_packets_reported_lost
+        - rtp_packets_discarded
+        - rtcp_packets_outbound
+      properties:
+        transport:
           $ref: '#/components/schemas/RTSPTransport'
-        rtspAnyPort:
-          type: boolean
-        sourceProtocol:
+        profile:
           type: string
-          nullable: true
-          deprecated: true
-          allOf:
-            - $ref: '#/components/schemas/RTSPTransport'
-        sourceAnyPortEnable:
-          type: boolean
-          nullable: true
-          deprecated: true
-        rtspRangeType:
-          $ref: '#/components/schemas/RTSPRangeType'
-        rtspRangeStart:
-          type: string
-        rtspUDPReadBufferSize:
-          type: integer
-          format: uint64
-          nullable: true
-          deprecated: true
-        rtspUDPSourcePortRange:
+        transport_connections:
           type: array
-          minItems: 2
-          maxItems: 2
           items:
-            type: integer
-            format: uint64
-
-        # MPEG-TS source
-        mpegtsUDPReadBufferSize:
+            $ref: '#/components/schemas/TransportConnection'
+        rtp_packets_inbound:
           type: integer
-          format: uint64
-          nullable: true
-          deprecated: true
-
-        # RTP source
-        rtpSDP:
-          type: string
-        rtpUDPReadBufferSize:
+          format: int64
+        rtp_packets_lost:
           type: integer
-          format: uint64
-          nullable: true
-          deprecated: true
+          format: int64
+        rtp_packets_in_error:
+          type: integer
+          format: int64
+        rtp_jitter:
+          type: integer
+          format: int64
+        rtcp_packets_inbound:
+          type: integer
+          format: int64
+        rtcp_packets_in_error:
+          type: integer
+          format: int64
+        rtp_packets_outbound:
+          type: integer
+          format: int64
+        rtp_packets_reported_lost:
+          type: integer
+          format: int64
+        rtp_packets_discarded:
+          type: integer
+          format: int64
+        rtcp_packets_outbound:
+          type: integer
+          format: int64
 
-        # WHEP source
-        whepBearerToken:
-          type: string
-        whepSTUNGatherTimeout:
-          type: string
-        whepHandshakeTimeout:
-          type: string
-        whepTrackGatherTimeout:
+    ProtocolSpecificRTMP:
+      type: object
+      description: |
+        protocol_specific variant for `protocol=rtmp` /
+        `protocol=rtmps`.
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/RTMPState'
+
+    ProtocolSpecificSRT:
+      type: object
+      description: protocol_specific variant for `protocol=srt`.
+      required:
+        - packets_received
+        - packets_lost
+        - packets_dropped
+        - retransmits
+        - encryption_state
+      properties:
+        packets_received:
+          type: integer
+          format: int64
+        packets_lost:
+          type: integer
+          format: int64
+        packets_dropped:
+          type: integer
+          format: int64
+        retransmits:
+          type: integer
+          format: int64
+        encryption_state:
           type: string
 
-        # Redirect source
-        sourceRedirect:
+    ProtocolSpecificWebRTC:
+      type: object
+      description: |
+        protocol_specific variant for `protocol=webrtc`. Local /
+        remote candidate descriptors carry IP addresses and are PII;
+        on responses each candidate string is replaced with the
+        literal `redacted`.
+      required: [peer_connection_state, ice_state]
+      properties:
+        peer_connection_state:
+          type: string
+        ice_state:
+          type: string
+        local_candidates:
+          type: array
+          x-classification: pii
+          items:
+            type: string
+        remote_candidates:
+          type: array
+          x-classification: pii
+          items:
+            type: string
+
+    ProtocolSpecificHLS:
+      type: object
+      description: protocol_specific variant for `protocol=hls`.
+      required: [outbound_bytes]
+      properties:
+        outbound_bytes:
+          type: integer
+          format: int64
+        last_request_at:
+          type: string
+          format: date-time
+
+    ProtocolSpecific:
+      description: |
+        Discriminated union of per-protocol runtime detail on a
+        `Stream`. The discriminator is `protocol` on the parent
+        `Stream`, not a field inside this object. Variants:
+        ProtocolSpecificRTSP (rtsp+rtsps), ProtocolSpecificRTMP
+        (rtmp+rtmps), ProtocolSpecificSRT, ProtocolSpecificWebRTC,
+        ProtocolSpecificHLS.
+      oneOf:
+        - $ref: '#/components/schemas/ProtocolSpecificRTSP'
+        - $ref: '#/components/schemas/ProtocolSpecificRTMP'
+        - $ref: '#/components/schemas/ProtocolSpecificSRT'
+        - $ref: '#/components/schemas/ProtocolSpecificWebRTC'
+        - $ref: '#/components/schemas/ProtocolSpecificHLS'
+
+    Stream:
+      type: object
+      description: |
+        Canonical Stream entity per ADR 0009 §"Stream amendments".
+        Folds in MediaMTX's per-protocol session and connection
+        endpoints. Closes canonical-divergences D9 (`user_id` UUID)
+        and D10 (`camera_id` UUID).
+      required:
+        - id
+        - tenant_id
+        - camera_id
+        - recording_server_id
+        - protocol
+        - direction
+        - state
+        - remote_addr
+        - bytes_inbound
+        - bytes_outbound
+        - frames_discarded_outbound
+        - started_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        protocol:
+          $ref: '#/components/schemas/StreamProtocol'
+        direction:
+          $ref: '#/components/schemas/StreamDirection'
+        state:
+          $ref: '#/components/schemas/StreamState'
+        remote_addr:
+          type: string
+          x-classification: pii
+          description: |
+            Peer address. Replaced with the literal `redacted` on
+            responses (canonical-divergence D5).
+        user_id:
+          type: string
+          format: uuid
+        query_string:
+          type: string
+          x-classification: sensitive
+          description: |
+            Query portion of the request URL. Subject to
+            pre-serialization redaction: values for keys matching
+            `token`, `password`, `key`, or `secret`
+            (case-insensitive substring) are replaced with the
+            literal `redacted`. Closes canonical-divergence D12.
+        bytes_inbound:
+          type: integer
+          format: int64
+        bytes_outbound:
+          type: integer
+          format: int64
+        frames_discarded_outbound:
+          type: integer
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/StreamTrack'
+        protocol_specific:
+          $ref: '#/components/schemas/ProtocolSpecific'
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+
+    StreamList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Stream'
+
+    # ----- RecordingSegment + Recording ---------------------------
+
+    RecordingSegmentTrack:
+      type: object
+      required: [kind, codec]
+      properties:
+        kind:
+          $ref: '#/components/schemas/StreamTrackKind'
+        codec:
           type: string
 
-        # Raspberry Pi Camera source
+    RecordingSegment:
+      type: object
+      description: |
+        Canonical 17-field RecordingSegment entity. Adds
+        `recording_id` per ADR 0009. The recorder-local on-disk
+        `path` field documented in `domain-model.md` is excluded
+        from API responses by classification rule. Closes
+        canonical-divergence D8.
+      required:
+        - id
+        - tenant_id
+        - site_id
+        - recording_server_id
+        - camera_id
+        - volume_id
+        - policy_id
+        - recording_id
+        - started_at
+        - ended_at
+        - duration
+        - container
+        - size_bytes
+        - state
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+        volume_id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+          format: uuid
+        recording_id:
+          type: string
+          format: uuid
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        container:
+          $ref: '#/components/schemas/RecordingSegmentContainer'
+        size_bytes:
+          type: integer
+          format: int64
+        tracks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecordingSegmentTrack'
+        checksum:
+          type: string
+        state:
+          $ref: '#/components/schemas/RecordingSegmentState'
+        created_at:
+          type: string
+          format: date-time
+
+    RecordingSegmentList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/RecordingSegment'
+
+    Recording:
+      type: object
+      description: |
+        Canonical Recording entity introduced inline by ADR 0009. A
+        continuous span of recorded footage on one camera, composed
+        of one or more `RecordingSegment`s. The client/scrub
+        primitive. List responses omit `segments`; GET-by-id
+        includes them.
+      required:
+        - id
+        - tenant_id
+        - site_id
+        - camera_id
+        - recording_server_id
+        - started_at
+        - state
+        - duration
+        - byte_size
+        - segment_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        policy_id:
+          type: string
+          format: uuid
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/RecordingState'
+        failure_reason:
+          type: string
+          description: |
+            Required when `state == failed`; null otherwise.
+        duration:
+          type: string
+        byte_size:
+          type: integer
+          format: int64
+        segment_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        segments:
+          type: array
+          description: |
+            Embedded only on the GET-by-id response per ADR 0009 §D5;
+            the list endpoint omits this field.
+          items:
+            $ref: '#/components/schemas/RecordingSegment'
+
+    RecordingList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Recording'
+
+    PlaybackHandle:
+      type: object
+      description: |
+        Playback connection material returned by
+        `GET /v1/recordings/{id}/playback`. The actual stream comes
+        through the existing media protocols; this endpoint just
+        hands the client a URL + short-lived token.
+      required: [url, token, expires_at]
+      properties:
+        url:
+          type: string
+        token:
+          type: string
+          x-classification: credential
+          description: |
+            Short-lived bearer token for the playback URL. NOTE: the
+            current recorder ships a placeholder token; real bearer
+            issuance is a Phase-2-followup. Do not depend on the
+            token being cryptographically meaningful today.
+        expires_at:
+          type: string
+          format: date-time
+
+    # ----- Event ----------------------------------------------------
+
+    Event:
+      type: object
+      description: |
+        Canonical Event entity. `kind` is a closed, versioned
+        vocabulary (e.g. `camera.offline`, `segment.write_failed`,
+        `storage.volume_full`).
+      required:
+        - id
+        - recording_server_id
+        - tenant_id
+        - site_id
+        - occurred_at
+        - kind
+        - severity
+        - subject_kind
+        - subject_id
+        - message
+      properties:
+        id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+        kind:
+          type: string
+        severity:
+          $ref: '#/components/schemas/EventSeverity'
+        subject_kind:
+          $ref: '#/components/schemas/EventSubjectKind'
+        subject_id:
+          type: string
+          format: uuid
+        message:
+          type: string
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+        correlation_id:
+          type: string
+
+    EventList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Event'
+            notice:
+              type: string
+              description: |
+                Operational note. Phase 2D ships the buffer empty
+                until per-producer wiring lands; in that case
+                `notice` carries an "events store not yet wired"
+                message so clients can distinguish "no events match"
+                from "no producers wired."
+
+    # ----- Health ---------------------------------------------------
+
+    HealthStatusStorage:
+      type: object
+      required: [volume_id, used_pct, status]
+      properties:
+        volume_id:
+          type: string
+          format: uuid
+        used_pct:
+          type: number
+          format: double
+        status:
+          $ref: '#/components/schemas/HealthStatusVolumeState'
+
+    HealthStatusNetwork:
+      type: object
+      required: [management_server_reachable, cloud_reachable]
+      properties:
+        management_server_reachable:
+          type: boolean
+        cloud_reachable:
+          type: boolean
+        last_sync_at:
+          type: string
+          format: date-time
+
+    HealthStatus:
+      type: object
+      description: |
+        One snapshot, current state only per ADR 0009 §D2. Pre-MS
+        the network reachability flags default to `false` until the
+        pairing client lands.
+      required:
+        - id
+        - recording_server_id
+        - tenant_id
+        - reported_at
+        - cpu_pct
+        - mem_pct
+        - uptime
+        - cameras_total
+        - cameras_recording
+        - cameras_offline
+        - network
+        - overall
+      properties:
+        id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        reported_at:
+          type: string
+          format: date-time
+        cpu_pct:
+          type: number
+          format: double
+        mem_pct:
+          type: number
+          format: double
+        uptime:
+          type: string
+        cameras_total:
+          type: integer
+        cameras_recording:
+          type: integer
+        cameras_offline:
+          type: integer
+        storage:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthStatusStorage'
+        network:
+          $ref: '#/components/schemas/HealthStatusNetwork'
+        overall:
+          $ref: '#/components/schemas/HealthStatusOverall'
+
+    # ----- StorageVolume -------------------------------------------
+
+    StorageVolume:
+      type: object
+      description: |
+        Canonical StorageVolume entity. Read-only at this surface;
+        bootstrap configuration (mount path, kind, priority) lives
+        in `/v1/recorder/config`.
+      required:
+        - id
+        - recording_server_id
+        - mount_path
+        - kind
+        - capacity_bytes
+        - used_bytes
+        - reserved_bytes
+        - status
+        - last_checked_at
+        - priority
+      properties:
+        id:
+          type: string
+          format: uuid
+        recording_server_id:
+          type: string
+          format: uuid
+        mount_path:
+          type: string
+          x-classification: sensitive
+          description: |
+            Absolute mount path. Sensitive per data-classification.md
+            (filesystem layout reveals deployment topology).
+        kind:
+          $ref: '#/components/schemas/StorageVolumeKind'
+        capacity_bytes:
+          type: integer
+          format: int64
+        used_bytes:
+          type: integer
+          format: int64
+        reserved_bytes:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/StorageVolumeStatus'
+        last_checked_at:
+          type: string
+          format: date-time
+        priority:
+          type: integer
+
+    StorageVolumeList:
+      type: object
+      description: |
+        Storage-volume list. Pagination is not currently applied
+        because the volume count is small per recorder; only
+        `item_count` and `items` are emitted.
+      required: [item_count, items]
+      properties:
+        item_count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageVolume'
+
+    # ----- Recorder-localized escape hatch wire shapes ------------
+
+    RecorderConfig:
+      type: object
+      description: |
+        Recorder operational config (logging, timeouts, server bind
+        addresses, TLS material refs, metrics/pprof/playback
+        servers, recorder-level shell hooks). Recorder-localized
+        escape hatch per ADR 0009 §D6 — covers ~95% of MediaMTX's
+        `GlobalConf`. **Not platform-canonical**: shape mirrors the
+        upstream `conf.GlobalConf` 1:1 with credential redaction
+        applied on read; the JSON keys retain MediaMTX-lineage
+        camelCase (`logLevel`, `runOnConnect`, `apiAddress`, …).
+        Documented as opaque-shape here because the field set is
+        large (~80 keys) and recorder-internal; full per-field
+        reference lives in the recorder's own configuration docs.
+      additionalProperties: true
+      x-classification: sensitive
+
+    CameraDefaults:
+      type: object
+      description: |
+        Default fields applied at camera creation. Recorder-localized
+        escape hatch per ADR 0009 §D6. Recording-policy fields
+        (`record`, `recordPath`, `recordFormat`, `recordPartDuration`,
+        `recordMaxPartSize`, `recordSegmentDuration`,
+        `recordDeleteAfter`) are stripped from responses and rejected
+        with 400 in PATCH bodies — the canonical mechanism for shared
+        recording behavior is `RecordingPolicy` at
+        `/v1/recording-policies`. Shape mirrors `conf.OptionalPath`
+        with camelCase JSON keys; documented as opaque-shape because
+        the field set is large.
+      additionalProperties: true
+
+    HLSMuxer:
+      type: object
+      description: |
+        Per-camera HLS muxer state. Recorder-internal observability
+        per ADR 0009 §D6. Shape mirrors the upstream MediaMTX
+        `APIHLSMuxer` 1:1 (camelCase JSON keys); documented as
+        opaque-shape here because the canonical model has no place
+        for muxer state.
+      additionalProperties: true
+      properties:
+        path:
+          type: string
+        created:
+          type: string
+          format: date-time
+        lastRequest:
+          type: string
+          format: date-time
+        bytesSent:
+          type: integer
+          format: int64
+        tenantId:
+          type: string
+          format: uuid
+
+    HLSMuxerList:
+      type: object
+      required: [itemCount, pageCount, items]
+      properties:
+        itemCount:
+          type: integer
+        pageCount:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/HLSMuxer'
+      description: |
+        HLSMuxer list envelope. NOTE: this list endpoint inherits the
+        upstream MediaMTX camelCase pagination keys (`itemCount`,
+        `pageCount`) rather than the canonical snake_case used
+        elsewhere on /v1; the query parameter is similarly
+        `itemsPerPage` not `items_per_page`. Tracked as a Phase 3
+        follow-up alongside `codec_props`.
+
+    RPiCameraSourceConfig:
+      type: object
+      description: |
+        Raspberry Pi camera ~30-field source-config sub-shape.
+        Recorder-localized escape hatch per ADR 0009 §D6. Hardware-
+        specific (white balance, lens position, autofocus, ISO/
+        shutter, RPi-HW-encoder profiles); only meaningful on a
+        recorder running on Raspberry Pi hardware. Not part of
+        canonical `Camera.source_config`. JSON keys retain camelCase
+        for compatibility with the upstream `conf.Path` shape.
+      properties:
+        tenantId:
+          type: string
+          format: uuid
         rpiCameraCamID:
           type: integer
-          format: uint64
         rpiCameraSecondary:
           type: boolean
         rpiCameraWidth:
           type: integer
-          format: uint64
         rpiCameraHeight:
           type: integer
-          format: uint64
         rpiCameraHFlip:
           type: boolean
         rpiCameraVFlip:
@@ -973,8 +1812,6 @@ components:
           type: string
         rpiCameraAWBGains:
           type: array
-          minItems: 2
-          maxItems: 2
           items:
             type: number
             format: double
@@ -982,7 +1819,6 @@ components:
           type: string
         rpiCameraShutter:
           type: integer
-          format: uint64
         rpiCameraMetering:
           type: string
         rpiCameraGain:
@@ -1015,7 +1851,6 @@ components:
           type: string
         rpiCameraFlickerPeriod:
           type: integer
-          format: uint64
         rpiCameraTextOverlayEnable:
           type: boolean
         rpiCameraTextOverlay:
@@ -1024,18 +1859,8 @@ components:
           type: string
         rpiCameraIDRPeriod:
           type: integer
-          format: uint64
         rpiCameraBitrate:
           type: integer
-          format: uint64
-        rpiCameraProfile:
-          type: string
-          nullable: true
-          deprecated: true
-        rpiCameraLevel:
-          type: string
-          nullable: true
-          deprecated: true
         rpiCameraHardwareH264Profile:
           type: string
         rpiCameraHardwareH264Level:
@@ -1044,16 +1869,26 @@ components:
           type: string
         rpiCameraSoftwareH264Level:
           type: string
-        rpiCameraJPEGQuality:
-          type: integer
-          format: uint64
-          nullable: true
-          deprecated: true
         rpiCameraMJPEGQuality:
           type: integer
-          format: uint64
 
-        # Hooks
+    CameraHooks:
+      type: object
+      description: |
+        Per-camera shell hooks. Recorder-localized escape hatch per
+        ADR 0009 §D6. Recorder-script behavior the platform can't
+        sensibly reason about across tiers. Strings are at minimum
+        Sensitive per data-classification.md — they may carry
+        credentials if the operator embeds them in shell commands.
+        On both reads and writes the recorder scans for credential
+        markers and emits a Warn log; hook contents are not redacted
+        on read because the operator who set them needs to be able
+        to read them back to edit them. JSON keys retain camelCase.
+      x-classification: sensitive
+      properties:
+        tenantId:
+          type: string
+          format: uuid
         runOnInit:
           type: string
         runOnInitRestart:
@@ -1085,2637 +1920,1284 @@ components:
         runOnRecordSegmentComplete:
           type: string
 
-    PathConfList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/PathConf'
-
-    Path:
-      type: object
-      description: |
-        MediaMTX-internal runtime path object. Loosely corresponds to a
-        `Camera` plus its active `Stream`s in the canonical domain
-        model, but the field set, enum vocabulary (`source.type`,
-        `readers[].type`), and identifier (`name`, a string path
-        identifier rather than a UUID) all differ. Tracked as a
-        canonical-rule violation in `recorder/docs/canonical-divergences.md`.
-      x-classification: sensitive
-      properties:
-        tenantId:
-          type: string
-        name:
-          type: string
-          x-classification: sensitive
-          description: Path identifier (string, not UUID). Identifies the customer's media path; reveals naming convention / infrastructure layout.
-        confName:
-          type: string
-          x-classification: sensitive
-        source:
-          type: object
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/PathSource'
-        ready:
-          type: boolean
-          deprecated: true
-        readyTime:
-          type: string
-          nullable: true
-          deprecated: true
-        available:
-          type: boolean
-        availableTime:
-          type: string
-          nullable: true
-        online:
-          type: boolean
-        onlineTime:
-          type: string
-          nullable: true
-        tracks:
-          type: array
-          deprecated: true
-          items:
-            $ref: '#/components/schemas/PathTrackCodec'
-        tracks2:
-          type: array
-          items:
-            $ref: '#/components/schemas/PathTrack'
-        inboundBytes:
-          type: integer
-          format: uint64
-        outboundBytes:
-          type: integer
-          format: uint64
-        inboundFramesInError:
-          type: integer
-          format: uint64
-        bytesReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        readers:
-          type: array
-          items:
-            $ref: '#/components/schemas/PathReader'
-
-    PathList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Path'
-
-    PathSource:
-      type: object
-      properties:
-        type:
-          $ref: '#/components/schemas/PathSourceType'
-        id:
-          type: string
-
-    PathReader:
-      type: object
-      properties:
-        type:
-          $ref: '#/components/schemas/PathReaderType'
-        id:
-          type: string
-
-    PathTrack:
-      type: object
-      properties:
-        codec:
-          $ref: '#/components/schemas/PathTrackCodec'
-        codecProps:
-          type: object
-          nullable: true
-          allOf:
-          - $ref: '#/components/schemas/PathTrackCodecProps'
-
-    PathTrackCodecProps:
-      oneOf:
-      - $ref: '#/components/schemas/PathTrackCodecPropsAV1'
-      - $ref: '#/components/schemas/PathTrackCodecPropsVP9'
-      - $ref: '#/components/schemas/PathTrackCodecPropsH265'
-      - $ref: '#/components/schemas/PathTrackCodecPropsH264'
-      - $ref: '#/components/schemas/PathTrackCodecPropsOpus'
-      - $ref: '#/components/schemas/PathTrackCodecPropsMPEG4Audio'
-      - $ref: '#/components/schemas/PathTrackCodecPropsAC3'
-      - $ref: '#/components/schemas/PathTrackCodecPropsG711'
-      - $ref: '#/components/schemas/PathTrackCodecPropsLPCM'
-
-    PathTrackCodecPropsAV1:
-      type: object
-      properties:
-        width:
-          type: integer
-          format: int64
-        height:
-          type: integer
-          format: int64
-        profile:
-          type: integer
-          format: int64
-        level:
-          type: integer
-          format: int64
-        tier:
-          type: integer
-          format: int64
-    PathTrackCodecPropsVP9:
-      type: object
-      properties:
-        profile:
-          type: integer
-          format: int64
-
-    PathTrackCodecPropsH265:
-      type: object
-      properties:
-        width:
-          type: integer
-          format: int64
-        height:
-          type: integer
-          format: int64
-        profile:
-          type: string
-        level:
-          type: string
-
-    PathTrackCodecPropsH264:
-      type: object
-      properties:
-        width:
-          type: integer
-          format: int64
-        height:
-          type: integer
-          format: int64
-        profile:
-          type: string
-        level:
-          type: string
-
-    PathTrackCodecPropsOpus:
-      type: object
-      properties:
-        channelCount:
-          type: integer
-          format: int64
-
-    PathTrackCodecPropsMPEG4Audio:
-      type: object
-      properties:
-        sampleRate:
-          type: integer
-          format: int64
-        channelCount:
-          type: integer
-          format: int64
-
-    PathTrackCodecPropsAC3:
-      type: object
-      properties:
-        sampleRate:
-          type: integer
-          format: int64
-        channelCount:
-          type: integer
-          format: int64
-
-    PathTrackCodecPropsG711:
-      type: object
-      properties:
-        muLaw:
-          type: boolean
-        sampleRate:
-          type: integer
-          format: int64
-        channelCount:
-          type: integer
-          format: int64
-
-    PathTrackCodecPropsLPCM:
-      type: object
-      properties:
-        bitDepth:
-          type: integer
-          format: int64
-        sampleRate:
-          type: integer
-          format: int64
-        channelCount:
-          type: integer
-          format: int64
-
-    HLSMuxer:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        path:
-          type: string
-          x-classification: sensitive
-        created:
-          type: string
-        lastRequest:
-          type: string
-        outboundBytes:
-          type: integer
-          format: uint64
-        outboundFramesDiscarded:
-          type: integer
-          format: uint64
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-
-    HLSMuxerList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/HLSMuxer'
-
-    HLSSession:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        path:
-          type: string
-          x-classification: sensitive
-        query:
-          type: string
-          x-classification: sensitive
-        user:
-          type: string
-          x-classification: pii
-        outboundBytes:
-          type: integer
-          format: uint64
-
-    HLSSessionList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/HLSSession'
-
-    Recording:
-      type: object
-      description: |
-        On-disk recording grouping for a single path. Loosely
-        corresponds to the canonical `Camera` plus a list of
-        `RecordingSegment`s — but the current shape is a small subset
-        (only `name` and segment `start` timestamps). Most canonical
-        `RecordingSegment` fields (`tenant_id`, `site_id`,
-        `recording_server_id`, `volume_id`, `policy_id`, `ended_at`,
-        `duration`, `container`, `size_bytes`, `tracks`, `checksum`,
-        `state`, `created_at`) are absent. Tracked in
-        `recorder/docs/canonical-divergences.md`.
-      properties:
-        tenantId:
-          type: string
-        name:
-          type: string
-          x-classification: sensitive
-          description: Path identifier (string, not UUID). Same caveat as `Path.name` — identifies the customer's media path.
-        segments:
-          type: array
-          items:
-            $ref: '#/components/schemas/RecordingSegment'
-
-    RecordingList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/Recording'
-
-    RecordingSegment:
-      type: object
-      properties:
-        start:
-          type: string
-
-    RTMPConn:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        state:
-          $ref: '#/components/schemas/RTMPConnState'
-        path:
-          type: string
-          x-classification: sensitive
-        query:
-          type: string
-          x-classification: sensitive
-        user:
-          type: string
-          x-classification: pii
-        inboundBytes:
-          type: integer
-          format: uint64
-        outboundBytes:
-          type: integer
-          format: uint64
-        outboundFramesDiscarded:
-          type: integer
-          format: uint64
-        bytesReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-
-    RTMPConnList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/RTMPConn'
-
-    RTSPConn:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        session:
-          type: string
-          format: uuid
-          nullable: true
-        tunnel:
-          type: string
-        inboundBytes:
-          type: integer
-          format: uint64
-        outboundBytes:
-          type: integer
-          format: uint64
-        bytesReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-
-    RTSPConnList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/RTSPConn'
-
-    RTSPSession:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        state:
-          $ref: '#/components/schemas/RTSPSessionState'
-        path:
-          type: string
-          x-classification: sensitive
-        query:
-          type: string
-          x-classification: sensitive
-        user:
-          type: string
-          x-classification: pii
-        transport:
-          type: string
-          nullable: true
-        profile:
-          type: string
-          nullable: true
-        conns:
-          type: array
-          items:
-            type: string
-            format: uuid
-        inboundBytes:
-          type: integer
-          format: uint64
-        inboundRTPPackets:
-          type: integer
-          format: uint64
-        inboundRTPPacketsLost:
-          type: integer
-          format: uint64
-        inboundRTPPacketsInError:
-          type: integer
-          format: uint64
-        inboundRTPPacketsJitter:
-          type: number
-          format: double
-        inboundRTCPPackets:
-          type: integer
-          format: uint64
-        inboundRTCPPacketsInError:
-          type: integer
-          format: uint64
-        outboundBytes:
-          type: integer
-          format: uint64
-        outboundRTPPackets:
-          type: integer
-          format: uint64
-        outboundRTPPacketsReportedLost:
-          type: integer
-          format: uint64
-        outboundRTPPacketsDiscarded:
-          type: integer
-          format: uint64
-        outboundRTCPPackets:
-          type: integer
-          format: uint64
-        bytesReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsLost:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsInError:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsJitter:
-          type: number
-          format: double
-          deprecated: true
-        rtcpPacketsReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtcpPacketsSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtcpPacketsInError:
-          type: integer
-          format: uint64
-          deprecated: true
-
-    RTSPSessionList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/RTSPSession'
-
-    SRTConn:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        state:
-          $ref: '#/components/schemas/SRTConnState'
-        path:
-          type: string
-          x-classification: sensitive
-        query:
-          type: string
-          x-classification: sensitive
-        user:
-          type: string
-          x-classification: pii
-        packetsSent:
-          type: integer
-          format: uint64
-          description: The total number of sent DATA packets, including retransmitted packets
-        packetsReceived:
-          type: integer
-          format: uint64
-          description: The total number of received DATA packets, including retransmitted packets
-        packetsReceivedBelated:
-          type: integer
-          format: uint64
-        packetsSentUnique:
-          type: integer
-          format: uint64
-          description: The total number of unique DATA packets sent by the SRT sender
-        packetsReceivedUnique:
-          type: integer
-          format: uint64
-          description: The total number of unique original, retransmitted or recovered by the packet filter DATA packets received in time, decrypted without errors and, as a result, scheduled for delivery to the upstream application by the SRT receiver.
-        packetsSendLoss:
-          type: integer
-          format: uint64
-          description: The total number of data packets considered or reported as lost at the sender side. Does not correspond to the packets detected as lost at the receiver side.
-        packetsReceivedLoss:
-          type: integer
-          format: uint64
-          description: The total number of SRT DATA packets detected as presently missing (either reordered or lost) at the receiver side
-        packetsRetrans:
-          type: integer
-          format: uint64
-          description: The total number of retransmitted packets sent by the SRT sender
-        packetsReceivedRetrans:
-          type: integer
-          format: uint64
-          description: The total number of retransmitted packets registered at the receiver side
-        packetsSentACK:
-          type: integer
-          format: uint64
-          description: The total number of sent ACK (Acknowledgement) control packets
-        packetsReceivedACK:
-          type: integer
-          format: uint64
-          description: The total number of received ACK (Acknowledgement) control packets
-        packetsSentNAK:
-          type: integer
-          format: uint64
-          description: The total number of sent NAK (Negative Acknowledgement) control packets
-        packetsReceivedNAK:
-          type: integer
-          format: uint64
-          description: The total number of received NAK (Negative Acknowledgement) control packets
-        packetsSentKM:
-          type: integer
-          format: uint64
-          description: The total number of sent KM (Key Material) control packets
-        packetsReceivedKM:
-          type: integer
-          format: uint64
-          description: The total number of received KM (Key Material) control packets
-        usSndDuration:
-          type: integer
-          format: uint64
-          description: The total accumulated time in microseconds, during which the SRT sender has some data to transmit, including packets that have been sent, but not yet acknowledged
-        packetsSendDrop:
-          type: integer
-          format: uint64
-          description: The total number of dropped by the SRT sender DATA packets that have no chance to be delivered in time
-        packetsReceivedDrop:
-          type: integer
-          format: uint64
-          description: The total number of dropped by the SRT receiver and, as a result, not delivered to the upstream application DATA packets
-        packetsReceivedUndecrypt:
-          type: integer
-          format: uint64
-          description: The total number of packets that failed to be decrypted at the receiver side
-        bytesSent:
-          type: integer
-          format: uint64
-          description: Same as packetsSent, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceived:
-          type: integer
-          format: uint64
-          description: Same as packetsReceived, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedBelated:
-          type: integer
-          format: uint64
-        bytesSentUnique:
-          type: integer
-          format: uint64
-          description: Same as packetsSentUnique, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedUnique:
-          type: integer
-          format: uint64
-          description: Same as packetsReceivedUnique, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedLoss:
-          type: integer
-          format: uint64
-          description: Same as packetsReceivedLoss, but expressed in bytes, including payload and all the headers (IP, TCP, SRT), bytes for the presently missing (either reordered or lost) packets' payloads are estimated based on the average packet size
-        bytesRetrans:
-          type: integer
-          format: uint64
-          description: Same as packetsRetrans, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedRetrans:
-          type: integer
-          format: uint64
-          description: Same as packetsReceivedRetrans, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesSendDrop:
-          type: integer
-          format: uint64
-          description: Same as packetsSendDrop, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedDrop:
-          type: integer
-          format: uint64
-          description: Same as packetsReceivedDrop, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        bytesReceivedUndecrypt:
-          type: integer
-          format: uint64
-          description: Same as packetsReceivedUndecrypt, but expressed in bytes, including payload and all the headers (IP, TCP, SRT)
-        usPacketsSendPeriod:
-          type: number
-          format: double
-          description: Current minimum time interval between which consecutive packets are sent, in microseconds
-        packetsFlowWindow:
-          type: integer
-          format: uint64
-          description: The maximum number of packets that can be "in flight"
-        packetsFlightSize:
-          type: integer
-          format: uint64
-          description: The number of packets in flight
-        msRTT:
-          type: number
-          format: double
-          description: Smoothed round-trip time (SRTT), an exponentially-weighted moving average (EWMA) of an endpoint's RTT samples, in milliseconds
-        mbpsSendRate:
-          type: number
-          format: double
-          description: Current transmission bandwidth, in Mbps
-        mbpsReceiveRate:
-          type: number
-          format: double
-          description: Current receiving bandwidth, in Mbps
-        mbpsLinkCapacity:
-          type: number
-          format: double
-          description: Estimated capacity of the network link, in Mbps
-        bytesAvailSendBuf:
-          type: integer
-          format: uint64
-          description: The available space in the sender's buffer, in bytes
-        bytesAvailReceiveBuf:
-          type: integer
-          format: uint64
-          description: The available space in the receiver's buffer, in bytes
-        mbpsMaxBW:
-          type: number
-          format: double
-          description: Transmission bandwidth limit, in Mbps
-        byteMSS:
-          type: integer
-          format: uint64
-          description: Maximum Segment Size (MSS), in bytes
-        packetsSendBuf:
-          type: integer
-          format: uint64
-          description: The number of packets in the sender's buffer that are already scheduled for sending or even possibly sent, but not yet acknowledged
-        bytesSendBuf:
-          type: integer
-          format: uint64
-          description: Instantaneous (current) value of packetsSndBuf, but expressed in bytes, including payload and all headers (IP, TCP, SRT)
-        msSendBuf:
-          type: integer
-          format: uint64
-          description: The timespan (msec) of packets in the sender's buffer (unacknowledged packets)
-        msSendTsbPdDelay:
-          type: integer
-          format: uint64
-          description: Timestamp-based Packet Delivery Delay value of the peer
-        packetsReceiveBuf:
-          type: integer
-          format: uint64
-          description: The number of acknowledged packets in receiver's buffer
-        bytesReceiveBuf:
-          type: integer
-          format: uint64
-          description: Instantaneous (current) value of packetsRcvBuf, expressed in bytes, including payload and all headers (IP, TCP, SRT)
-        msReceiveBuf:
-          type: integer
-          format: uint64
-          description: The timespan (msec) of acknowledged packets in the receiver's buffer
-        msReceiveTsbPdDelay:
-          type: integer
-          format: uint64
-          description: Timestamp-based Packet Delivery Delay value set on the socket via SRTO_RCVLATENCY or SRTO_LATENCY
-        packetsReorderTolerance:
-          type: integer
-          format: uint64
-          description: Instant value of the packet reorder tolerance
-        packetsReceivedAvgBelatedTime:
-          type: integer
-          format: uint64
-          description: Accumulated difference between the current time and the time-to-play of a packet that is received late
-        packetsSendLossRate:
-          type: number
-          format: double
-          description: Percentage of resent data vs. sent data
-        packetsReceivedLossRate:
-          type: number
-          format: double
-          description: Percentage of retransmitted data vs. received data
-        outboundFramesDiscarded:
-          type: integer
-          format: uint64
-
-    SRTConnList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/SRTConn'
-
-    AlwaysAvailableTrack:
-      type: object
-      properties:
-        codec:
-          $ref: '#/components/schemas/AlwaysAvailableTrackCodec'
-        sampleRate:
-          type: integer
-          format: int64
-        channelCount:
-          type: integer
-          format: int64
-        muLaw:
-          type: boolean
-
-    WebRTCICEServer:
-      type: object
-      properties:
-        url:
-          type: string
-        username:
-          type: string
-        password:
-          type: string
-        clientOnly:
-          type: boolean
-
-    WebRTCSession:
-      type: object
-      properties:
-        tenantId:
-          type: string
-        id:
-          type: string
-          format: uuid
-        created:
-          type: string
-        remoteAddr:
-          type: string
-          x-classification: pii
-        peerConnectionEstablished:
-          type: boolean
-        localCandidate:
-          type: string
-          x-classification: sensitive
-        remoteCandidate:
-          type: string
-          x-classification: sensitive
-        state:
-          $ref: '#/components/schemas/WebRTCSessionState'
-        path:
-          type: string
-          x-classification: sensitive
-        query:
-          type: string
-          x-classification: sensitive
-        user:
-          type: string
-          x-classification: pii
-        inboundBytes:
-          type: integer
-          format: uint64
-        inboundRTPPackets:
-          type: integer
-          format: uint64
-        inboundRTPPacketsLost:
-          type: integer
-          format: uint64
-        inboundRTPPacketsJitter:
-          type: number
-          format: double
-        inboundRTCPPackets:
-          type: integer
-          format: uint64
-        outboundBytes:
-          type: integer
-          format: uint64
-        outboundRTPPackets:
-          type: integer
-          format: uint64
-        outboundRTCPPackets:
-          type: integer
-          format: uint64
-        outboundFramesDiscarded:
-          type: integer
-          format: uint64
-        bytesReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        bytesSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsSent:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsLost:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtpPacketsJitter:
-          type: number
-          format: double
-          deprecated: true
-        rtcpPacketsReceived:
-          type: integer
-          format: uint64
-          deprecated: true
-        rtcpPacketsSent:
-          type: integer
-          format: uint64
-          deprecated: true
-
-    WebRTCSessionList:
-      type: object
-      properties:
-        pageCount:
-          type: integer
-          format: int64
-        itemCount:
-          type: integer
-          format: int64
-        items:
-          type: array
-          items:
-            $ref: '#/components/schemas/WebRTCSession'
-
 paths:
 
-  /v3/info:
+  # ===== Info =====================================================
+
+  /v1/info:
     get:
-      operationId: info
-      tags: [General]
-      summary: returns informations about the instance.
+      tags: [Info]
+      summary: Recorder runtime info.
+      description: |
+        Returns recorder-self-reported version, start time, and the
+        bound `tenant_id`. Same role as the legacy `/v3/info`; the
+        URL prefix change is the only difference.
       responses:
         '200':
-          description: the request was successful.
+          description: Info response.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Info'
-        '500':
-          description: server error.
+        '401':
+          description: Unauthorized.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/auth/jwks/refresh:
+  # ===== Auth =====================================================
+
+  /v1/auth/refresh-issuer-material:
     post:
-      operationId: authJwksRefresh
-      tags: [Authentication]
-      summary: Manually refreshes the JWT JWKS.
+      tags: [Auth]
+      summary: Force the recorder's auth manager to refresh cached issuer material.
+      description: |
+        Renamed mechanism-neutrally from the legacy
+        `/v3/auth/jwks/refresh` per ADR 0009 §D7. ADR 0002 OQ10
+        keeps non-JWT credential mechanisms (mTLS, opaque-bearer-
+        with-introspection, short-lived service tokens, hybrid)
+        alive as candidates; the endpoint signals "refresh your
+        cached issuer material now," whatever shape that material
+        takes once OQ10 is decided. Today the implementation calls
+        `RefreshJWTJWKS()`.
       responses:
         '200':
-          description: the request was successful.
+          description: Refresh accepted.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OK'
+        '401':
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
-          description: server error.
+          description: Internal error.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/config/global/get:
+  # ===== Cameras ==================================================
+
+  /v1/cameras:
     get:
-      operationId: configGlobalGet
-      tags: [Configuration]
-      summary: returns the global configuration.
-      description: ''
+      tags: [Cameras]
+      summary: List cameras.
+      description: |
+        Returns canonical Camera entities including the small
+        `runtime` block per ADR 0009 §D3. Sorted deterministically
+        by recorder-internal path-name (UUID round-trip stable).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
       responses:
         '200':
-          description: the request was successful.
+          description: Camera list.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GlobalConf'
+                $ref: '#/components/schemas/CameraList'
         '400':
-          description: invalid request.
+          description: Bad request.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+        '401':
+          description: Unauthorized.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-
-  /v3/config/global/patch:
-    patch:
-      operationId: configGlobalPatch
-      tags: [Configuration]
-      summary: patches the global configuration.
-      description: all fields are optional.
+    post:
+      tags: [Cameras]
+      summary: Create a camera.
+      description: |
+        Server issues the canonical UUID per ADR 0009 §D4. The
+        `name` field is required. The `tenant_id` field on the body
+        is optional; if present and mismatched against the
+        recorder's bound tenant, the recorder returns 403.
+        Server-managed fields (`id`, `runtime`, `created_at`,
+        `updated_at`) on the body are ignored.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GlobalConf'
+              $ref: '#/components/schemas/Camera'
       responses:
-        '200':
-          description: the request was successful.
+        '201':
+          description: Created.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OK'
+                $ref: '#/components/schemas/Camera'
         '400':
-          description: invalid request.
+          description: Bad request.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Camera with that name already exists.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/config/pathdefaults/get:
-    get:
-      operationId: configPathDefaultsGet
-      tags: [Configuration]
-      summary: returns the default path configuration.
-      description: ''
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PathConf'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/pathdefaults/patch:
-    patch:
-      operationId: configPathDefaultsPatch
-      tags: [Configuration]
-      summary: patches the default path configuration.
-      description: all fields are optional.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PathConf'
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/list:
-    get:
-      operationId: configPathsList
-      tags: [Configuration]
-      summary: returns all path configurations.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PathConfList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/get/{name}:
-    get:
-      operationId: configPathsGet
-      tags: [Configuration]
-      summary: returns a path configuration.
-      description: ''
-      parameters:
-      - name: name
+  /v1/cameras/{id}:
+    parameters:
+      - name: id
         in: path
         required: true
-        description: the name of the path.
         schema:
           type: string
+          format: uuid
+    get:
+      tags: [Cameras]
+      summary: Get a camera by canonical UUID.
       responses:
         '200':
-          description: the request was successful.
+          description: Camera.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PathConf'
+                $ref: '#/components/schemas/Camera'
         '400':
-          description: invalid request.
+          description: Invalid camera id.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: path not found.
+          description: Camera not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/add/{name}:
-    post:
-      operationId: configPathsAdd
-      tags: [Configuration]
-      summary: adds a path configuration.
-      description: all fields are optional.
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: the name of the path.
-        schema:
-          type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PathConf'
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/patch/{name}:
     patch:
-      operationId: configPathsPatch
-      tags: [Configuration]
-      summary: patches a path configuration.
-      description: all fields are optional.
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: the name of the path.
-        schema:
-          type: string
+      tags: [Cameras]
+      summary: Partially update a camera.
+      description: |
+        Partial-update semantics: only fields present in the body are
+        applied. The `runtime` block is read-only (writes are
+        ignored). Body's `tenant_id`, if present, must match the
+        recorder's bound tenant or the request returns 403.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PathConf'
+              $ref: '#/components/schemas/Camera'
       responses:
         '200':
-          description: the request was successful.
+          description: Updated.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OK'
+                $ref: '#/components/schemas/Camera'
         '400':
-          description: invalid request.
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: path not found.
+          description: Camera not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/replace/{name}:
-    post:
-      operationId: configPathsReplace
-      tags: [Configuration]
-      summary: replaces all values of a path configuration.
-      description: all fields are optional.
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: the name of the path.
-        schema:
-          type: string
+    put:
+      tags: [Cameras]
+      summary: Replace a camera.
+      description: |
+        Full-replace semantics: every conf-side field is overwritten
+        from the body. Server-managed fields (`id`, `runtime`,
+        `created_at`) are preserved. Body's `tenant_id`, if present,
+        must match.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PathConf'
+              $ref: '#/components/schemas/Camera'
       responses:
         '200':
-          description: the request was successful.
+          description: Replaced.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OK'
+                $ref: '#/components/schemas/Camera'
         '400':
-          description: invalid request.
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: path not found.
+          description: Camera not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/config/paths/delete/{name}:
     delete:
-      operationId: configPathsDelete
-      tags: [Configuration]
-      summary: removes a path configuration.
-      description: ''
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: the name of the path.
-        schema:
-          type: string
+      tags: [Cameras]
+      summary: Delete a camera.
       responses:
         '200':
-          description: the request was successful.
+          description: Deleted.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OK'
         '400':
-          description: invalid request.
+          description: Invalid camera id.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: path not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+          description: Camera not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/hlsmuxers/list:
+  # ===== RecordingPolicies =======================================
+
+  /v1/recording-policies:
     get:
-      operationId: hlsMuxersList
-      tags: [HLS]
-      summary: returns all HLS muxers.
-      description: ''
+      tags: [RecordingPolicies]
+      summary: List recording policies.
+      description: |
+        Returns canonical RecordingPolicy entries. Pre-MS the
+        recorder lazily synthesizes policies from per-camera
+        recording fields on first access; per-restart persistence is
+        intentional (synthesis re-runs on next start).
       parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
       responses:
         '200':
-          description: the request was successful.
+          description: Policy list.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HLSMuxerList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/hlsmuxers/get/{name}:
-    get:
-      operationId: hlsMuxersGet
-      tags: [HLS]
-      summary: returns a HLS muxer.
-      description: ''
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: name of the muxer.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HLSMuxer'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: muxer not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/hlssessions/list:
-    get:
-      operationId: hlssessionsList
-      tags: [HLS]
-      summary: returns all HLS sessions.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HLSSessionList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/hlssessions/get/{id}:
-    get:
-      operationId: hlssessionsGet
-      tags: [HLS]
-      summary: returns a HLS session.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the session.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HLSSession'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/hlssessions/kick/{id}:
+                $ref: '#/components/schemas/RecordingPolicyList'
     post:
-      operationId: hlssessionsKick
-      tags: [HLS]
-      summary: kicks out a HLS session from the server.
-      description: ''
-      parameters:
+      tags: [RecordingPolicies]
+      summary: Create a recording policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordingPolicy'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingPolicy'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recording-policies/{id}:
+    parameters:
       - name: id
         in: path
         required: true
-        description: ID of the session.
         schema:
           type: string
+          format: uuid
+    get:
+      tags: [RecordingPolicies]
+      summary: Get a recording policy.
       responses:
         '200':
-          description: the request was successful.
+          description: Policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingPolicy'
+        '400':
+          description: Invalid id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags: [RecordingPolicies]
+      summary: Partially update a recording policy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordingPolicy'
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingPolicy'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [RecordingPolicies]
+      summary: Delete a recording policy.
+      description: |
+        Returns 409 Conflict if any Camera still references the
+        policy via `Camera.recording_policy_id`. Per ADR 0009 §D5.
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '404':
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Policy still referenced by one or more cameras.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Streams ==================================================
+
+  /v1/streams:
+    get:
+      tags: [Streams]
+      summary: List active runtime streams.
+      description: |
+        Folds 25 protocol-specific endpoints from the legacy /v3
+        surface into a single canonical surface per ADR 0009 §D5.
+        Per-protocol detail lives on the response in
+        `protocol_specific`. Filters are AND-combined.
+
+        `remote_addr` and `query_string` are redacted on output per
+        canonical-divergences D5 / D12.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: protocol
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/StreamProtocol'
+        - name: camera_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/StreamDirection'
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/StreamState'
+      responses:
+        '200':
+          description: Stream list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamList'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/streams/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Streams]
+      summary: Get a single active stream by canonical UUID.
+      description: |
+        Searches every protocol cluster for the UUID; first match
+        wins. The response's `protocol_specific` payload is keyed by
+        the matched cluster.
+      responses:
+        '200':
+          description: Stream detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Stream'
+        '400':
+          description: Invalid stream id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Stream not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Streams]
+      summary: Terminate (kick) an active stream.
+      description: |
+        DELETE on a Stream means **terminate the session**, not
+        delete a stored record — the resource is ephemeral, and
+        DELETE is the canonical kick verb for a runtime resource.
+      responses:
+        '200':
+          description: Kicked.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/OK'
         '400':
-          description: invalid request.
+          description: Invalid stream id.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+          description: Stream not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/paths/list:
+  # ===== Recordings ===============================================
+
+  /v1/recordings:
     get:
-      operationId: pathsList
-      tags: [Paths]
-      summary: returns all paths.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PathList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/paths/get/{name}:
-    get:
-      operationId: pathsGet
-      tags: [Paths]
-      summary: returns a path.
-      description: ''
-      parameters:
-      - name: name
-        in: path
-        required: true
-        description: name of the path.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Path'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: path not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspconns/list:
-    get:
-      operationId: rtspConnsList
-      tags: [RTSP]
-      summary: returns all RTSP connections.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPConnList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspconns/get/{id}:
-    get:
-      operationId: rtspConnsGet
-      tags: [RTSP]
-      summary: returns a RTSP connection.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPConn'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspsessions/list:
-    get:
-      operationId: rtspSessionsList
-      tags: [RTSP]
-      summary: returns all RTSP sessions.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPSessionList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspsessions/get/{id}:
-    get:
-      operationId: rtspSessionsGet
-      tags: [RTSP]
-      summary: returns a RTSP session.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPSession'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspsessions/kick/{id}:
-    post:
-      operationId: rtspSessionsKick
-      tags: [RTSP]
-      summary: kicks out a RTSP session from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the session.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspsconns/list:
-    get:
-      operationId: rtspsConnsList
-      tags: [RTSP]
-      summary: returns all RTSPS connections.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPConnList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspsconns/get/{id}:
-    get:
-      operationId: rtspsConnsGet
-      tags: [RTSP]
-      summary: returns a RTSPS connection.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPConn'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspssessions/list:
-    get:
-      operationId: rtspsSessionsList
-      tags: [RTSP]
-      summary: returns all RTSPS sessions.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPSessionList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspssessions/get/{id}:
-    get:
-      operationId: rtspsSessionsGet
-      tags: [RTSP]
-      summary: returns a RTSPS session.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTSPSession'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtspssessions/kick/{id}:
-    post:
-      operationId: rtspsSessionsKick
-      tags: [RTSP]
-      summary: kicks out a RTSPS session from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the session.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpconns/list:
-    get:
-      operationId: rtmpConnsList
-      tags: [RTMP]
-      summary: returns all RTMP connections.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTMPConnList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpconns/get/{id}:
-    get:
-      operationId: rtmpConnectionsGet
-      tags: [RTMP]
-      summary: returns a RTMP connection.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTMPConn'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpconns/kick/{id}:
-    post:
-      operationId: rtmpConnsKick
-      tags: [RTMP]
-      summary: kicks out a RTMP connection from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpsconns/list:
-    get:
-      operationId: rtmpsConnsList
-      tags: [RTMP]
-      summary: returns all RTMPS connections.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTMPConnList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpsconns/get/{id}:
-    get:
-      operationId: rtmpsConnectionsGet
-      tags: [RTMP]
-      summary: returns a RTMPS connection.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RTMPConn'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/rtmpsconns/kick/{id}:
-    post:
-      operationId: rtmpsConnsKick
-      tags: [RTMP]
-      summary: kicks out a RTMPS connection from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/srtconns/list:
-    get:
-      operationId: srtConnsList
-      tags: [SRT]
-      summary: returns all SRT connections.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SRTConnList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/srtconns/get/{id}:
-    get:
-      operationId: srtConnsGet
-      tags: [SRT]
-      summary: returns a SRT connection.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SRTConn'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/srtconns/kick/{id}:
-    post:
-      operationId: srtConnsKick
-      tags: [SRT]
-      summary: kicks out a SRT connection from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the connection.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: connection not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/webrtcsessions/list:
-    get:
-      operationId: webrtcSessionsList
-      tags: [WebRTC]
-      summary: returns all WebRTC sessions.
-      description: ''
-      parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebRTCSessionList'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/webrtcsessions/get/{id}:
-    get:
-      operationId: webrtcSessionsGet
-      tags: [WebRTC]
-      summary: returns a WebRTC session.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the session.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebRTCSession'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/webrtcsessions/kick/{id}:
-    post:
-      operationId: webrtcSessionsKick
-      tags: [WebRTC]
-      summary: kicks out a WebRTC session from the server.
-      description: ''
-      parameters:
-      - name: id
-        in: path
-        required: true
-        description: ID of the session.
-        schema:
-          type: string
-      responses:
-        '200':
-          description: the request was successful.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OK'
-        '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '404':
-          description: session not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-
-  /v3/recordings/list:
-    get:
-      operationId: recordingsList
       tags: [Recordings]
-      summary: returns all recordings, splitted by path.
-      description: ''
+      summary: List recordings.
+      description: |
+        Returns canonical Recording entities. List responses **omit**
+        the embedded `segments` array per ADR 0009 §D5 — fetch a
+        single recording for the segment list.
       parameters:
-      - name: page
-        in: query
-        description: page number.
-        schema:
-          type: integer
-          default: 0
-      - name: itemsPerPage
-        in: query
-        description: items per page.
-        schema:
-          type: integer
-          default: 100
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: camera_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RecordingState'
+        - name: started_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: started_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
       responses:
         '200':
-          description: the request was successful.
+          description: Recording list.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecordingList'
         '400':
-          description: invalid request.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+          description: Bad request.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/recordings/get/{name}:
-    get:
-      operationId: recordingsGet
-      tags: [Recordings]
-      summary: returns recordings of a path.
-      description: ''
-      parameters:
-      - name: name
+  /v1/recordings/{id}:
+    parameters:
+      - name: id
         in: path
         required: true
-        description: name of the path.
         schema:
           type: string
+          format: uuid
+    get:
+      tags: [Recordings]
+      summary: Get a recording with embedded segments.
+      description: |
+        Embeds the segment list per ADR 0009 §D5. Each segment has
+        its recorder-local `path` field scrubbed before serialization.
       responses:
         '200':
-          description: the request was successful.
+          description: Recording detail.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Recording'
         '400':
-          description: invalid request.
+          description: Invalid recording id.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: path not found.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+          description: Recording not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
 
-  /v3/recordings/deletesegment:
-    delete:
-      operationId: recordingsDeleteSegment
+  /v1/recordings/{id}/playback:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
       tags: [Recordings]
-      summary: deletes a recording segment.
-      description: ''
-      parameters:
-      - name: path
-        in: query
-        required: true
-        description: path.
-        schema:
-          type: string
-      - name: start
-        in: query
-        required: true
-        description: starting date of the segment.
-        schema:
-          type: string
+      summary: Issue a playback handle for a recording.
+      description: |
+        Returns playback connection material (URL, short-lived
+        token, expiry). The actual stream comes through the existing
+        media protocols, not over this endpoint.
+
+        NOTE: the current recorder issues a placeholder bearer
+        token; real bearer issuance is a Phase-2-followup. Clients
+        can pin the response shape today but should not rely on the
+        token being cryptographically meaningful yet.
       responses:
         '200':
-          description: the request was successful.
+          description: Playback handle.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OK'
+                $ref: '#/components/schemas/PlaybackHandle'
         '400':
-          description: invalid request.
+          description: Invalid recording id.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
         '404':
-          description: connection not found.
+          description: Recording not found.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-        '500':
-          description: server error.
+
+  # ===== RecordingSegments =======================================
+
+  /v1/recording-segments:
+    get:
+      tags: [RecordingSegments]
+      summary: List recording segments.
+      description: |
+        Storage-ops listing. The `started_*` filters are footage
+        time; the `created_*` filters are segment-write time. Both
+        pairs are useful for distinct workflows (timeline scrub vs
+        storage-growth analysis).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: recording_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: camera_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: volume_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RecordingSegmentState'
+        - name: started_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: started_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: created_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Segment list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingSegmentList'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recording-segments/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [RecordingSegments]
+      summary: Get a recording segment.
+      description: |
+        Recorder-local `path` is scrubbed from the response per the
+        data-classification rule.
+      responses:
+        '200':
+          description: Segment detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingSegment'
+        '400':
+          description: Invalid segment id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Segment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [RecordingSegments]
+      summary: Delete a recording segment file.
+      description: |
+        UUID-keyed replacement for the legacy
+        `DELETE /v3/recordings/deletesegment` (which keyed by
+        `?path=...&start=...`). Removes the on-disk segment file.
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Invalid segment id, or filesystem error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Segment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Events ===================================================
+
+  /v1/events:
+    get:
+      tags: [Events]
+      summary: List events.
+      description: |
+        Returns canonical Event entries. Multi-value `kind`
+        filtering is supported (`?kind=a&kind=b`). The `severity`
+        filter accepts either a bare severity or the `>=warning`
+        form (semantics: events at or above this rank pass through).
+
+        Pre-2-followup the event-store buffer starts empty; in that
+        case the response carries a top-level `notice` field
+        flagging the gap.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: camera_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: started_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: started_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: kind
+          in: query
+          required: false
+          description: Multi-value; may be repeated.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: severity
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: severity_min
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/EventSeverity'
+        - name: subject_kind
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/EventSubjectKind'
+        - name: subject_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event list (possibly with `notice`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventList'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/events/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Events]
+      summary: Get an event by id.
+      responses:
+        '200':
+          description: Event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '400':
+          description: Invalid id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Event not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Health ===================================================
+
+  /v1/health:
+    get:
+      tags: [Health]
+      summary: Recorder health snapshot.
+      description: |
+        One snapshot, current state only. Pre-MS the network
+        reachability flags default to `false` (no MS pairing client
+        wired yet); a future Phase-2-followup flips them to live
+        values once that client lands.
+      responses:
+        '200':
+          description: Health snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  # ===== StorageVolumes ==========================================
+
+  /v1/storage-volumes:
+    get:
+      tags: [StorageVolumes]
+      summary: List storage volumes.
+      description: |
+        Read-only listing. Volume bootstrap config (mount paths,
+        kind, priority) lives in `/v1/recorder/config`; this surface
+        is observability only.
+      responses:
+        '200':
+          description: Volume list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageVolumeList'
+
+  /v1/storage-volumes/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [StorageVolumes]
+      summary: Get a storage volume.
+      responses:
+        '200':
+          description: Volume detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageVolume'
+        '400':
+          description: Invalid volume id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Volume not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Recorder-localized escape hatch =========================
+
+  /v1/recorder/config:
+    get:
+      tags: [Recorder]
+      summary: Recorder operational config.
+      description: |
+        Recorder-localized escape hatch per ADR 0009 §D6. Covers
+        ~95% of MediaMTX's `GlobalConf`. Embedded credentials in
+        relevant fields are redacted on read.
+      responses:
+        '200':
+          description: Recorder config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecorderConfig'
+    patch:
+      tags: [Recorder]
+      summary: Patch recorder operational config.
+      description: |
+        Partial-update semantics. Body's `tenantId`, if present,
+        must match the recorder's bound tenant or the request
+        returns 403. Hook strings (`runOnConnect`,
+        `runOnDisconnect`) are scanned for credential markers and
+        flagged in the recorder log; contents are not redacted on
+        write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecorderConfig'
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/camera-defaults:
+    get:
+      tags: [Recorder]
+      summary: Camera defaults applied at creation.
+      description: |
+        Recording-policy fields (`record`, `recordPath`,
+        `recordFormat`, `recordPartDuration`, `recordMaxPartSize`,
+        `recordSegmentDuration`, `recordDeleteAfter`) are stripped
+        from the response — the canonical mechanism for shared
+        recording behavior is `RecordingPolicy` at
+        `/v1/recording-policies`. The `source` field has its
+        embedded userinfo redacted (canonical-divergence D4).
+      responses:
+        '200':
+          description: Camera defaults.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraDefaults'
+    patch:
+      tags: [Recorder]
+      summary: Patch camera defaults.
+      description: |
+        Recording-policy fields in the body are rejected with 400
+        and a message pointing to `/v1/recording-policies`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraDefaults'
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: |
+            Bad request, including the case where
+            recording-policy fields are present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/cameras/{id}/source-config:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Recorder]
+      summary: RPi-camera source-config sub-shape.
+      description: |
+        ~30-field RPi-camera source configuration. Hardware-
+        specific; only meaningful on a recorder running on
+        Raspberry Pi hardware. Not part of canonical
+        `Camera.source_config`.
+      responses:
+        '200':
+          description: RPi-camera source-config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RPiCameraSourceConfig'
+        '400':
+          description: Invalid camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags: [Recorder]
+      summary: Patch RPi-camera source-config.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RPiCameraSourceConfig'
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/cameras/{id}/hooks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Recorder]
+      summary: Per-camera shell hooks.
+      description: |
+        Hook strings are at minimum Sensitive — they may carry
+        credentials if the operator embeds them in shell commands.
+        On read the recorder scans for credential markers and emits
+        a Warn log; contents are not redacted because the operator
+        who set them needs to be able to read them back to edit
+        them.
+      responses:
+        '200':
+          description: Camera hooks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraHooks'
+        '400':
+          description: Invalid camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags: [Recorder]
+      summary: Patch per-camera shell hooks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraHooks'
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/hls-muxers:
+    get:
+      tags: [Recorder]
+      summary: HLS muxer list.
+      description: |
+        Per-camera HLS muxer state. Recorder-internal observability;
+        the canonical model has no place for muxer state. Only
+        registered when the recorder is built with the HLS server
+        enabled. NOTE: this list endpoint inherits the upstream
+        MediaMTX camelCase pagination keys (`itemCount`,
+        `pageCount`, `itemsPerPage`); tracked as a Phase 3
+        follow-up.
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: itemsPerPage
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: HLS muxer list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HLSMuxerList'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/hls-muxers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: |
+          Canonical Camera UUID. The legacy /v3 endpoint keyed off
+          MediaMTX path-name strings; this one keys on the canonical
+          camera id (the recorder resolves UUID → path-name
+          internally).
+    get:
+      tags: [Recorder]
+      summary: Get HLS muxer state for a camera.
+      responses:
+        '200':
+          description: HLS muxer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HLSMuxer'
+        '400':
+          description: Invalid camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Muxer not found.
           content:
             application/json:
               schema:

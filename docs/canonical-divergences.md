@@ -55,6 +55,9 @@ Entries are grouped by severity:
 
 ### D2. `/v3/config/paths/*` exposes `conf.Path` directly at the public surface
 
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
+
 - **Where.**
   `/v3/config/paths/{list,get,add,patch,replace,delete}`,
   `/v3/config/pathdefaults/{get,patch}`. Schema `PathConf`.
@@ -79,6 +82,9 @@ Entries are grouped by severity:
   the same translation mechanism.
 
 ### D3. `/v3/paths/{list,get}` runtime view exposes MediaMTX vocabulary
+
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
 
 - **Where.** `/v3/paths/list`, `/v3/paths/get/*name`. Schemas
   `Path`, `PathSource`, `PathReader`, `PathSourceType`,
@@ -204,6 +210,9 @@ be tracked, but they will resolve together.
 
 ### D7. String path-name identifiers where canonical expects UUIDs
 
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
+
 - **Where.** `*name` route params on `/v3/config/paths/*`,
   `/v3/paths/*`, `/v3/recordings/*`, `/v3/hlsmuxers/*`. Fields
   `Path.name`, `Recording.name`, `PathConf.name`,
@@ -219,6 +228,9 @@ be tracked, but they will resolve together.
   translation table. String routes deprecated.
 
 ### D8. `RecordingSegment` schema is a 2-field stub (`{ start }`)
+
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
 
 - **Where.** Schema `RecordingSegment`; endpoints
   `/v3/recordings/{list,get}`.
@@ -238,6 +250,9 @@ be tracked, but they will resolve together.
 
 ### D9. `user` field on sessions is a free-form login string, not a `User.id`
 
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
+
 - **Where.** `RTSPSession.user`, `WebRTCSession.user`,
   `RTMPConn.user`, `SRTConn.user`, `HLSSession.user`.
 - **What.** Carries the username from credentials, not a canonical
@@ -249,6 +264,9 @@ be tracked, but they will resolve together.
   alongside; deprecate `user` as a display-name alias.
 
 ### D10. `path` field on sessions is a string path-name, not a `camera_id`
+
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
 
 - **Where.** `RTSPSession.path`, `WebRTCSession.path`,
   `RTMPConn.path`, `SRTConn.path`, `HLSSession.path`,
@@ -294,6 +312,9 @@ be tracked, but they will resolve together.
   ship as a small recorder-side change.
 
 ### D13. No upgrade path for Restricted-classification fields when canonical `Camera` / `Site` arrive
+
+> **Status: closed by ADR 0009 implementation on 2026-04-26.** See
+> the Resolved section at the bottom of this document.
 
 - **Where.** Forward-looking; applies when ADR 0009 lands.
 - **What.** `data-classification.md` upgrades `Site.coordinates`
@@ -490,3 +511,215 @@ updated to inject a sentinel `tenantId`: `tempConf` in
 `internal/core/core_test.go`. The last is a one-line test-helper
 edit outside the trio originally scoped, surfaced explicitly in the
 commit message.
+
+### D2. `/v3/config/paths/*` exposed `conf.Path` directly
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` (canonical types + translation layer) and
+Phase 2 commit `78de5d5f` (handlers, escape hatch, deletion of old
+endpoints).
+
+The MediaMTX-lineage `/v3/config/paths/*` surface is gone. Camera
+configuration now lives at `/v1/cameras` returning canonical
+`defs.Camera` (in `internal/defs/camera.go`), with the conf↔canonical
+translation in `internal/defs/camera_translate.go`. Recording rules
+were carved out into a separate canonical `RecordingPolicy` entity
+exposed at `/v1/recording-policies`. The `conf.Path` shape still
+lives internally as the recorder's persistence layer, but is no
+longer exposed at the API boundary; the handlers in
+`internal/api/api_v1_cameras.go` translate at the edge.
+
+The four `conf.Path` content categories that did not fit cleanly
+into canonical `Camera` were carved out into the recorder-localized
+escape hatch per ADR 0009 §D6: operational/global config under
+`/v1/recorder/config`, camera-creation defaults (with recording-
+policy fields explicitly stripped) under
+`/v1/recorder/camera-defaults`, the ~30-field RPi-camera sub-shape
+under `/v1/recorder/cameras/{id}/source-config`, and the per-camera
+shell hooks under `/v1/recorder/cameras/{id}/hooks`. Wire shapes for
+those four are documented in `recorder/api/openapi.yaml` and live in
+`internal/api/escape_hatch_shapes.go`,
+`internal/api/api_v1_recorder_camera_source_config.go`, and
+`internal/api/api_v1_recorder_camera_hooks.go`.
+
+There is no deprecation window — the `/v3` surface is removed
+outright per ADR 0009 §D1. The legacy handlers and tests were
+deleted in commit `78de5d5f`.
+
+### D3. `/v3/paths/{list,get}` MediaMTX vocabulary in runtime view
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+The MediaMTX `Path` runtime aggregate is split per ADR 0009 §D5:
+configuration lives on `Camera` (with the small `runtime` block per
+§D3 of the ADR — `online`, `available`, `last_online_at`), and active
+runtime sessions live on the new canonical `Stream` entity at
+`/v1/streams`. The `Stream` entity (`internal/defs/stream.go`) folds
+in 25 protocol-specific endpoints from the legacy /v3 surface — the
+seven session/conn lists, the seven session/conn gets, the seven
+session/conn kicks, plus the four RTSP/RTSPS conn endpoints — into
+three canonical endpoints (`GET /v1/streams`, `GET /v1/streams/{id}`,
+`DELETE /v1/streams/{id}`).
+
+Per-protocol detail is preserved on the response in
+`Stream.protocol_specific`, a discriminated union by `Stream.protocol`
+covering RTSP/RTSPS, RTMP/RTMPS, SRT, WebRTC, and HLS variants
+(`internal/defs/stream_protocol_specific.go`). The RTSP-only
+conn-vs-session split is preserved in
+`protocol_specific.transport_connections[]`. The unified handlers in
+`internal/api/api_v1_streams.go` walk every protocol cluster, run the
+Phase 1 translators, apply optional filters
+(`protocol`, `camera_id`, `direction`, `state`), paginate, and redact
+PII / Sensitive fields before responding.
+
+`MediaMTX-vocabulary` enums (`PathSourceType` with its 15 values,
+`PathReaderType` with its 10 values) are gone from the OpenAPI
+spec; only canonical `StreamProtocol`, `StreamDirection`, and
+`StreamState` remain.
+
+### D7. String path-name identifiers replaced by UUIDs
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+Every `/v1` route keys on a canonical UUID per ADR 0009 §D4. For
+on-disk paths that already exist (which key by string-name in the
+recorder's persistence layer), a deterministic UUIDv5 in the OID
+namespace is derived from the path-name, giving a stable id across
+recorder restarts (see `cameraIDFromPathName` in
+`internal/api/api_v1_camera_id.go`). The recorder maintains a
+forward (uuid → name) and reverse (name → uuid) lookup that the
+handlers use to round-trip between canonical and persistence
+identifiers.
+
+The same scheme is applied to `RecordingSegment.id` (UUIDv5 from
+`(camera_id, segment_path)`), `Recording.id` (UUIDv5 from
+`(camera_id, started_at)`), and `StorageVolume.id` (UUIDv5 from the
+absolute mount path). All identifiers are stable across recorder
+restarts as long as the underlying tuple does not change.
+
+Limitation: per ADR 0009 §D4, UUID provisioning is recorder-issued
+in the pre-MS phase. Once the Management Server pairs and starts
+issuing identifiers authoritatively, the recorder must re-key its
+in-memory tables to match; that handoff is tracked separately.
+
+### D8. `RecordingSegment` 2-field stub replaced by canonical 17-field shape
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+The MediaMTX-lineage two-field `Recording` schema is gone. In its
+place:
+
+- `defs.RecordingSegment` (`internal/defs/recording_segment.go`)
+  carries the full canonical 17 fields including the new
+  `recording_id` link added by ADR 0009. The recorder-local on-disk
+  `path` field is held internally but scrubbed from API responses
+  (`scrubSegmentForResponse` in
+  `internal/api/api_v1_recordings.go`).
+- `defs.Recording` (`internal/defs/recording.go`) is a new canonical
+  entity introduced inline by ADR 0009 — a continuous span of
+  recorded footage on one camera, composed of one or more
+  RecordingSegments. The list endpoint (`GET /v1/recordings`) omits
+  the embedded segments array; the GET-by-id endpoint
+  (`GET /v1/recordings/{id}`) includes it.
+- `GET /v1/recordings/{id}/playback` returns a canonical
+  `PlaybackHandle` (URL + token + expires_at).
+
+The recorder synthesizes Recordings lazily on first
+`/v1/recordings*` request by walking `recordstore` and grouping
+contiguous segments by a 60-second gap heuristic
+(`recordingGapThreshold`); the registry is in-memory and
+re-synthesizes on recorder restart per ADR 0009 §D8 closure notes.
+
+Limitations / Phase-2 follow-ups:
+
+- The playback `token` returned today is a deterministic placeholder
+  (`placeholder-<recording_id>`); real bearer issuance requires
+  touching `internal/playback`, which was off-limits in Phase 2C.
+  Tracked as a Phase-2 follow-up.
+- `RecordingSegment.ended_at` is left zero pre-Phase-2-followup;
+  `recordstore`'s public surface doesn't expose per-segment end
+  timestamps, and using the next segment's `started_at` as a
+  stand-in would collapse the gap-detection heuristic.
+- `RecordingSegment.volume_id`, `policy_id`, `recording_server_id`,
+  and `site_id` are emitted as empty strings pre-MS; storage volumes
+  Phase 2D and policies Phase 2A wire them up, but the cross-tier
+  pairing to MS-issued identifiers waits for ADR 0002.
+
+### D9. `user` free-form string replaced by `user_id` UUID
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+The canonical `Stream` entity carries `user_id: ref<User>?`
+(UUID-formatted) per ADR 0009 §"Stream amendments"; the legacy
+free-form `user` login-string field is gone from the /v1 surface
+along with its parent per-protocol session/conn endpoints (D3).
+Stream translators (`internal/defs/stream_translate.go`) populate
+`user_id` when an authenticated user is associated with the
+session.
+
+Limitation: pre-MS the recorder doesn't have a canonical `User`
+catalog wired up yet — `user_id` is populated when present but the
+upstream sources don't always have one to give. Cross-tier joins
+to identity remain a Phase-2 follow-up tied to ADR 0002 OQ10.
+
+### D10. `path` string replaced by `camera_id` UUID on streams
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+Every canonical `Stream` carries `camera_id: ref<Camera>` per
+ADR 0009 §D2. The translators in
+`internal/defs/stream_translate.go` map MediaMTX session/conn
+path-name strings to canonical Camera UUIDs via the same
+deterministic UUIDv5-from-path-name scheme used for
+`Camera.id` (D7). Same approach for `RecordingSegment.camera_id`,
+`Recording.camera_id`, and Event subject references.
+
+The legacy `path` string field is gone from all /v1 response
+shapes. The HLS muxer escape-hatch endpoint
+(`/v1/recorder/hls-muxers/{id}`) keys on canonical Camera UUID and
+internally resolves it back to the recorder-internal path-name to
+call into the existing HLS server.
+
+### D13. Restricted-classification upgrade path documented
+
+**Resolved 2026-04-26.** Closed by the ADR 0009 implementation —
+Phase 1 commit `9c7bac3e` and Phase 2 commit `78de5d5f`.
+
+ADR 0009 lands the canonical `Camera` and `Site` references
+(through `Camera.tenant_id` / `Camera.site_id`); per the inline
+canonical model amendments in §"Canonical model amendments" the
+recorder now models the Restricted-upgrade fields the canonical
+data-classification rules call for:
+
+- `Camera` carries `position` (Sensitive → Restricted at
+  residential precision) per `domain-model.md`. The Phase 1
+  `defs.Camera` shape does not yet expose `position` directly (the
+  recorder doesn't compute camera position today), but the field
+  has a documented home in canonical `Camera` and lands when the MS
+  starts issuing it. The OpenAPI spec annotates `Camera.name` and
+  `Camera.source_url` as Sensitive, which is the upgrade-eligible
+  classification per `data-classification.md`.
+- `Site.coordinates` and `Site.address` upgrade rules are now
+  documented in `data-classification.md`; the recorder doesn't
+  surface Site directly (Site is MS-owned), but the per-recorder
+  `tenant_id` + `site_id` references land on every canonical
+  entity the recorder emits.
+
+Limitations / follow-ups:
+
+- The full `Camera.position` field arrives at the recorder when MS
+  pairing lands per ADR 0002; the recorder will translate it
+  through unchanged. No additional code is needed in the recorder
+  for the Restricted upgrade because the recorder is not the
+  authoritative source for that data.
+- The OpenAPI spec's `x-classification` annotations follow the
+  conventions described in the spec's `info.description`:
+  Operational is the default and stays unannotated; PII / Sensitive
+  / Credential get explicit annotations. Restricted has no
+  in-tree fields today; when one arrives the annotation set will
+  extend.
