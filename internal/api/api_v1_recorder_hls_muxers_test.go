@@ -37,6 +37,10 @@ func (s *hlsMuxerOnlyServer) APIMuxersGet(name string) (*defs.APIHLSMuxer, error
 	return m, nil
 }
 
+func (s *hlsMuxerOnlyServer) APIMuxerSnapshot(_ string) ([]byte, string, error) {
+	return nil, "", hls.ErrMuxerNotFound
+}
+
 func (s *hlsMuxerOnlyServer) APISessionsList() (*defs.APIHLSSessionList, error) {
 	return &defs.APIHLSSessionList{}, nil
 }

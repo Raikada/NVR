@@ -3232,3 +3232,87 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+
+  /v1/recorder/cameras/{id}/snapshot:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: |
+          Canonical Camera UUID. Same UUID-to-path-name resolution as
+          `/v1/recorder/hls-muxers/{id}`: configured paths first,
+          runtime-active muxers as fallback.
+    get:
+      tags: [Recorder]
+      summary: Most recent media fragment for a camera.
+      description: |
+        Returns the most recent finalized HLS segment the recorder is
+        producing for the camera. The response body is the **raw HLS
+        fragment** (typically fragmented MP4 for the fMP4 variants or
+        an MPEG-TS segment for the MPEG-TS variant) — not a JPEG
+        still. Producing a JPEG would require demuxing the segment,
+        decoding a video frame, and re-encoding through an image
+        encoder; the recorder declines to take that dependency, so
+        the snapshot endpoint exposes the muxer's raw segment bytes
+        instead. The exact `Content-Type` reflects what the muxer
+        emits (commonly `video/mp4` or `video/MP2T`).
+
+        Placement (ADR 0009 §D6.3): no canonical `Snapshot` entity
+        exists, and defining one would be ADR-level work, so this
+        endpoint lives in the recorder-localized escape hatch
+        alongside `hls-muxers`. It is recorder-internal observability
+        — useful to LAN tools and operator dashboards but not
+        promoted to a tier-shared canonical surface.
+
+        No caching: each call returns the freshest available
+        fragment. Returns 503 when the camera resolves but the HLS
+        muxer is not currently producing media (no instance, no
+        segments yet, or content didn't become available within the
+        snapshot deadline).
+      responses:
+        '200':
+          description: |
+            Raw segment bytes. The `Content-Type` header reflects the
+            muxer's output (e.g. `video/mp4` for fMP4 variants,
+            `video/MP2T` for MPEG-TS). Treat the body as opaque
+            binary; it is **not** a still image.
+          content:
+            video/mp4:
+              schema:
+                type: string
+                format: binary
+            video/MP2T:
+              schema:
+                type: string
+                format: binary
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: |
+            Camera UUID does not match any configured path or
+            runtime-active muxer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: |
+            Camera is known but is not currently producing media
+            (no HLS muxer registered, no instance, no finalized
+            segments, or content unavailable within the snapshot
+            deadline).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
