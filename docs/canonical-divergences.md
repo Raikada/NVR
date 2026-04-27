@@ -686,13 +686,12 @@ Limitations / Phase-2 follow-ups:
 
 - The playback handle no longer carries a `token` field. ADR 0009
   §D5 originally specified `{ url, token, expires_at }`; ADR 0011
-  subsequently established that the recorder is purely a token
-  validator and does not issue tokens. Clients reuse the user JWT
-  they already hold from Cloud/MS when fetching the URL — the
-  recorder's playback `/get` endpoint authenticates via the existing
-  `auth.Manager`. The wire shape is now `{ url, expires_at }`.
-  Captured here as a divergence from ADR 0009's literal text;
-  candidate for an ADR 0009 amendment in the next pass.
+  established that the recorder is purely a token validator and does
+  not issue tokens. Clients reuse the user JWT they already hold
+  from Cloud/MS when fetching the URL — the recorder's playback
+  `/get` endpoint authenticates via the existing `auth.Manager`.
+  The wire shape is now `{ url, expires_at }`. Reconciled in ADR
+  0009's 2026-04-27 in-place amendment (see its Revision history).
 - `RecordingSegment.ended_at` is left zero pre-Phase-2-followup;
   `recordstore`'s public surface doesn't expose per-segment end
   timestamps, and using the next segment's `started_at` as a
