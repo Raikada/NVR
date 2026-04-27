@@ -163,7 +163,7 @@ func (a *API) onV1AuditList(ctx *gin.Context) {
 		return
 	}
 
-	all := defaultAuditBuffer().Snapshot()
+	all := defaultAuditSink().Snapshot()
 
 	filtered := make([]defs.AuditLogEntry, 0, len(all))
 	for i := range all {

@@ -423,6 +423,29 @@ type Conf struct {
 	RecordSegmentDuration *Duration     `json:"recordSegmentDuration,omitempty" deprecated:"true"`
 	RecordDeleteAfter     *Duration     `json:"recordDeleteAfter,omitempty" deprecated:"true"`
 
+	// Audit (ADR 0006 D6 / D8). The recorder's audit-chain buffer is
+	// promoted to disk-backed durability; these fields tune the
+	// retention horizon and the on-disk size ceiling that drives the
+	// degraded-mode admin-action gate.
+	//
+	// AuditRetentionDays is the retention window applied by the
+	// daily compaction pass. Entries with recorded_at older than
+	// (now - AuditRetentionDays) are dropped from the on-disk log;
+	// the chain head is preserved across compaction. Default 30
+	// days, matching the operational floor in ADR 0006 D6 ("30 days
+	// of typical audit volume").
+	//
+	// AuditMaxDiskBytes is the on-disk audit-log size ceiling. When
+	// the log crosses 80% of this value the recorder enters
+	// audit-degraded mode (ADR 0006 D6): new administrative actions
+	// are refused with 503; recording is NEVER gated. Default
+	// 100 MiB. Tunable upward for high-volume deployments; the
+	// principle is that silent loss of audit entries defeats the
+	// integrity property, so the ceiling needs to be large enough
+	// that a typical disconnect window is comfortably under it.
+	AuditRetentionDays int `json:"auditRetentionDays"`
+	AuditMaxDiskBytes  int `json:"auditMaxDiskBytes"`
+
 	// Path defaults
 	PathDefaults Path `json:"pathDefaults"`
 
@@ -565,6 +588,13 @@ func (conf *Conf) setDefaults() {
 	// SRT server
 	conf.SRT = true
 	conf.SRTAddress = ":8890"
+
+	// Audit (ADR 0006 D6 / D8) defaults. 30 days matches the
+	// operational floor in D6 ("30 days of typical audit volume");
+	// 100 MiB is the conservative starting point for the on-disk
+	// ceiling that drives the degraded-mode admin-action gate.
+	conf.AuditRetentionDays = 30
+	conf.AuditMaxDiskBytes = 100 * 1024 * 1024
 
 	conf.PathDefaults.setDefaults()
 }
