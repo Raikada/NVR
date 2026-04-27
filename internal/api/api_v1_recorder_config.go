@@ -8,6 +8,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/conf/jsonwrapper"
+	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/gin-gonic/gin"
 )
@@ -120,6 +121,16 @@ func (a *API) onV1RecorderConfigPatch(ctx *gin.Context) {
 	}
 
 	a.Conf = newConf
+
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindServer,
+		Message:     "recorder configuration patched",
+		Attributes: map[string]string{
+			"surface": "/v1/recorder/config",
+		},
+	})
 
 	// since reloading the configuration can cause the shutdown of the API,
 	// call it in a goroutine

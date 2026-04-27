@@ -178,6 +178,18 @@ func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
 	stored := policy
 	a.Conf.RecordingPolicies[policy.ID] = &stored
 
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "policy.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindServer,
+		SubjectID:   policy.ID,
+		Message:     "recording policy created",
+		Attributes: map[string]string{
+			"policy_id": policy.ID,
+			"verb":      "create",
+		},
+	})
+
 	ctx.JSON(http.StatusCreated, &policy)
 }
 
@@ -245,6 +257,18 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 		defs.ApplyPolicyToPath(p, merged)
 	}
 
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "policy.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindServer,
+		SubjectID:   merged.ID,
+		Message:     "recording policy updated",
+		Attributes: map[string]string{
+			"policy_id": merged.ID,
+			"verb":      "update",
+		},
+	})
+
 	ctx.JSON(http.StatusOK, &merged)
 }
 
@@ -276,5 +300,18 @@ func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
 	}
 
 	delete(a.Conf.RecordingPolicies, id.String())
+
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "policy.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindServer,
+		SubjectID:   id.String(),
+		Message:     "recording policy deleted",
+		Attributes: map[string]string{
+			"policy_id": id.String(),
+			"verb":      "delete",
+		},
+	})
+
 	a.writeOK(ctx)
 }

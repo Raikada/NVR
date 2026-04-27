@@ -258,12 +258,42 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 
 		a.Log(logger.Info, "connection %v failed to authenticate: %v", httpp.RemoteAddr(ctx), err.Wrapped)
 
+		// Publish an auth.failed_login Event alongside the existing log
+		// line. Source IP is the only attribute we surface; user
+		// identifier is intentionally omitted (a failed-login event
+		// must never carry the attempted credential's user field, per
+		// data-classification.md / AGENTS.md §9 "never log credentials").
+		a.publishEvent(defs.EventInput{
+			Kind:        "auth.failed_login",
+			Severity:    defs.EventSeverityWarning,
+			SubjectKind: defs.EventSubjectKindSession,
+			Message:     "API authentication failed",
+			Attributes: map[string]string{
+				"remote_addr": httpp.RemoteAddr(ctx),
+			},
+		})
+
 		// wait some seconds to delay brute force attacks
 		<-time.After(auth.PauseAfterError)
 
 		a.writeErrorNoLog(ctx, http.StatusUnauthorized, fmt.Errorf("authentication error"))
 		return
 	}
+
+	// Successful auth: publish auth.session_started. Severity info per
+	// domain-model.md (canonical kind example). The "session" subject
+	// kind matches the canonical Event vocabulary; the recorder doesn't
+	// yet carry a server-side session object (see ADR 0002 OQ10), so
+	// SubjectID is empty until that lands.
+	a.publishEvent(defs.EventInput{
+		Kind:        "auth.session_started",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindSession,
+		Message:     "API request authenticated",
+		Attributes: map[string]string{
+			"remote_addr": httpp.RemoteAddr(ctx),
+		},
+	})
 }
 
 func (a *API) onInfo(ctx *gin.Context) {

@@ -325,6 +325,18 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 		}
 	}
 
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindCamera,
+		SubjectID:   cam.ID,
+		Message:     "camera created",
+		Attributes: map[string]string{
+			"camera_id": cam.ID,
+			"verb":      "create",
+		},
+	})
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
 	ctx.JSON(http.StatusCreated, &cam2)
 }
@@ -411,6 +423,18 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		}
 	}
 
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindCamera,
+		SubjectID:   id,
+		Message:     "camera patched",
+		Attributes: map[string]string{
+			"camera_id": id,
+			"verb":      "update",
+		},
+	})
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -482,6 +506,18 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 		}
 	}
 
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindCamera,
+		SubjectID:   id,
+		Message:     "camera replaced",
+		Attributes: map[string]string{
+			"camera_id": id,
+			"verb":      "replace",
+		},
+	})
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -518,6 +554,18 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
+
+	a.publishEventLocked(defs.EventInput{
+		Kind:        "config.applied",
+		Severity:    defs.EventSeverityInfo,
+		SubjectKind: defs.EventSubjectKindCamera,
+		SubjectID:   id,
+		Message:     "camera deleted",
+		Attributes: map[string]string{
+			"camera_id": id,
+			"verb":      "delete",
+		},
+	})
 
 	a.writeOK(ctx)
 }
