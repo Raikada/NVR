@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/assets/logo.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Raikada — Recording Server</title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <style>
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: var(--bg-primary); overflow: hidden; }
+      #root { display: flex; flex-direction: column; min-height: 100vh; }
+      .shell { flex: 1; display: flex; min-height: 0; }
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: var(--bg-primary); }
+      ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border: 2px solid var(--bg-primary); border-radius: 6px; }
+      ::-webkit-scrollbar-thumb:hover { background: #2a2a2a; }
+      @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+      @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+      .pulse-dot { animation: pulse 1.2s ease-in-out infinite; }
+      @keyframes scanline { 0% { transform: translateX(0); } 100% { transform: translateX(100%); } }
+      .scanline { animation: scanline 1.4s linear infinite; }
+      button, input { font-family: inherit; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
