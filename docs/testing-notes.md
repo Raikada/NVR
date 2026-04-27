@@ -117,7 +117,32 @@ inter-package collisions, and accept that intra-package subtest
 collisions can still occur. Docker isolation is the only fully
 reliable answer.
 
-### 5. Stale `mediamtx` process recognition pattern
+### 5. UDP-loopback static-source tests also hang under Docker on macOS
+
+**Affected:** `internal/staticsources/rtp` (TestSourceUDP and friends),
+`internal/staticsources/mpegts` (TestSource).
+
+**Symptom:** Same packages as §1 but observed during `make test`
+(Docker), each timing out at 600s. `make test` exits with
+non-zero; the substantive packages around them all pass.
+
+**Cause:** Docker Desktop on macOS uses a Linux VM. UDP loopback
+through that VM has subtle differences from native Linux — notably,
+multicast and 127.0.0.1 UDP routes don't always behave the way the
+tests assume. Same root cause as §1; just surfaces in Docker because
+the underlying networking stack still runs on the macOS host.
+
+**Workaround for local Docker runs:** known-fail; the substantive
+test packages around them pass (most of `internal/...` ships ok in
+the same run). For real validation, run `make test` on a Linux host
+or in CI.
+
+**Code fix considered:** The tests themselves bind to `:9004` /
+`238.0.0.1:9004` and assume the recorder under test will receive on
+its own listener; the failure is in delivery, not test logic. No
+recorder-side fix would address this.
+
+### 6. Stale `mediamtx` process recognition pattern
 
 **Symptom:** Every test in `internal/api`, `internal/core`,
 `internal/metrics`, `internal/playback` failing simultaneously with
