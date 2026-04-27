@@ -412,16 +412,20 @@ type Conf struct {
 	OptionalPaths map[string]*OptionalPath `json:"paths"`
 	Paths         map[string]*Path         `json:"-"` // filled by Validate()
 
-	// RecordingPolicies is the in-memory canonical RecordingPolicy cache
-	// per ADR 0009 §D5 Recording-policies. Keyed by policy UUID. Values
-	// are *defs.RecordingPolicy; declared as `any` here to avoid an
-	// import cycle (defs imports conf). Not serialized to mediamtx.yml —
-	// the map is in-memory only and goes away on recorder restart, at
-	// which point synthesis re-runs from the existing per-camera
-	// recording fields. Cross-restart persistence can come in a
-	// follow-up; the pre-MS phase has no stable cross-restart IDs anyway
-	// per ADR 0009 §D4.
-	RecordingPolicies map[string]any `json:"-" yaml:"-"`
+	// RecordingPolicies is the canonical RecordingPolicy cache per ADR
+	// 0009 §D8. Persists to mediamtx.yml as a top-level
+	// recordingPolicies: key, keyed by policy UUID. Values are
+	// *RecordingPolicyConfig — a conf-package mirror of
+	// defs.RecordingPolicy that exists to break the defs↔conf import
+	// cycle (defs imports conf). Conversion helpers live in
+	// internal/defs/recording_policy_translate.go.
+	//
+	// On startup, if the key is present and non-empty, load directly
+	// from YAML. If absent or empty, the API handlers' synthesis path
+	// (ensurePoliciesSynthesized) populates the map from per-camera
+	// recording config and writes back through Parent.APIConfigSet on
+	// the next canonical-surface mutation.
+	RecordingPolicies map[string]*RecordingPolicyConfig `json:"recordingPolicies"`
 }
 
 func (conf *Conf) setDefaults() {
@@ -1106,6 +1110,27 @@ func (conf *Conf) Validate(l logger.Writer) error {
 	for _, name := range sortedKeys(conf.OptionalPaths) {
 		err := conf.Paths[name].validate(conf, name, deprecatedCredentialsMode, l)
 		if err != nil {
+			return err
+		}
+	}
+
+	// Validate persisted RecordingPolicy entries per ADR 0009 §D8.
+	// Keys are UUIDs; values are RecordingPolicyConfig. Synthesis (when
+	// the map is empty) lives in the API package — by the time we hit
+	// this point, anything in the map either came from mediamtx.yml or
+	// from a prior synthesis-then-APIConfigSet round-trip; either way
+	// the shape needs to round-trip cleanly.
+	policyIDs := make([]string, 0, len(conf.RecordingPolicies))
+	for id := range conf.RecordingPolicies {
+		policyIDs = append(policyIDs, id)
+	}
+	sort.Strings(policyIDs)
+	for _, id := range policyIDs {
+		rp := conf.RecordingPolicies[id]
+		if rp == nil {
+			return fmt.Errorf("recording policy '%s' is nil", id)
+		}
+		if err := rp.validate(id); err != nil {
 			return err
 		}
 	}

@@ -1,15 +1,20 @@
 // Package api: /v1/recording-policies handlers per ADR 0009 §D5
-// Recording-policies.
+// Recording-policies and §D8 RecordingPolicy persistence.
 //
 // RecordingPolicy is a canonical entity exposed for the first time by
-// this ADR. The recorder still stores recording rules per-camera in
-// conf.Path; the policies map is an in-memory cache keyed by UUID,
-// produced by lazy synthesis on first access (defs.SynthesizePoliciesFromPaths).
+// this ADR. Policies persist to mediamtx.yml as a top-level
+// recordingPolicies: key (per ADR 0009 §D8), keyed by policy UUID.
+// On startup, if the key is non-empty, persisted entries load
+// directly; if empty, synthesis from per-camera recording config
+// happens on first canonical-surface access (deflated through
+// defs.SynthesizePoliciesFromPaths). PATCH/POST/DELETE through the
+// canonical surface persist the change via Parent.APIConfigSet, the
+// same path conf.Path mutations already use.
 //
-// Per-restart persistence is intentional for Phase 2 — there are no
-// stable cross-restart IDs in the pre-MS phase per ADR 0009 §D4.
-// Synthesis re-runs from existing per-camera recording fields when the
-// recorder restarts.
+// The map field on conf.Conf is map[string]*conf.RecordingPolicyConfig.
+// The conf-package mirror exists to break the defs↔conf import
+// cycle (defs imports conf); conversion helpers in
+// internal/defs/recording_policy_translate.go.
 package api //nolint:revive
 
 import (
@@ -22,6 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 )
 
@@ -34,14 +40,18 @@ type recordingPolicyListResponse struct {
 }
 
 // ensurePoliciesSynthesized lazily fills a.Conf.RecordingPolicies on
-// first access. The map is in-memory only (yaml:"-" json:"-") and goes
-// away on recorder restart, at which point the next list-call re-runs
-// synthesis from per-camera recording fields. Caller must hold a write
-// lock on a.mutex when this might mutate.
+// first access. Per ADR 0009 §D8 the map persists to mediamtx.yml as
+// a top-level recordingPolicies: key; if non-empty on startup, the
+// persisted entries are loaded directly. If empty, this function
+// synthesizes from per-camera recording config and writes the
+// synthesized result back to a.Conf.RecordingPolicies. Synthesis-on-
+// load does NOT call APIConfigSet — persistence happens on the next
+// canonical-surface mutation. Caller must hold a write lock on
+// a.mutex when this might mutate.
 //
-// Returns the policies map keyed by UUID. Values are *defs.RecordingPolicy
-// stored as `any` to avoid the conf↔defs import cycle; this function
-// surfaces them with their concrete type.
+// Returns the policies map keyed by UUID, with conf
+// RecordingPolicyConfig values converted to canonical
+// defs.RecordingPolicy.
 func (a *API) ensurePoliciesSynthesized() map[string]*defs.RecordingPolicy {
 	if a.Conf.RecordingPolicies != nil && len(a.Conf.RecordingPolicies) > 0 {
 		return policiesAsTyped(a.Conf.RecordingPolicies)
@@ -53,10 +63,10 @@ func (a *API) ensurePoliciesSynthesized() map[string]*defs.RecordingPolicy {
 		func() string { return uuid.New().String() },
 	)
 
-	a.Conf.RecordingPolicies = make(map[string]any, len(policies))
+	a.Conf.RecordingPolicies = make(map[string]*conf.RecordingPolicyConfig, len(policies))
 	for i := range policies {
 		p := policies[i]
-		a.Conf.RecordingPolicies[p.ID] = &p
+		a.Conf.RecordingPolicies[p.ID] = defs.RecordingPolicyToConfig(p)
 	}
 	for name, policyID := range cameraNameToPolicyID {
 		if path, ok := a.Conf.Paths[name]; ok && path != nil {
@@ -66,15 +76,18 @@ func (a *API) ensurePoliciesSynthesized() map[string]*defs.RecordingPolicy {
 	return policiesAsTyped(a.Conf.RecordingPolicies)
 }
 
-// policiesAsTyped reads the in-memory map back as the typed value. The
-// map is always written with *defs.RecordingPolicy values; this helper
-// just enforces that contract at the read boundary.
-func policiesAsTyped(m map[string]any) map[string]*defs.RecordingPolicy {
+// policiesAsTyped converts the conf-shape persistence map to the
+// canonical defs.RecordingPolicy map the handlers serve from. Values
+// in a.Conf.RecordingPolicies are conf.RecordingPolicyConfig; the wire
+// surface needs defs.RecordingPolicy.
+func policiesAsTyped(m map[string]*conf.RecordingPolicyConfig) map[string]*defs.RecordingPolicy {
 	out := make(map[string]*defs.RecordingPolicy, len(m))
 	for k, v := range m {
-		if p, ok := v.(*defs.RecordingPolicy); ok {
-			out[k] = p
+		if v == nil {
+			continue
 		}
+		p := defs.RecordingPolicyFromConfig(k, v)
+		out[k] = &p
 	}
 	return out
 }
@@ -172,11 +185,18 @@ func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
 	policy.CreatedAt = now
 	policy.UpdatedAt = now
 
-	if a.Conf.RecordingPolicies == nil {
-		a.Conf.RecordingPolicies = make(map[string]any)
+	newConf := a.Conf.Clone()
+	if newConf.RecordingPolicies == nil {
+		newConf.RecordingPolicies = make(map[string]*conf.RecordingPolicyConfig)
 	}
-	stored := policy
-	a.Conf.RecordingPolicies[policy.ID] = &stored
+	newConf.RecordingPolicies[policy.ID] = defs.RecordingPolicyToConfig(policy)
+	if err := newConf.Validate(nil); err != nil {
+		a.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "policy.applied",
@@ -240,22 +260,46 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 	merged.TenantID = a.Conf.TenantID
 	merged.UpdatedAt = time.Now().UTC()
 
-	a.Conf.RecordingPolicies[id.String()] = &merged
+	newConf := a.Conf.Clone()
+	newConf.RecordingPolicies[id.String()] = defs.RecordingPolicyToConfig(merged)
 
-	// Propagate the merged policy back to every camera that references it.
-	// Without this step, a PATCH that flips Enabled (or any other recording-
-	// related field on the policy) updates only the in-memory canonical
-	// state — the per-camera conf.Path.Record field stays stale and the
-	// recorder keeps recording (or fails to start). defs.ApplyPolicyToPath
-	// is the canonical translator: it stamps Record / RecordPath /
-	// RecordFormat / part / segment / delete-after fields from the policy
-	// onto each path.
-	for _, p := range a.Conf.Paths {
-		if p == nil || p.RecordingPolicyID != id.String() {
+	// Capture which path-names reference this policy BEFORE Validate, so
+	// we can re-stamp RecordingPolicyID and apply the translator AFTER
+	// Validate rebuilds newConf.Paths. (Validate rebuilds Paths from
+	// OptionalPaths every call; RecordingPolicyID is a json:"-" linkage
+	// field that gets blanked in the rebuild — same situation cameras
+	// POST handles by stamping ID/RecordingPolicyID after Validate.)
+	pathsForPolicy := make([]string, 0)
+	for name, p := range newConf.Paths {
+		if p != nil && p.RecordingPolicyID == id.String() {
+			pathsForPolicy = append(pathsForPolicy, name)
+		}
+	}
+
+	if err := newConf.Validate(nil); err != nil {
+		a.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	// Re-stamp the RecordingPolicyID and apply the translator on the
+	// freshly-validated paths. Without this step, a PATCH that flips
+	// Enabled (or any other recording-related field on the policy)
+	// would update only the canonical state — the per-camera
+	// conf.Path.Record field would stay stale and the recorder would
+	// keep recording (or fail to start). defs.ApplyPolicyToPath stamps
+	// Record / RecordPath / RecordFormat / part / segment /
+	// delete-after fields from the policy onto each path.
+	for _, name := range pathsForPolicy {
+		p := newConf.Paths[name]
+		if p == nil {
 			continue
 		}
+		p.RecordingPolicyID = id.String()
 		defs.ApplyPolicyToPath(p, merged)
 	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "policy.applied",
@@ -299,7 +343,15 @@ func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
 		}
 	}
 
-	delete(a.Conf.RecordingPolicies, id.String())
+	newConf := a.Conf.Clone()
+	delete(newConf.RecordingPolicies, id.String())
+	if err := newConf.Validate(nil); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "policy.applied",

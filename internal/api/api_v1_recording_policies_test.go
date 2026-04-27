@@ -68,7 +68,7 @@ func TestV1RecordingPoliciesListSynthesizesOnFirstAccess(t *testing.T) {
 		"    record: yes\n"+
 		"    recordSegmentDuration: 30m\n")
 
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	// Pre-list: in-memory map empty.
 	require.Empty(t, api.Conf.RecordingPolicies)
@@ -111,7 +111,7 @@ func TestV1RecordingPoliciesListPagination(t *testing.T) {
 		"    source: rtsp://192.0.2.3:554/s\n"+
 		"    record: yes\n"+
 		"    recordSegmentDuration: 15m\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	code, body := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "items_per_page=2&page=0", "", nil)
 	require.Equal(t, http.StatusOK, code)
@@ -133,7 +133,7 @@ func TestV1RecordingPoliciesGet(t *testing.T) {
 		"  cam:\n"+
 		"    source: rtsp://192.0.2.1:554/s\n"+
 		"    record: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	// Trigger synthesis via the list handler.
 	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
@@ -156,7 +156,7 @@ func TestV1RecordingPoliciesGet(t *testing.T) {
 
 func TestV1RecordingPoliciesGetInvalidUUID(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesGet, http.MethodGet, "", "not-a-uuid", nil)
 	require.Equal(t, http.StatusBadRequest, code)
@@ -164,7 +164,7 @@ func TestV1RecordingPoliciesGetInvalidUUID(t *testing.T) {
 
 func TestV1RecordingPoliciesGetNotFound(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	missing := uuid.New().String()
 	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesGet, http.MethodGet, "", missing, nil)
@@ -173,7 +173,7 @@ func TestV1RecordingPoliciesGetNotFound(t *testing.T) {
 
 func TestV1RecordingPoliciesPostCreates(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	body, _ := json.Marshal(map[string]any{
 		"name": "MyPolicy",
@@ -193,7 +193,7 @@ func TestV1RecordingPoliciesPostCreates(t *testing.T) {
 
 func TestV1RecordingPoliciesPostTenantMismatch(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	body, _ := json.Marshal(map[string]any{
 		"name":      "Forbidden",
@@ -206,7 +206,7 @@ func TestV1RecordingPoliciesPostTenantMismatch(t *testing.T) {
 
 func TestV1RecordingPoliciesPatch(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	// Create.
 	body, _ := json.Marshal(map[string]any{"name": "Original", "mode": "continuous"})
@@ -240,7 +240,7 @@ func TestV1RecordingPoliciesPatchAppliesEnabledToConfPath(t *testing.T) {
 		"  cam_b:\n"+
 		"    source: rtsp://192.0.2.2:554/s\n"+
 		"    record: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	// Trigger synthesis: cam_a + cam_b share recording config so they
 	// land on a single synthesized policy. Both paths get the same
@@ -280,7 +280,7 @@ func TestV1RecordingPoliciesPatchAppliesEnabledToConfPath(t *testing.T) {
 
 func TestV1RecordingPoliciesDelete(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	body, _ := json.Marshal(map[string]any{"name": "ToDelete", "mode": "continuous"})
 	_, respBody := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", body)
@@ -304,7 +304,7 @@ func TestV1RecordingPoliciesDeleteRejectedWhenReferenced(t *testing.T) {
 		"  cam:\n"+
 		"    source: rtsp://192.0.2.1:554/s\n"+
 		"    record: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	// Synthesize → cam gets a policy id stamped in conf.Path.RecordingPolicyID.
 	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
@@ -330,7 +330,7 @@ func TestV1RecordingPoliciesDeleteRejectedWhenReferenced(t *testing.T) {
 
 func TestV1RecordingPoliciesDeleteNotFound(t *testing.T) {
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	missing := uuid.New().String()
 	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesDelete, http.MethodDelete, "", missing, nil)

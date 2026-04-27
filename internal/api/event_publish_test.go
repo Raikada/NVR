@@ -90,7 +90,7 @@ func TestPublishCameraOffline_FallsBackToDefaultStore(t *testing.T) {
 func TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied(t *testing.T) {
 	resetEventStoreSingleton(t)
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	body, err := json.Marshal(map[string]any{
 		"name": "evtpolicy",
@@ -157,7 +157,7 @@ func TestPublishEvent_CameraPATCHAndDELETEEmitConfigApplied(t *testing.T) {
 func TestPublishEvent_RecordingPolicyPATCHAndDELETEEmitPolicyApplied(t *testing.T) {
 	resetEventStoreSingleton(t)
 	cnf := tempConf(t, "api: yes\n")
-	api := &API{Conf: cnf}
+	api := &API{Conf: cnf, Parent: &testParent{}}
 
 	createBody, err := json.Marshal(map[string]any{"name": "verbpolicy", "mode": "continuous"})
 	require.NoError(t, err)

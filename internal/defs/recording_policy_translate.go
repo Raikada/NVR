@@ -223,3 +223,96 @@ func SynthesizePoliciesFromPaths(
 	}
 	return policies, cameraNameToPolicyID
 }
+
+// RecordingPolicyToConfig converts a canonical RecordingPolicy into
+// its persistence shape (conf.RecordingPolicyConfig) per ADR 0009 §D8.
+// Used at the canonical-write boundary (PATCH/POST/DELETE on
+// /v1/recording-policies) to persist the policy through
+// Conf.Validate() and Parent.APIConfigSet.
+func RecordingPolicyToConfig(p RecordingPolicy) *conf.RecordingPolicyConfig {
+	out := &conf.RecordingPolicyConfig{
+		Name:               p.Name,
+		Mode:               string(p.Mode),
+		RetentionDuration:  conf.Duration(p.RetentionDuration),
+		MinSegmentDuration: conf.Duration(p.MinSegmentDuration),
+		MaxSegmentDuration: conf.Duration(p.MaxSegmentDuration),
+		Container:          string(p.Container),
+		Enabled:            p.Enabled,
+		PartDuration:       conf.Duration(p.PartDuration),
+		MaxPartSize:        p.MaxPartSize,
+		RecordPathTemplate: p.RecordPathTemplate,
+		TenantID:           p.TenantID,
+		CreatedAt:          p.CreatedAt,
+		UpdatedAt:          p.UpdatedAt,
+	}
+	if p.PreEventBuffer != nil {
+		d := conf.Duration(*p.PreEventBuffer)
+		out.PreEventBuffer = &d
+	}
+	if p.PostEventBuffer != nil {
+		d := conf.Duration(*p.PostEventBuffer)
+		out.PostEventBuffer = &d
+	}
+	if p.Schedule != nil {
+		s := &conf.RecordingPolicyConfigSchedule{
+			Timezone: p.Schedule.Timezone,
+			Windows:  make([]conf.RecordingPolicyConfigScheduleWindow, len(p.Schedule.Windows)),
+		}
+		for i, w := range p.Schedule.Windows {
+			s.Windows[i] = conf.RecordingPolicyConfigScheduleWindow{
+				Days:  append([]string(nil), w.Days...),
+				Start: w.Start,
+				End:   w.End,
+			}
+		}
+		out.Schedule = s
+	}
+	return out
+}
+
+// RecordingPolicyFromConfig is the inverse of RecordingPolicyToConfig.
+// Reads a persisted conf.RecordingPolicyConfig back into the canonical
+// RecordingPolicy shape. The id parameter comes from the parent map's
+// key (conf.Conf.RecordingPolicies is map[string]*RecordingPolicyConfig),
+// so callers pass it explicitly.
+func RecordingPolicyFromConfig(id string, cfg *conf.RecordingPolicyConfig) RecordingPolicy {
+	out := RecordingPolicy{
+		ID:                 id,
+		TenantID:           cfg.TenantID,
+		Name:               cfg.Name,
+		Mode:               RecordingPolicyMode(cfg.Mode),
+		RetentionDuration:  time.Duration(cfg.RetentionDuration),
+		MinSegmentDuration: time.Duration(cfg.MinSegmentDuration),
+		MaxSegmentDuration: time.Duration(cfg.MaxSegmentDuration),
+		Container:          RecordingPolicyContainer(cfg.Container),
+		Enabled:            cfg.Enabled,
+		PartDuration:       time.Duration(cfg.PartDuration),
+		MaxPartSize:        cfg.MaxPartSize,
+		RecordPathTemplate: cfg.RecordPathTemplate,
+		CreatedAt:          cfg.CreatedAt,
+		UpdatedAt:          cfg.UpdatedAt,
+	}
+	if cfg.PreEventBuffer != nil {
+		d := time.Duration(*cfg.PreEventBuffer)
+		out.PreEventBuffer = &d
+	}
+	if cfg.PostEventBuffer != nil {
+		d := time.Duration(*cfg.PostEventBuffer)
+		out.PostEventBuffer = &d
+	}
+	if cfg.Schedule != nil {
+		s := &RecordingPolicySchedule{
+			Timezone: cfg.Schedule.Timezone,
+			Windows:  make([]RecordingPolicyScheduleWindow, len(cfg.Schedule.Windows)),
+		}
+		for i, w := range cfg.Schedule.Windows {
+			s.Windows[i] = RecordingPolicyScheduleWindow{
+				Days:  append([]string(nil), w.Days...),
+				Start: w.Start,
+				End:   w.End,
+			}
+		}
+		out.Schedule = s
+	}
+	return out
+}
