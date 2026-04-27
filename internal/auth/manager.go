@@ -119,15 +119,56 @@ func (m *Manager) ReloadInternalUsers(u []conf.AuthInternalUser) {
 	m.InternalUsers = u
 }
 
+// Claims carries ADR 0011 D2 JWT claims surfaced to callers that want
+// to build a per-request principal (e.g., the API middleware). Fields
+// are populated only on the JWT path; the Internal and HTTP paths
+// produce a zero-value Claims and the caller treats those requests as
+// pre-OQ10 service-account auth.
+//
+// Fields mirror the ADR 0011 D2 token shape verbatim. Absence of a
+// field in the token is represented as the zero value (empty string,
+// nil slice).
+type Claims struct {
+	// Method is the auth method that produced these claims. Lets the
+	// caller distinguish JWT (real ADR 0011 claims) from Internal /
+	// HTTP (no claims, zero-value struct).
+	Method conf.AuthMethod
+
+	// JWT registered claims.
+	Subject string
+	JTI     string
+
+	// ADR 0011 D2 user-level claims.
+	TenantID          string
+	PrincipalKind     string
+	Scope             []string
+	ScopeKind         string
+	ScopeTargetID     string
+	ClientFingerprint string
+}
+
 // Authenticate authenticates a request.
 // It returns the user name.
 func (m *Manager) Authenticate(req *Request) (string, *Error) {
+	user, _, err := m.AuthenticateWithClaims(req)
+	return user, err
+}
+
+// AuthenticateWithClaims authenticates a request and returns the
+// resolved user identifier alongside the parsed Claims. For the JWT
+// auth path the Claims carries ADR 0011 D2 fields; for Internal /
+// HTTP the Claims is zero-valued (with Method set so callers can
+// branch). Added per ADR 0011 to let the API layer build a Principal
+// without re-parsing the JWT.
+func (m *Manager) AuthenticateWithClaims(req *Request) (string, Claims, *Error) {
 	var token string
 	if m.Method == conf.AuthMethodHTTP || m.Method == conf.AuthMethodJWT {
 		token = getToken(m.Method == conf.AuthMethodJWT && m.JWTInHTTPQuery != nil && *m.JWTInHTTPQuery, req)
 	}
 
 	var user string
+	var claims Claims
+	claims.Method = m.Method
 	var err error
 
 	switch m.Method {
@@ -138,17 +179,17 @@ func (m *Manager) Authenticate(req *Request) (string, *Error) {
 		user, err = m.authenticateHTTP(req, token)
 
 	default:
-		user, err = m.authenticateJWT(req, token)
+		user, claims, err = m.authenticateJWTWithClaims(req, token)
 	}
 
 	if err != nil {
-		return "", &Error{
+		return "", Claims{}, &Error{
 			Wrapped:        err,
 			AskCredentials: (req.Credentials.User == "" && req.Credentials.Pass == "" && token == ""),
 		}
 	}
 
-	return user, nil
+	return user, claims, nil
 }
 
 func (m *Manager) authenticateInternal(req *Request) (string, error) {
@@ -246,18 +287,18 @@ func (m *Manager) authenticateHTTP(req *Request, token string) (string, error) {
 	return req.Credentials.User, nil
 }
 
-func (m *Manager) authenticateJWT(req *Request, token string) (string, error) {
+func (m *Manager) authenticateJWTWithClaims(req *Request, token string) (string, Claims, error) {
 	if matchesPermission(m.JWTExclude, req) {
-		return "", nil
+		return "", Claims{Method: conf.AuthMethodJWT}, nil
 	}
 
 	keyfunc, err := m.pullJWTJWKS()
 	if err != nil {
-		return "", err
+		return "", Claims{}, err
 	}
 
 	if token == "" {
-		return "", fmt.Errorf("JWT not provided")
+		return "", Claims{}, fmt.Errorf("JWT not provided")
 	}
 
 	var opts []jwt.ParserOption
@@ -272,14 +313,25 @@ func (m *Manager) authenticateJWT(req *Request, token string) (string, error) {
 	cc.permissionsKey = m.JWTClaimKey
 	_, err = jwt.ParseWithClaims(token, &cc, keyfunc, opts...)
 	if err != nil {
-		return "", err
+		return "", Claims{}, err
 	}
 
 	if !matchesPermission(cc.permissions, req) {
-		return "", fmt.Errorf("user doesn't have permission to perform action")
+		return "", Claims{}, fmt.Errorf("user doesn't have permission to perform action")
 	}
 
-	return cc.Subject, nil
+	out := Claims{
+		Method:            conf.AuthMethodJWT,
+		Subject:           cc.Subject,
+		JTI:               cc.ID,
+		TenantID:          cc.tenantID,
+		PrincipalKind:     cc.principalKind,
+		Scope:             cc.scope,
+		ScopeKind:         cc.scopeKind,
+		ScopeTargetID:     cc.scopeTargetID,
+		ClientFingerprint: cc.clientFingerprint,
+	}
+	return cc.Subject, out, nil
 }
 
 func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {

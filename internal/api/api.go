@@ -50,6 +50,7 @@ func paramName(ctx *gin.Context) (string, bool) {
 
 type apiAuthManager interface {
 	Authenticate(req *auth.Request) (string, *auth.Error)
+	AuthenticateWithClaims(req *auth.Request) (string, auth.Claims, *auth.Error)
 	RefreshJWTJWKS()
 }
 
@@ -261,7 +262,7 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		IP:          net.ParseIP(ctx.ClientIP()),
 	}
 
-	_, err := a.AuthManager.Authenticate(req)
+	_, claims, err := a.AuthManager.AuthenticateWithClaims(req)
 	if err != nil {
 		if err.AskCredentials {
 			ctx.Header("WWW-Authenticate", `Basic realm="mediamtx"`)
@@ -300,24 +301,49 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 			map[string]string{"reason": "authentication failed"},
 		)
 
+		// On the failure path no Principal is set; downstream code is
+		// aborted via writeErrorNoLog so it should never read it, but
+		// principalFromContext returns the unauthenticated principal
+		// defensively if it does.
+
 		// wait some seconds to delay brute force attacks
 		<-time.After(auth.PauseAfterError)
 
 		a.writeErrorNoLog(ctx, http.StatusUnauthorized, fmt.Errorf("authentication error"))
 		return
 	}
+
+	// Build the per-request Principal from the parsed auth claims and
+	// stash it on the gin.Context for downstream handlers per ADR
+	// 0011's recorder-side validation contract. The pre-OQ10
+	// internal/HTTP auth paths produce a zero-value Claims (with
+	// Method set) which maps to a service-account principal with
+	// empty Scope; the JWT path produces a real ADR 0011 D2 principal.
+	principal := principalFromAuthClaims(claims)
+	setPrincipalOnContext(ctx, principal)
+
 	// Successful authentication: emit an audit entry per ADR 0006 D1.
-	// The recorder's auth manager today resolves to a single
-	// privileged principal (no per-user session model — ADR 0002
-	// OQ10), so actor_kind is service_account and actor_id is empty.
-	// When the session model lands, the actor kind / id come from the
-	// resolved principal. No per-request auth.session_started Event
+	// Now that ADR 0011 is Accepted, the resolved Principal carries
+	// PrincipalKind and (for JWT-authed requests) the user UUID. The
+	// pre-OQ10 internal/HTTP auth path produces PrincipalKind =
+	// service_account with an empty Sub, preserving the prior
+	// behavior; JWT requests now produce the real cloud_user /
+	// local_user / service_account actor kind from the token's
+	// principal_kind claim. No per-request auth.session_started Event
 	// (semantic mismatch — see note below); the audit entry is the
 	// security-focused record.
+	auditActorKind := principal.PrincipalKind
+	if auditActorKind == defs.AuditActorKindUnauthenticated {
+		// Defensive: if the auth manager accepted the request but
+		// the token's principal_kind was missing or unrecognized,
+		// fall back to service_account so the audit entry doesn't
+		// claim the request was unauthenticated when it wasn't.
+		auditActorKind = defs.AuditActorKindServiceAccount
+	}
 	a.emitAuthDecision(
 		defs.AuditOutcomeSuccess,
-		defs.AuditActorKindServiceAccount,
-		"",
+		auditActorKind,
+		principal.Sub,
 		httpp.RemoteAddr(ctx),
 		"",
 		nil,
