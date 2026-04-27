@@ -29,6 +29,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/playback"
 	"github.com/bluenviron/mediamtx/internal/pprof"
 	"github.com/bluenviron/mediamtx/internal/recordcleaner"
+	"github.com/bluenviron/mediamtx/internal/recorder"
 	"github.com/bluenviron/mediamtx/internal/rlimit"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
 	"github.com/bluenviron/mediamtx/internal/servers/rtmp"
@@ -728,6 +729,14 @@ func (p *Core) createResources(initial bool) error {
 		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
 			return tenantID
 		})
+
+		// Wire the recorder-side segment.write_failed publisher to
+		// land emissions in the same EventStore as the rest of the
+		// pipeline-side kinds. recorder_instance.run() invokes the
+		// hook only when errors.As detects a *SegmentWriteError, so
+		// non-write failures (network, codec) do not surface as a
+		// canonical write-failed event.
+		recorder.SetSegmentWriteFailedPublisher(api.PublishSegmentWriteFailed)
 	}
 
 	if initial && p.confPath != "" {

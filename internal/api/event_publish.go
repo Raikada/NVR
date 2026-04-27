@@ -203,6 +203,41 @@ func PublishStorageVolumeDegraded(volumeID, mountPath, reason string) {
 	}, "", tenantID, "")
 }
 
+// PublishSegmentWriteFailed is the recorder-side helper for
+// segment.write_failed Events. Severity is error per
+// domain-model.md: a segment failing to write to disk is an
+// operational incident that costs recording continuity. Callers
+// (recorder_instance.run() after errors.As detects a
+// SegmentWriteError) emit one event per occurrence — this helper
+// does not deduplicate, because each disk-write error is
+// individually meaningful (a transient ENOSPC and a permanent
+// EACCES surface as separate occurrences). SubjectID is the
+// canonical Camera UUID derived from the path-name, matching the
+// camera.online / camera.offline shape so consumers can correlate
+// write failures back to the camera that experienced them. The
+// segment_path attribute carries the on-disk file path being
+// written when the failure occurred (may be empty if the failure
+// happened before path resolution); reason carries the underlying
+// error message for operator diagnosis.
+func PublishSegmentWriteFailed(pathName, segmentPath, reason string) {
+	store, tenantID := pipelineTarget()
+	if store == nil {
+		return
+	}
+	store.Publish(defs.EventInput{
+		Kind:        "segment.write_failed",
+		Severity:    defs.EventSeverityError,
+		SubjectKind: defs.EventSubjectKindSegment,
+		SubjectID:   cameraIDFromPathName(pathName),
+		Message:     "segment write failed",
+		Attributes: map[string]string{
+			"path_name":    pathName,
+			"segment_path": segmentPath,
+			"reason":       reason,
+		},
+	}, "", tenantID, "")
+}
+
 // DefaultEventStore exposes the package-wide singleton so callers
 // that don't construct an *API can publish into the same store the
 // /v1/events surface serves from. core.go uses this in

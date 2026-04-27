@@ -31,12 +31,17 @@ func (s *formatMPEGTSSegment) initialize() {
 
 func (s *formatMPEGTSSegment) close() error {
 	err := s.flush()
+	if err != nil {
+		// flush forwards bufio buffer to s.fi; failure here is a
+		// disk-write failure regardless of where Close lands.
+		err = wrapMPEGTSWriteErr(s.path, err)
+	}
 
 	if s.fi != nil {
 		s.log.Log(logger.Debug, "closing segment %s", s.path)
 		err2 := s.fi.Close()
-		if err == nil {
-			err = err2
+		if err == nil && err2 != nil {
+			err = wrapMPEGTSWriteErr(s.path, err2)
 		}
 
 		if err2 == nil {
@@ -55,12 +60,12 @@ func (s *formatMPEGTSSegment) Write(p []byte) (int, error) {
 
 		err := os.MkdirAll(filepath.Dir(s.path), 0o755)
 		if err != nil {
-			return 0, err
+			return 0, wrapMPEGTSWriteErr(s.path, err)
 		}
 
 		fi, err := os.Create(s.path)
 		if err != nil {
-			return 0, err
+			return 0, wrapMPEGTSWriteErr(s.path, err)
 		}
 
 		s.onSegmentCreate(s.path)
@@ -68,5 +73,9 @@ func (s *formatMPEGTSSegment) Write(p []byte) (int, error) {
 		s.fi = fi
 	}
 
-	return s.fi.Write(p)
+	n, err := s.fi.Write(p)
+	if err != nil {
+		return n, wrapMPEGTSWriteErr(s.path, err)
+	}
+	return n, nil
 }

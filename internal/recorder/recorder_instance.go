@@ -1,6 +1,7 @@
 package recorder
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -11,6 +12,23 @@ import (
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
+
+// segmentWriteFailedPublisher is the package-level hook the
+// recorder uses to emit segment.write_failed events. core.go wires
+// it to api.PublishSegmentWriteFailed at startup; tests replace it
+// with a recording stub. Kept as a package-level function (not
+// threaded through recorderInstance) to mirror the existing
+// pipeline-target pattern api.SetPipelineEventTarget uses for
+// camera.online / camera.offline — both deliberately avoid
+// breaking the layering between media pipeline and api package.
+var segmentWriteFailedPublisher func(pathName, segmentPath, reason string)
+
+// SetSegmentWriteFailedPublisher wires the publisher used by
+// recorder_instance.run() when a SegmentWriteError reaches the
+// reader-error channel. Pass nil to clear (used by tests).
+func SetSegmentWriteFailedPublisher(fn func(pathName, segmentPath, reason string)) {
+	segmentWriteFailedPublisher = fn
+}
 
 type recorderInstance struct {
 	pathFormat        string
@@ -89,6 +107,21 @@ func (ri *recorderInstance) run() {
 		select {
 		case err := <-ri.reader.Error():
 			ri.Log(logger.Error, err.Error())
+
+			// Differentiate disk-write failures from the
+			// heterogeneous error population (network read,
+			// codec parse, etc.) that flows through this
+			// channel. Only segment-write errors emit
+			// segment.write_failed; other errors stay in
+			// the log line above.
+			var swe *SegmentWriteError
+			if errors.As(err, &swe) && segmentWriteFailedPublisher != nil {
+				reason := ""
+				if swe.Inner != nil {
+					reason = swe.Inner.Error()
+				}
+				segmentWriteFailedPublisher(ri.pathName, swe.Path, reason)
+			}
 
 		case <-ri.terminate:
 		}

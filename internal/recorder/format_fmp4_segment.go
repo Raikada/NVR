@@ -148,13 +148,16 @@ func (s *formatFMP4Segment) close() error {
 		// write overall duration in the header to speed up the playback server
 		duration := s.endDTS - s.startDTS
 		err2 := writeDuration(s.fi, duration)
-		if err == nil {
-			err = err2
+		if err == nil && err2 != nil {
+			// duration write touches the on-disk file (read+seek+write);
+			// classify as a segment-write failure so recorder_instance
+			// can emit segment.write_failed.
+			err = wrapFMP4WriteErr(s.path, err2)
 		}
 
 		err2 = s.fi.Close()
-		if err == nil {
-			err = err2
+		if err == nil && err2 != nil {
+			err = wrapFMP4WriteErr(s.path, err2)
 		}
 
 		if err2 == nil {
@@ -172,12 +175,12 @@ func (s *formatFMP4Segment) closeCurPart() error {
 
 		err := os.MkdirAll(filepath.Dir(s.path), 0o755)
 		if err != nil {
-			return err
+			return wrapFMP4WriteErr(s.path, err)
 		}
 
 		fi, err := os.Create(s.path)
 		if err != nil {
-			return err
+			return wrapFMP4WriteErr(s.path, err)
 		}
 
 		s.f.ri.onSegmentCreate(s.path)
@@ -191,13 +194,16 @@ func (s *formatFMP4Segment) closeCurPart() error {
 			s.f.tracks)
 		if err != nil {
 			fi.Close()
-			return err
+			return wrapFMP4WriteErr(s.path, err)
 		}
 
 		s.fi = fi
 	}
 
-	return s.curPart.close(s.fi)
+	if err := s.curPart.close(s.fi); err != nil {
+		return wrapFMP4WriteErr(s.path, err)
+	}
+	return nil
 }
 
 func (s *formatFMP4Segment) write(track *formatFMP4Track, sample *formatFMP4Sample, dts time.Duration) error {
