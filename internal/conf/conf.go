@@ -243,6 +243,24 @@ type Conf struct {
 	// Identity
 	TenantID string `json:"tenantId"`
 
+	// Upstream endpoints (optional bootstrap conveniences).
+	//
+	// These pre-figure the eventual MS-pairing client (ADR 0008,
+	// reserved) without replacing it: the recorder uses them today
+	// only as TCP-reachability targets for the network block of
+	// /v1/health (HealthStatus.network per ADR 0009 §D5). Once the
+	// pairing flow lands, the resolved MS endpoint will come from
+	// pairing state and these bootstrap fields become ops-only
+	// overrides. Per ADR 0003 the recorder is a client of cloud and
+	// never a server; these are outbound-target URLs.
+	//
+	// Either field unset => the corresponding *_reachable boolean in
+	// HealthStatus.network stays false. Accepted shapes are typical
+	// URLs (wss://, https://, etc.); the probe extracts host:port
+	// for a net.Dial and ignores path/scheme beyond that.
+	ManagementServerEndpoint string `json:"managementServerEndpoint"`
+	CloudEndpoint            string `json:"cloudEndpoint"`
+
 	// General
 	LogLevel            LogLevel        `json:"logLevel"`
 	LogDestinations     LogDestinations `json:"logDestinations"`

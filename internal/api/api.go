@@ -83,8 +83,9 @@ type API struct {
 	SRTServer      defs.APISRTServer
 	Parent         apiParent
 
-	httpServer *httpp.Server
-	mutex      sync.RWMutex
+	httpServer   *httpp.Server
+	mutex        sync.RWMutex
+	networkProbe *networkProbe
 }
 
 // Initialize initializes API.
