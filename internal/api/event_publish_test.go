@@ -85,6 +85,35 @@ func TestPublishCameraOffline_FallsBackToDefaultStore(t *testing.T) {
 	require.Equal(t, "warning", sev)
 }
 
+// TestPublishSegmentWriteFailed_EmitsErrorEventWithCorrelation
+// verifies the recorder-side helper for segment.write_failed Events.
+// SubjectID derives from the path-name (matching camera.online so
+// consumers can correlate write failures back to the camera);
+// severity is error per domain-model.md; segment_path and reason
+// land as attributes; tenant id flows through the configured
+// resolver.
+func TestPublishSegmentWriteFailed_EmitsErrorEventWithCorrelation(t *testing.T) {
+	resetEventStoreSingleton(t)
+
+	store := NewEventStore(0)
+	const tenantID = "11111111-2222-3333-4444-555555555555"
+	SetPipelineEventTarget(store, func() string { return tenantID })
+	t.Cleanup(func() { SetPipelineEventTarget(nil, nil) })
+
+	PublishSegmentWriteFailed("evt_seg_cam", "/srv/rec/evt_seg_cam/2026-04-26.mp4", "ENOSPC")
+	require.Equal(t, 1, store.Len())
+
+	got := store.Snapshot()[0]
+	require.Equal(t, "segment.write_failed", string(got.Kind))
+	require.Equal(t, "error", string(got.Severity))
+	require.Equal(t, "segment", string(got.SubjectKind))
+	require.Equal(t, cameraIDFromPathName("evt_seg_cam"), got.SubjectID)
+	require.Equal(t, tenantID, got.TenantID)
+	require.Equal(t, "evt_seg_cam", got.Attributes["path_name"])
+	require.Equal(t, "/srv/rec/evt_seg_cam/2026-04-26.mp4", got.Attributes["segment_path"])
+	require.Equal(t, "ENOSPC", got.Attributes["reason"])
+}
+
 // TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied verifies the
 // matching policy.applied emission on /v1/recording-policies POST.
 func TestPublishEvent_RecordingPolicyPOSTEmitsPolicyApplied(t *testing.T) {
