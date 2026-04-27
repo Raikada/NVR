@@ -163,6 +163,9 @@ func (a *API) onV1RecorderCameraSourceConfigGet(ctx *gin.Context) {
 //
 // Rationale (D6.3): see the GET handler.
 func (a *API) onV1RecorderCameraSourceConfigPatch(ctx *gin.Context) {
+	if !a.guardAdminAction(ctx) {
+		return
+	}
 	cameraID, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
@@ -210,6 +213,11 @@ func (a *API) onV1RecorderCameraSourceConfigPatch(ctx *gin.Context) {
 
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
+
+	a.emitConfigAppliedLocked("camera", cameraID, "patch", map[string]string{
+		"camera_id": cameraID,
+		"surface":   "/v1/recorder/cameras/{id}/source-config",
+	})
 
 	a.writeOK(ctx)
 }

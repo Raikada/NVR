@@ -179,6 +179,15 @@ tags:
       (the latter two sit deeper in the recordstore / cleaner
       subsystems). An empty list response carries a top-level
       `notice` field describing this state.
+  - name: Audit
+    description: |
+      Tamper-evident AuditLogEntry chain per ADR 0006. Append-only;
+      the recorder is one emitter (emitter_kind=recording_server) and
+      maintains a single in-process chain (per ADR 0005 a recorder is
+      bound to one tenant per appliance). When the buffer crosses 80%
+      capacity the recorder enters degraded mode and refuses new
+      administrative actions; recording continues uninterrupted per
+      ADR 0006 D6.
   - name: Health
     description: |
       A single `HealthStatus` snapshot endpoint per ADR 0009 §D2.
@@ -1727,6 +1736,124 @@ components:
                 message so clients can distinguish "no events match"
                 from "no producers wired."
 
+    # ----- Audit ----------------------------------------------------
+
+    AuditEmitterKind:
+      type: string
+      enum: [cloud, management_server, recording_server]
+      description: |
+        The tier that authored the audit entry. Per ADR 0006 D2, each
+        tier emits its own observed actions; entries authored by the
+        recorder always have `recording_server`.
+
+    AuditActorKind:
+      type: string
+      enum: [cloud_user, local_user, service_account, system, unauthenticated]
+      description: |
+        Kind of principal whose action is being audited.
+        `unauthenticated` covers failed-auth attempts before a
+        principal is resolved.
+
+    AuditOutcome:
+      type: string
+      enum: [success, failure, denied]
+
+    AuditLogEntry:
+      type: object
+      description: |
+        Tamper-evident record of a security- or compliance-relevant
+        action per ADR 0006. Entries form per-emitter SHA-256 hash
+        chains via `prev_hash` / `entry_hash`.
+      required:
+        - id
+        - tenant_id
+        - occurred_at
+        - recorded_at
+        - emitter_kind
+        - emitter_id
+        - actor_kind
+        - action
+        - outcome
+        - resource_kind
+        - prev_hash
+        - entry_hash
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        site_id:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+        recorded_at:
+          type: string
+          format: date-time
+        emitter_kind:
+          $ref: '#/components/schemas/AuditEmitterKind'
+        emitter_id:
+          type: string
+        actor_kind:
+          $ref: '#/components/schemas/AuditActorKind'
+        actor_id:
+          type: string
+        action:
+          type: string
+          description: |
+            Canonical, namespaced action vocabulary per ADR 0006 D7
+            (e.g. `auth.login`, `auth.failed_login`, `config.applied`,
+            `policy.applied`, `pairing.consumed`,
+            `breakglass.activated`).
+        outcome:
+          $ref: '#/components/schemas/AuditOutcome'
+        resource_kind:
+          type: string
+        resource_id:
+          type: string
+        session_id:
+          type: string
+          format: uuid
+        correlation_id:
+          type: string
+          format: uuid
+        source_ip:
+          type: string
+        client_fingerprint:
+          type: string
+        attributes:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Per-action attributes. Per ADR 0006 D7 rule B these must
+            not contain PII or Credential values inline; producers
+            redact at emission time.
+        prev_hash:
+          type: string
+          description: |
+            Hex-encoded SHA-256 of the previous entry on this emitter's
+            chain. The chain origin is 64 zero hex characters per
+            ADR 0006 D3.
+        entry_hash:
+          type: string
+          description: |
+            Hex-encoded SHA-256 of the canonical-JSON serialization of
+            this entry with `entry_hash` cleared. The chain link.
+
+    AuditLogEntryList:
+      allOf:
+        - $ref: '#/components/schemas/PaginationListWrapper'
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditLogEntry'
+
     # ----- Health ---------------------------------------------------
 
     HealthStatusStorage:
@@ -3210,6 +3337,85 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Event not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Audit ====================================================
+
+  /v1/audit:
+    get:
+      tags: [Audit]
+      summary: List audit log entries.
+      description: |
+        Returns AuditLogEntry rows from the recorder's in-memory
+        audit chain per ADR 0006. The chain is append-only — there
+        is no POST/PATCH/DELETE on this surface. Each entry's
+        `prev_hash` links to the previous entry's `entry_hash`,
+        forming a per-emitter SHA-256 hash chain (the recorder is
+        one emitter; `emitter_kind` is always `recording_server`).
+
+        When the recorder's audit buffer crosses 80% capacity the
+        recorder enters degraded mode per ADR 0006 D6 and refuses
+        new administrative actions (camera CRUD, policy CRUD,
+        recorder config patches) with HTTP 503; recording, playback,
+        snapshot, and other media-flow operations continue
+        unaffected.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/ItemsPerPage'
+        - name: occurred_after
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: occurred_before
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: kind
+          in: query
+          required: false
+          description: |
+            Multi-value; matches `AuditLogEntry.action` (the canonical
+            namespaced action name).
+          schema:
+            type: array
+            items:
+              type: string
+        - name: actor_kind
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AuditActorKind'
+        - name: actor_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AuditOutcome'
+        - name: resource_kind
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Audit log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogEntryList'
+        '400':
+          description: Bad request.
           content:
             application/json:
               schema:
