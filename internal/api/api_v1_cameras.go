@@ -317,16 +317,21 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 		return
 	}
 
-	a.Conf = newConf
-	a.Parent.APIConfigSet(newConf)
-
-	// Stamp the in-memory linkage fields on the freshly-validated path.
+	// Stamp the in-memory linkage fields on the freshly-validated path
+	// BEFORE publishing the conf to a.Parent.APIConfigSet — once
+	// APIConfigSet hands the conf to pathManager, pathManager begins
+	// reading Path fields concurrently, and a post-publish stamp races
+	// with pathManager's reflect.DeepEqual call in pathConfCanBeUpdated
+	// (caught under -race in TestPathManagerConfigHotReload).
 	if storedPath, ok := newConf.Paths[cam.Name]; ok {
 		storedPath.ID = cam.ID
 		if cam.RecordingPolicyID != nil {
 			storedPath.RecordingPolicyID = *cam.RecordingPolicyID
 		}
 	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "config.applied",
@@ -418,9 +423,8 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		return
 	}
 
-	a.Conf = newConf
-	a.Parent.APIConfigSet(newConf)
-
+	// Stamp linkage BEFORE APIConfigSet to avoid the pathManager-vs-handler
+	// race the POST handler also guards against (see comment there).
 	if storedPath, ok := newConf.Paths[name]; ok {
 		storedPath.ID = id
 		if patch.RecordingPolicyID != nil {
@@ -429,6 +433,9 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 			storedPath.RecordingPolicyID = existingPath.RecordingPolicyID
 		}
 	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "config.applied",
@@ -507,15 +514,16 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 		return
 	}
 
-	a.Conf = newConf
-	a.Parent.APIConfigSet(newConf)
-
+	// Stamp linkage BEFORE APIConfigSet (same race as POST/PATCH).
 	if storedPath, ok := newConf.Paths[name]; ok {
 		storedPath.ID = id
 		if cam.RecordingPolicyID != nil {
 			storedPath.RecordingPolicyID = *cam.RecordingPolicyID
 		}
 	}
+
+	a.Conf = newConf
+	a.Parent.APIConfigSet(newConf)
 
 	a.publishEventLocked(defs.EventInput{
 		Kind:        "config.applied",
