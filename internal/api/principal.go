@@ -147,12 +147,24 @@ func unauthenticatedPrincipal() *Principal {
 	}
 }
 
+// PermSessionPIIRead is the ADR 0010 D2 permission string that gates
+// unmasking of Stream-level PII fields (Stream.remote_addr,
+// transport_connections[].remote_addr, WebRTC ICE candidate IPs).
+// Closes recorder canonical-divergence D5.
+const PermSessionPIIRead = "session.pii.read"
+
 // principalFromAuthClaims builds a Principal from the auth manager's
 // parsed Claims. The Internal and HTTP auth paths produce a zero-value
 // Claims with Method set; those map to a service-account principal
 // with empty Scope (the recorder's privileged-by-default pre-OQ10
 // posture). The JWT path produces a real ADR 0011 D2 principal.
-func principalFromAuthClaims(claims auth.Claims) *Principal {
+//
+// globalPIIReadGrant, when true, injects the ADR 0010 `session.pii.read`
+// permission into the service-account principal produced by the
+// internal/HTTP auth paths. JWT-authed requests carry their own scope
+// claim and ignore the flag. Per conf.Conf.GlobalPIIReadGrant; default
+// false.
+func principalFromAuthClaims(claims auth.Claims, globalPIIReadGrant bool) *Principal {
 	if claims.Method != conf.AuthMethodJWT {
 		// Pre-OQ10 internal/HTTP auth: no per-user identity, no scope.
 		// Treat as service account at the API layer; the audit-emit
@@ -161,8 +173,18 @@ func principalFromAuthClaims(claims auth.Claims) *Principal {
 		// match an empty Scope — deployments still on pre-OQ10 auth
 		// will need to migrate to JWT-with-scope before scope gating
 		// becomes mandatory.
+		//
+		// Operator escape hatch: if globalPIIReadGrant is set on the
+		// bootstrap config, inject session.pii.read into the static
+		// principal's scope so legacy admin UIs still see Stream PII.
+		// Default false; secure posture is fail-closed.
+		var scope []string
+		if globalPIIReadGrant {
+			scope = []string{PermSessionPIIRead}
+		}
 		return &Principal{
 			PrincipalKind: defs.AuditActorKindServiceAccount,
+			Scope:         scope,
 		}
 	}
 

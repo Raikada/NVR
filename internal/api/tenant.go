@@ -27,6 +27,24 @@ func (a *API) tenantID() string {
 	return a.Conf.TenantID
 }
 
+// globalPIIReadGrant returns the operator escape-hatch flag from the
+// bootstrap config. When true, Principals produced by the pre-OQ10
+// internal/HTTP authentication paths gain ADR 0010's
+// `session.pii.read` permission so legacy admin UIs continue to see
+// unmasked Stream PII; JWT-authed requests are unaffected (they carry
+// their own scope claim). See conf.Conf.GlobalPIIReadGrant.
+//
+// Closes recorder canonical-divergence D5 together with the
+// per-request scope check on the JWT path.
+func (a *API) globalPIIReadGrant() bool {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+	if a.Conf == nil {
+		return false
+	}
+	return a.Conf.GlobalPIIReadGrant
+}
+
 // readTenantScopedBody reads the request body up to maxInboundConfigSize
 // and validates that any tenantId field included in the JSON matches the
 // recorder's bound tenant. On mismatch, it writes a 403 and returns

@@ -133,10 +133,11 @@ Entries are grouped by severity:
 
 ### D5. `remoteAddr` (PII) returned to every authorized session viewer without masking
 
-> **Resolution depends on a permission-catalog change** that is
-> itself a separate workstream (canonical `Role` catalog
-> definition). This entry cannot be cleanly closed before that
-> catalog gains a `session.pii.read` permission or equivalent.
+> **Status: resolved 2026-04-27.** Closed by the PII-unmasking-gate
+> commit on `main`, Change-Id `2026-04-27-adr-0010-pii-gate`. ADR
+> 0010 (Accepted) defines `session.pii.read`; ADR 0011 (Accepted)
+> defines the JWT `scope` claim that carries it. See the Resolved
+> section at the bottom of this document.
 
 - **Where.** `RTSPConn.remoteAddr`, `RTSPSession.remoteAddr`,
   `RTMPConn.remoteAddr`, `WebRTCSession.remoteAddr`,
@@ -388,6 +389,52 @@ on <date>**` line at the top of its body.
 ---
 
 ## Resolved
+
+### D5. `remoteAddr` PII gated on `session.pii.read`
+
+**Resolved 2026-04-27.** Closed by the PII-unmasking-gate commit on
+`main`, Change-Id `2026-04-27-adr-0010-pii-gate`.
+
+The fix gates Stream-level PII redaction on the per-request
+Principal's scope claim per ADR 0011 D2 / D7. The Principal-on-context
+plumbing landed earlier with the JWT-middleware commit; this commit
+wires its `HasPermission(PermSessionPIIRead)` check into
+`internal/api/api_v1_streams.go`'s `redactStream`. Callers without the
+permission see the existing redaction (`remote_addr` →
+`"redacted"`, RTSP `transport_connections[].remote_addr` → `"redacted"`,
+WebRTC `local_candidates[]` and `remote_candidates[]` → `"redacted"`);
+callers with the permission see the raw values. Sensitive
+`query_string` redaction (D12 closure) remains unconditional —
+Sensitive is value-pattern redaction, not principal-gated.
+
+Pre-OQ10 deployments using the recorder's HTTP Basic / static
+authentication paths produce a service-account Principal with empty
+Scope, so they fail-closed by default. A new bootstrap-config flag
+`globalPIIReadGrant: bool` (default false) is the operator escape
+hatch: when set, `principalFromAuthClaims` injects
+`session.pii.read` into the static-auth Principal so legacy admin UIs
+continue to see unmasked Stream PII without requiring an immediate
+JWT migration. JWT-authed requests carry their own scope claim and
+ignore the flag.
+
+Files touched:
+
+- `internal/conf/conf.go` — adds `GlobalPIIReadGrant` to `Conf`.
+- `internal/api/principal.go` — adds `PermSessionPIIRead` constant;
+  threads `globalPIIReadGrant bool` through `principalFromAuthClaims`.
+- `internal/api/tenant.go` — adds `globalPIIReadGrant()` accessor
+  alongside `tenantID()`, mutex-protected like its sibling.
+- `internal/api/api.go` — passes the conf flag into the principal
+  builder at middleware time.
+- `internal/api/api_v1_streams.go` — `redactStream` takes a
+  `*Principal` and skips PII rewrites when the permission is held;
+  list / get handlers fetch the Principal once and pass it through.
+- `internal/api/api_v1_streams_test.go` — four new test cases:
+  unauthenticated, service-account-without-permission,
+  principal-with-permission, and globalPIIReadGrant escape-hatch.
+- `internal/api/principal_test.go` — adds the
+  `globalPIIReadGrant` injection test; existing call sites updated
+  for the new signature.
 
 ### D12. `query` field credential-pattern redaction
 
