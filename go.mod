@@ -9,6 +9,7 @@ require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0
 	github.com/abema/go-mp4 v1.5.0
 	github.com/alecthomas/kong v1.15.0
+	github.com/asticode/go-astiav v0.40.0
 	github.com/asticode/go-astits v1.15.0
 	github.com/bluenviron/gohlslib/v2 v2.2.9
 	github.com/bluenviron/gortmplib v0.3.1
@@ -49,7 +50,7 @@ require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
-	github.com/asticode/go-astikit v0.30.0 // indirect
+	github.com/asticode/go-astikit v0.42.0 // indirect
 	github.com/benburkert/openpgp v0.0.0-20160410205803-c2471f86866c // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect

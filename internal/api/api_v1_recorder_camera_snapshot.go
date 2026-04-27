@@ -23,13 +23,12 @@ import (
 //
 // Source: the recorder's HLS server keeps a sliding window of recent
 // fragments per active camera; the most recent finalized fragment is
-// the freshest frame the recorder can produce without standing up a
-// new decode/encode pipeline (which would add a third-party dependency
-// and touch media-pipeline territory). Per the snapshot scope decision,
-// we return the raw HLS fragment with the Content-Type the muxer emits
-// (typically video/mp4 for fMP4 variants, video/MP2T for MPEG-TS) — not
-// a JPEG, since transcoding to JPEG would require a new image-encoder
-// dependency.
+// the freshest frame the recorder can produce. The handler then runs
+// it through the in-process libav (cgo) snapshot path to emit a JPEG
+// keyframe. When the conversion fails (corrupt fragment, unsupported
+// codec, etc.) the handler falls back to the raw HLS fragment with
+// the muxer's content type so the endpoint stays useful for
+// diagnostics.
 //
 // Resolution: same UUID-resolver pattern as
 // /v1/recorder/hls-muxers/{id} — try configured paths, then runtime-
@@ -93,26 +92,22 @@ func (a *API) onV1RecorderCameraSnapshot(ctx *gin.Context) {
 	// No caching — every call returns the freshest available fragment.
 	ctx.Header("Cache-Control", "no-store")
 
-	// Try to produce a real JPEG via the system ffmpeg binary. When
-	// ffmpeg is on PATH, the snapshot endpoint returns image/jpeg —
-	// the format clients expect for thumbnails / evidence captures.
-	// When it isn't, or the conversion fails for some reason, we fall
-	// back to the raw fragment bytes (the original behavior) and
-	// surface the format on a header so callers can branch.
+	// Convert the fragment to JPEG via in-process libav (cgo). The
+	// success path is the only happy outcome: an image/jpeg body with
+	// X-Snapshot-Format: jpeg. On any decode/encode failure (corrupt
+	// fragment, codec the recorder's libav build doesn't support, frame
+	// with weird dimensions, etc.) we log the underlying error and
+	// return the raw fragment bytes with X-Snapshot-Format:
+	// hls-fragment-fallback — keeps the endpoint useful for diagnostic
+	// "what did the muxer emit?" workflows even when conversion can't
+	// produce an image.
 	jpegBytes, jerr := snapshotJPEGFromFragment(ctx.Request.Context(), data)
 	if jerr == nil {
 		ctx.Header("X-Snapshot-Format", "jpeg")
 		ctx.Data(http.StatusOK, "image/jpeg", jpegBytes)
 		return
 	}
-	if !errors.Is(jerr, errFFmpegUnavailable) {
-		// ffmpeg was on PATH but the run failed — log the underlying
-		// reason so operators can debug without losing the snapshot
-		// response. Fall through to the raw-fragment fallback.
-		a.Log(logger.Warn, "snapshot jpeg conversion failed for camera %s: %v", cameraID, jerr)
-		ctx.Header("X-Snapshot-Format", "hls-fragment-fallback")
-	} else {
-		ctx.Header("X-Snapshot-Format", "hls-fragment")
-	}
+	a.Log(logger.Warn, "snapshot jpeg conversion failed for camera %s: %v", cameraID, jerr)
+	ctx.Header("X-Snapshot-Format", "hls-fragment-fallback")
 	ctx.Data(http.StatusOK, contentType, data)
 }

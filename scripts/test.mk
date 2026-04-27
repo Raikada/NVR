@@ -15,7 +15,7 @@ test-nodocker: test-internal test-core
 define DOCKERFILE_TEST
 ARG IMAGE_PREFIX=
 FROM $${IMAGE_PREFIX}$(BASE_IMAGE)
-RUN apk add --no-cache make gcc musl-dev
+RUN apk add --no-cache make gcc musl-dev pkgconfig ffmpeg-dev
 WORKDIR /s
 COPY go.mod go.sum ./
 RUN go mod download
