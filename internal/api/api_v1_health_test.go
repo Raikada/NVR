@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 	"time"
 
@@ -61,6 +62,15 @@ func TestV1HealthGetSnapshotShape(t *testing.T) {
 	default:
 		t.Fatalf("invalid overall classification: %q", got.Overall)
 	}
+
+	// cpu_pct must be a non-negative float in [0, 100*NumCPU]. A
+	// single /v1/health call after handler creation hits the
+	// sampler's first-call-returns-zero path; on Windows the
+	// sampler is a zero-stub. Either way the value must be a sane
+	// non-negative number.
+	maxCPUPct := 100.0 * float64(runtime.NumCPU())
+	require.GreaterOrEqual(t, got.CPUPct, 0.0, "cpu_pct must be non-negative")
+	require.LessOrEqual(t, got.CPUPct, maxCPUPct, "cpu_pct must not exceed 100*NumCPU")
 }
 
 func TestV1HealthSnapshotIDStableAcrossCalls(t *testing.T) {

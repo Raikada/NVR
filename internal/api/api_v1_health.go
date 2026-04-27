@@ -52,11 +52,15 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	if ms.HeapSys > 0 {
 		in.MemPct = float64(ms.HeapInuse) / float64(ms.HeapSys) * 100.0
 	}
-	// CPUPct: no in-process CPU sampling available without
-	// gopsutil/proc-fs. Leave at zero with a deferred Phase-2-followup
-	// to add a real sampler. (runtime.NumGoroutine is a cheap proxy
-	// but doesn't fit the canonical CPUPct field; goroutine count
-	// belongs on the metrics surface, not /v1/health.)
+	// CPUPct: process-level user+system CPU time delta divided by
+	// wall-clock delta between successive /v1/health calls. See
+	// cpu_sampler.go for the sampler design. The first call after
+	// process start returns 0 (no previous sample to diff against);
+	// every subsequent call returns the average CPU percentage of
+	// the interval since the previous call. The value is normalized
+	// to one-CPU-equivalent at 100 (a saturated 8-core box reads
+	// ~800), matching what `top` and similar tools report.
+	in.CPUPct = cpuPctSampler.Sample()
 
 	// Camera counts. We lift them from c.Paths (configured cameras)
 	// and PathManager (which tells us which are runtime-online).
