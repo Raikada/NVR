@@ -293,6 +293,26 @@ type Conf struct {
 	AuthJWTIssuer             string                       `json:"authJWTIssuer"`
 	AuthJWTAudience           string                       `json:"authJWTAudience"`
 
+	// GlobalPIIReadGrant, when true, injects the ADR 0010
+	// `session.pii.read` permission into every Principal produced by
+	// the pre-OQ10 internal/HTTP authentication paths (which carry no
+	// per-user scope claim). This is the operator escape hatch for
+	// deployments that have not yet migrated to JWT-issued tokens with
+	// real scope claims: those callers would otherwise see Stream PII
+	// fields redacted unconditionally because their Principal carries
+	// an empty scope.
+	//
+	// Default false: the secure posture is fail-closed — PII stays
+	// redacted for callers without an explicit grant. Operators on
+	// pre-OQ10 deployments who need PII visibility (e.g., the existing
+	// admin UI surfacing remote_addr for incident response) flip this
+	// to true on their bootstrap config until JWT-with-scope is wired
+	// end-to-end.
+	//
+	// JWT-authed requests are unaffected: they carry their own scope
+	// claim and this flag is ignored on that path.
+	GlobalPIIReadGrant bool `json:"globalPIIReadGrant"`
+
 	// Control API
 	API               bool       `json:"api"`
 	APIAddress        string     `json:"apiAddress"`

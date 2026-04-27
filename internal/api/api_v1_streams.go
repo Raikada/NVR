@@ -112,34 +112,40 @@ func (f streamFilters) match(s *defs.Stream) bool {
 }
 
 // redactStream applies the API-boundary redaction policy to a single stream
-// in place. RemoteAddr is PII (D4 / canonical-divergences.md) and is replaced
-// with the literal "redacted" when non-empty; QueryString is Sensitive (D12)
-// and is rewritten via redactQueryString.
-func (a *API) redactStream(s *defs.Stream) {
-	if s.RemoteAddr != "" {
+// in place. PII fields (RemoteAddr, RTSP transport_connections[].remote_addr,
+// WebRTC ICE candidate IPs — see ../../platform/docs/data-classification.md
+// Stream entry) are redacted unless the principal holds ADR 0010's
+// `session.pii.read` permission. Sensitive fields (QueryString — D12) are
+// rewritten via redactQueryString unconditionally; Sensitive is value-pattern
+// redaction, not principal-gated.
+//
+// Closes recorder canonical-divergence D5: PII unmasking is now gated on
+// the per-request Principal's scope claim per ADR 0011 D2 / D7.
+func (a *API) redactStream(s *defs.Stream, principal *Principal) {
+	piiUnmask := principal.HasPermission(PermSessionPIIRead)
+
+	if !piiUnmask && s.RemoteAddr != "" {
 		s.RemoteAddr = "redacted"
 	}
 	if s.QueryString != nil {
 		q := redactQueryString(*s.QueryString)
 		s.QueryString = &q
 	}
-	// Per-protocol redaction: TransportConnections carry their own
-	// remote_addr; redact them too.
-	if rt, ok := s.ProtocolSpecific.(*defs.ProtocolSpecificRTSP); ok {
-		for i := range rt.TransportConnections {
-			if rt.TransportConnections[i].RemoteAddr != "" {
-				rt.TransportConnections[i].RemoteAddr = "redacted"
+	if !piiUnmask {
+		// Per-protocol PII redaction: TransportConnections carry their
+		// own remote_addr; redact them too.
+		if rt, ok := s.ProtocolSpecific.(*defs.ProtocolSpecificRTSP); ok {
+			for i := range rt.TransportConnections {
+				if rt.TransportConnections[i].RemoteAddr != "" {
+					rt.TransportConnections[i].RemoteAddr = "redacted"
+				}
 			}
 		}
-	}
-	// WebRTC ICE candidate descriptors carry IPs (PII); blank them.
-	if w, ok := s.ProtocolSpecific.(*defs.ProtocolSpecificWebRTC); ok {
-		if len(w.LocalCandidates) > 0 {
+		// WebRTC ICE candidate descriptors carry IPs (PII); blank them.
+		if w, ok := s.ProtocolSpecific.(*defs.ProtocolSpecificWebRTC); ok {
 			for i := range w.LocalCandidates {
 				w.LocalCandidates[i] = "redacted"
 			}
-		}
-		if len(w.RemoteCandidates) > 0 {
 			for i := range w.RemoteCandidates {
 				w.RemoteCandidates[i] = "redacted"
 			}
@@ -392,8 +398,9 @@ func (a *API) onV1StreamsList(ctx *gin.Context) {
 	}
 	resp.PageCount = pageCount
 
+	principal := principalFromContext(ctx)
 	for i := range resp.Items {
-		a.redactStream(&resp.Items[i])
+		a.redactStream(&resp.Items[i], principal)
 	}
 
 	ctx.JSON(http.StatusOK, resp)
@@ -410,6 +417,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	}
 
 	tenantID := a.tenantID()
+	principal := principalFromContext(ctx)
 
 	// Try each protocol cluster in turn. The session/conn UUID space is
 	// sparse across protocols (collisions are vanishingly unlikely with
@@ -418,7 +426,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 		if s, err := a.RTSPServer.APISessionsGet(id); err == nil && s != nil {
 			conns := a.fetchRTSPConns(a.RTSPServer, s.Conns)
 			out := defs.StreamFromRTSPSession(s, conns, cameraIDFromPathName(s.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, rtsp.ErrSessionNotFound) {
@@ -430,7 +438,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 		if s, err := a.RTSPSServer.APISessionsGet(id); err == nil && s != nil {
 			conns := a.fetchRTSPConns(a.RTSPSServer, s.Conns)
 			out := defs.StreamFromRTSPSSession(s, conns, cameraIDFromPathName(s.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, rtsp.ErrSessionNotFound) {
@@ -441,7 +449,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.RTMPServer) {
 		if c, err := a.RTMPServer.APIConnsGet(id); err == nil && c != nil {
 			out := defs.StreamFromRTMPConn(c, cameraIDFromPathName(c.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, rtmp.ErrConnNotFound) {
@@ -452,7 +460,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.RTMPSServer) {
 		if c, err := a.RTMPSServer.APIConnsGet(id); err == nil && c != nil {
 			out := defs.StreamFromRTMPSConn(c, cameraIDFromPathName(c.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, rtmp.ErrConnNotFound) {
@@ -463,7 +471,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.SRTServer) {
 		if c, err := a.SRTServer.APIConnsGet(id); err == nil && c != nil {
 			out := defs.StreamFromSRTConn(c, cameraIDFromPathName(c.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, srt.ErrConnNotFound) {
@@ -474,7 +482,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.WebRTCServer) {
 		if s, err := a.WebRTCServer.APISessionsGet(id); err == nil && s != nil {
 			out := defs.StreamFromWebRTCSession(s, cameraIDFromPathName(s.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, webrtc.ErrSessionNotFound) {
@@ -485,7 +493,7 @@ func (a *API) onV1StreamsGet(ctx *gin.Context) {
 	if !interfaceIsEmpty(a.HLSServer) {
 		if s, err := a.HLSServer.APISessionsGet(id); err == nil && s != nil {
 			out := defs.StreamFromHLSSession(s, cameraIDFromPathName(s.Path), tenantID)
-			a.redactStream(&out)
+			a.redactStream(&out, principal)
 			ctx.JSON(http.StatusOK, out)
 			return
 		} else if err != nil && !errors.Is(err, hls.ErrSessionNotFound) {

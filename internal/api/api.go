@@ -319,7 +319,7 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	// internal/HTTP auth paths produce a zero-value Claims (with
 	// Method set) which maps to a service-account principal with
 	// empty Scope; the JWT path produces a real ADR 0011 D2 principal.
-	principal := principalFromAuthClaims(claims)
+	principal := principalFromAuthClaims(claims, a.globalPIIReadGrant())
 	setPrincipalOnContext(ctx, principal)
 
 	// Successful authentication: emit an audit entry per ADR 0006 D1.

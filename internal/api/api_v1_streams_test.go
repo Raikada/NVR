@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
@@ -398,6 +399,21 @@ func invokeStreamHandler(
 	rawQuery string,
 	idParam string,
 ) (int, []byte) {
+	return invokeStreamHandlerWithPrincipal(api, kind, rawQuery, idParam, nil)
+}
+
+// invokeStreamHandlerWithPrincipal mirrors invokeStreamHandler but stashes the
+// supplied Principal on the gin.Context before calling the handler — the
+// production-path equivalent of middlewareAuth setting it. Pass nil to
+// reproduce the no-middleware path (handlers fall through to the
+// unauthenticated principal).
+func invokeStreamHandlerWithPrincipal(
+	api *API,
+	kind streamHandlerKind,
+	rawQuery string,
+	idParam string,
+	principal *Principal,
+) (int, []byte) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 
@@ -418,6 +434,9 @@ func invokeStreamHandler(
 	c.Request = req
 	if idParam != "" {
 		c.Params = gin.Params{{Key: "id", Value: idParam}}
+	}
+	if principal != nil {
+		setPrincipalOnContext(c, principal)
 	}
 
 	switch kind {
@@ -653,6 +672,122 @@ func TestV1StreamsDeleteNotFound(t *testing.T) {
 	missing := uuid.New().String()
 	code, _ := invokeStreamHandler(api, streamHandlerDelete, "", missing)
 	require.Equal(t, http.StatusNotFound, code)
+}
+
+// TestV1StreamsListPIIRedactedForUnauthenticated covers the
+// fail-closed default per ADR 0010 D2 and recorder canonical-divergence
+// D5: with no Principal on the context (no middleware ran), the
+// handler must redact every PII field on the response.
+func TestV1StreamsListPIIRedactedForUnauthenticated(t *testing.T) {
+	api, _, _ := v1StreamsFixture(t)
+
+	code, body := invokeStreamHandlerWithPrincipal(
+		api, streamHandlerList, "", "", nil,
+	)
+	require.Equal(t, http.StatusOK, code)
+	bodyStr := string(body)
+
+	// Stream.remote_addr (every protocol).
+	require.NotContains(t, bodyStr, "192.168.1.10:5000")
+	require.NotContains(t, bodyStr, "192.168.1.20:5000")
+	require.NotContains(t, bodyStr, "192.168.1.40:5000")
+	require.NotContains(t, bodyStr, "192.168.1.50:5000")
+	// WebRTC ICE candidate IPs.
+	require.NotContains(t, bodyStr, "192.168.1.100:8000")
+}
+
+// TestV1StreamsListPIIRedactedForServiceAccountWithoutPermission covers
+// the pre-OQ10 internal/HTTP auth path with the default
+// (globalPIIReadGrant=false) operator config: the static service-account
+// Principal carries an empty Scope, so PII stays redacted.
+func TestV1StreamsListPIIRedactedForServiceAccountWithoutPermission(t *testing.T) {
+	api, _, _ := v1StreamsFixture(t)
+
+	svcPrincipal := &Principal{
+		PrincipalKind: defs.AuditActorKindServiceAccount,
+		// Scope intentionally empty — the pre-OQ10 default.
+	}
+
+	code, body := invokeStreamHandlerWithPrincipal(
+		api, streamHandlerList, "", "", svcPrincipal,
+	)
+	require.Equal(t, http.StatusOK, code)
+	bodyStr := string(body)
+
+	require.NotContains(t, bodyStr, "192.168.1.10:5000",
+		"remote_addr must stay redacted for a service account without session.pii.read")
+	require.NotContains(t, bodyStr, "192.168.1.100:8000",
+		"WebRTC ICE candidates must stay redacted for a service account without session.pii.read")
+	require.Contains(t, bodyStr, "redacted")
+}
+
+// TestV1StreamsListPIIUnmaskedForPrincipalWithPermission covers the
+// happy path: a JWT-authed cloud_user Principal whose `scope` claim
+// includes session.pii.read sees the raw PII fields.
+func TestV1StreamsListPIIUnmaskedForPrincipalWithPermission(t *testing.T) {
+	api, _, _ := v1StreamsFixture(t)
+
+	cloudPrincipal := &Principal{
+		Sub:           "user-uuid",
+		PrincipalKind: defs.AuditActorKindCloudUser,
+		Scope:         []string{"stream.list", PermSessionPIIRead},
+	}
+
+	code, body := invokeStreamHandlerWithPrincipal(
+		api, streamHandlerList, "", "", cloudPrincipal,
+	)
+	require.Equal(t, http.StatusOK, code)
+	bodyStr := string(body)
+
+	// Stream.remote_addr unmasked.
+	require.Contains(t, bodyStr, "192.168.1.10:5000",
+		"RTSP remote_addr must be unmasked when principal holds session.pii.read")
+	require.Contains(t, bodyStr, "192.168.1.20:5000",
+		"RTMP remote_addr must be unmasked when principal holds session.pii.read")
+	// WebRTC ICE candidates unmasked.
+	require.Contains(t, bodyStr, "192.168.1.100:8000",
+		"WebRTC local_candidates must be unmasked when principal holds session.pii.read")
+	require.Contains(t, bodyStr, "192.168.1.40:5000",
+		"WebRTC remote_candidates must be unmasked when principal holds session.pii.read")
+
+	// Sensitive query-string redaction is independent of the PII gate
+	// (D12 closure): credential-pattern values still get scrubbed.
+	require.NotContains(t, bodyStr, "secret123",
+		"query_string credential-pattern redaction must apply even with session.pii.read")
+}
+
+// TestV1StreamsListPIIUnmaskedViaGlobalPIIReadGrant covers the operator
+// escape-hatch: a pre-OQ10 deployment whose recorder config has
+// globalPIIReadGrant=true sees PII unmasked even though its
+// authentication path produces a static service-account Principal with
+// no per-user scope claim. The grant injects session.pii.read into that
+// Principal at middleware time.
+func TestV1StreamsListPIIUnmaskedViaGlobalPIIReadGrant(t *testing.T) {
+	api, _, _ := v1StreamsFixture(t)
+
+	// Simulate the static-auth principal that middlewareAuth produces
+	// when globalPIIReadGrant=true on the recorder bootstrap config.
+	// The unit-level guarantee that the conf flag flows into
+	// principalFromAuthClaims is covered by
+	// TestPrincipalFromAuthClaimsPreOQ10WithGlobalGrant; here we
+	// exercise the handler-side behavior under that resolved
+	// Principal.
+	staticPrincipal := principalFromAuthClaims(
+		auth.Claims{Method: conf.AuthMethodInternal},
+		true, // globalPIIReadGrant
+	)
+	require.True(t, staticPrincipal.HasPermission(PermSessionPIIRead))
+
+	code, body := invokeStreamHandlerWithPrincipal(
+		api, streamHandlerList, "", "", staticPrincipal,
+	)
+	require.Equal(t, http.StatusOK, code)
+	bodyStr := string(body)
+
+	require.Contains(t, bodyStr, "192.168.1.10:5000",
+		"RTSP remote_addr must be unmasked when globalPIIReadGrant=true")
+	require.Contains(t, bodyStr, "192.168.1.100:8000",
+		"WebRTC local_candidates must be unmasked when globalPIIReadGrant=true")
 }
 
 func TestV1StreamsListTenantIDStamp(t *testing.T) {
