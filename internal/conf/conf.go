@@ -532,7 +532,23 @@ func (conf *Conf) setDefaults() {
 	}
 	conf.AuthJWTClaimKey = "mediamtx_permissions"
 
-	// Control API
+	// Control API. ON by default per the Raikada platform thesis:
+	// the API is the recorder's primary product surface — the
+	// configuration UI talks to it, the Management Server reaches
+	// it directly over the same LAN per ADR 0003 (recorder ↔ MS
+	// is a same-LAN connection; FRP tunnels are reserved for the
+	// MS ↔ Cloud and cross-internet paths, not recorder ↔ MS).
+	// Audit chain (ADR 0006), JWT/JWKS validation (ADR 0011), and
+	// the role catalog (ADR 0010) gate access; the recorder is no
+	// longer the wide-open management surface MediaMTX defaulted
+	// to ship off.
+	//
+	// Bound to all interfaces so an installer's laptop on the
+	// same LAN can reach the SPA on first run and the MS can
+	// pair without manual interface re-binding. Operators who
+	// want loopback-only confine the bind to 127.0.0.1:9997 in
+	// mediamtx.yml.
+	conf.API = true
 	conf.APIAddress = ":9997"
 	conf.APIServerKey = "server.key"
 	conf.APIServerCert = "server.crt"

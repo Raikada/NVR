@@ -174,8 +174,19 @@ authJWTAudience:
 # Global settings -> Control API
 
 # Allow clients to control the server through the Control API.
-api: false
-# Address of the Control API listener.
+# ON by default in Raikada: the API is the recorder's primary
+# product surface — the embedded configuration UI talks to it, and
+# the Management Server reaches it directly over the same LAN
+# (per ADR 0003, recorder ↔ MS is a same-LAN connection; FRP
+# tunnels are MS ↔ Cloud only). Audit chain, JWT validation, and
+# the role catalog gate access. To run as a pure media pipe with
+# no management plane, set this to no.
+api: yes
+# Address of the Control API listener. Defaults to all interfaces
+# so an installer's laptop and the MS on the same LAN can reach
+# it on first run; switch to 127.0.0.1:9997 for loopback-only
+# (UI reachable from a browser on the recorder host itself but
+# nothing else).
 apiAddress: :9997
 # Enable HTTPS on the Control API server.
 apiEncryption: false
