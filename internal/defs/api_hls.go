@@ -47,8 +47,13 @@ type APIHLSMuxerList struct {
 }
 
 // APIHLSMuxer is an HLS muxer.
+//
+// The TenantID JSON tag is snake_case (`tenant_id`) per the canonical
+// /v1 surface convention; the muxer-specific fields retain
+// MediaMTX-lineage camelCase per the escape-hatch carve-out on
+// recorder-internal observability shapes.
 type APIHLSMuxer struct {
-	TenantID                string    `json:"tenantId"`
+	TenantID                string    `json:"tenant_id"`
 	Path                    string    `json:"path"`
 	Created                 time.Time `json:"created"`
 	LastRequest             time.Time `json:"lastRequest"`

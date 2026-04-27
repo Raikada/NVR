@@ -24,7 +24,11 @@ import (
 // hardware integration that the canonical model has no reason to
 // reach into.
 type RPiCameraSourceConfig struct {
-	TenantID string `json:"tenantId,omitempty"`
+	// TenantID JSON tag is snake_case per the canonical /v1 surface
+	// convention; the rpiCamera* fields retain MediaMTX-lineage
+	// camelCase per the escape-hatch carve-out (they mirror conf.Path
+	// 1:1 for round-trip compatibility with the upstream shape).
+	TenantID string `json:"tenant_id,omitempty"`
 
 	RPICameraCamID               uint      `json:"rpiCameraCamID"`
 	RPICameraSecondary           bool      `json:"rpiCameraSecondary"`
@@ -165,7 +169,7 @@ func (a *API) onV1RecorderCameraSourceConfigPatch(ctx *gin.Context) {
 		return
 	}
 
-	body, ok := a.readTenantScopedBody(ctx)
+	body, ok := a.readTenantSnakeCaseScopedBody(ctx)
 	if !ok {
 		return
 	}

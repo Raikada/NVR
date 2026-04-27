@@ -36,6 +36,13 @@ func (a *API) tenantID() string {
 // A request body without a tenantId field passes through unchanged — the
 // recorder uses its own tenant as the implicit value (per the D1
 // resolution).
+//
+// This camelCase variant is used by escape-hatch endpoints whose body
+// shapes inherit MediaMTX-lineage camelCase JSON keys throughout
+// (e.g., /v1/recorder/config, /v1/recorder/camera-defaults). The
+// snake_case sibling readTenantSnakeCaseScopedBody applies to
+// escape-hatch endpoints whose body's tenant key matches the canonical
+// /v1 snake_case key (e.g., source-config, hooks).
 func (a *API) readTenantScopedBody(ctx *gin.Context) ([]byte, bool) {
 	body, err := io.ReadAll(&customLimitReader{ctx.Request.Body, maxInboundConfigSize})
 	if err != nil {
@@ -47,6 +54,32 @@ func (a *API) readTenantScopedBody(ctx *gin.Context) ([]byte, bool) {
 	// the caller's full decode will surface the parse error.
 	var meta struct {
 		TenantID *string `json:"tenantId"`
+	}
+	if jerr := json.Unmarshal(body, &meta); jerr == nil &&
+		meta.TenantID != nil && *meta.TenantID != a.tenantID() {
+		a.writeError(ctx, http.StatusForbidden,
+			fmt.Errorf("tenant_id mismatch: recorder is bound to a different tenant"))
+		return nil, false
+	}
+
+	return body, true
+}
+
+// readTenantSnakeCaseScopedBody mirrors readTenantScopedBody but reads
+// the canonical snake_case `tenant_id` key. Used by escape-hatch
+// endpoints whose response shape carries `tenant_id` per the canonical
+// /v1 surface convention (e.g., /v1/recorder/cameras/{id}/source-config,
+// /v1/recorder/cameras/{id}/hooks); the request body must mirror the
+// response key.
+func (a *API) readTenantSnakeCaseScopedBody(ctx *gin.Context) ([]byte, bool) {
+	body, err := io.ReadAll(&customLimitReader{ctx.Request.Body, maxInboundConfigSize})
+	if err != nil {
+		a.writeError(ctx, http.StatusBadRequest, err)
+		return nil, false
+	}
+
+	var meta struct {
+		TenantID *string `json:"tenant_id"`
 	}
 	if jerr := json.Unmarshal(body, &meta); jerr == nil &&
 		meta.TenantID != nil && *meta.TenantID != a.tenantID() {

@@ -23,7 +23,11 @@ import (
 // operator who set them needs to be able to read them back to edit
 // them.
 type CameraHooks struct {
-	TenantID string `json:"tenantId,omitempty"`
+	// TenantID JSON tag is snake_case per the canonical /v1 surface
+	// convention; the runOn* fields retain MediaMTX-lineage camelCase
+	// per the escape-hatch carve-out (they mirror conf.Path 1:1 for
+	// round-trip compatibility with the upstream shape).
+	TenantID string `json:"tenant_id,omitempty"`
 
 	RunOnInit                  string        `json:"runOnInit"`
 	RunOnInitRestart           bool          `json:"runOnInitRestart"`
@@ -136,7 +140,7 @@ func (a *API) onV1RecorderCameraHooksPatch(ctx *gin.Context) {
 		return
 	}
 
-	body, ok := a.readTenantScopedBody(ctx)
+	body, ok := a.readTenantSnakeCaseScopedBody(ctx)
 	if !ok {
 		return
 	}

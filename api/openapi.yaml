@@ -1744,7 +1744,7 @@ components:
         bytesSent:
           type: integer
           format: int64
-        tenantId:
+        tenant_id:
           type: string
           format: uuid
 
@@ -1776,10 +1776,12 @@ components:
         specific (white balance, lens position, autofocus, ISO/
         shutter, RPi-HW-encoder profiles); only meaningful on a
         recorder running on Raspberry Pi hardware. Not part of
-        canonical `Camera.source_config`. JSON keys retain camelCase
-        for compatibility with the upstream `conf.Path` shape.
+        canonical `Camera.source_config`. The `rpiCamera*` fields
+        retain camelCase for compatibility with the upstream
+        `conf.Path` shape; `tenant_id` is snake_case per the
+        canonical /v1 surface convention.
       properties:
-        tenantId:
+        tenant_id:
           type: string
           format: uuid
         rpiCameraCamID:
@@ -1883,10 +1885,13 @@ components:
         On both reads and writes the recorder scans for credential
         markers and emits a Warn log; hook contents are not redacted
         on read because the operator who set them needs to be able
-        to read them back to edit them. JSON keys retain camelCase.
+        to read them back to edit them. The `runOn*` fields retain
+        camelCase for compatibility with the upstream `conf.Path`
+        shape; `tenant_id` is snake_case per the canonical /v1
+        surface convention.
       x-classification: sensitive
       properties:
-        tenantId:
+        tenant_id:
           type: string
           format: uuid
         runOnInit:
