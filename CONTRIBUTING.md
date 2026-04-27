@@ -78,8 +78,12 @@ locally) and `make lint` pass on a clean checkout.
 ## Pull requests
 
 - Keep PRs small and focused. One concern per PR.
-- Update docs in the same PR as the code. If your PR has no doc updates
-  but changes a public surface, that is a sign you need to update docs.
+- Update docs alongside the code. Recorder-internal docs (this repo's
+  `docs/`) go in the same PR. Platform docs (`../platform/`) live in
+  a peer repo and follow the coordination conventions in
+  [`../platform/CLAUDE.md`](../platform/CLAUDE.md) §3. If your PR has
+  no doc updates but changes a public surface, that is a sign you
+  need to update docs somewhere.
 - Run the [`AGENTS.md`](AGENTS.md) "Quick checklist before opening a PR"
   before submitting.
 - Reviewers will check both the code and the docs. A code change that
