@@ -322,7 +322,7 @@ outer:
 
 		switch buf[0] {
 		case 'e':
-			return fmt.Errorf(string(buf[1:]))
+			return fmt.Errorf("%s", string(buf[1:]))
 
 		case 'r':
 			break outer
@@ -340,7 +340,7 @@ outer:
 
 		switch buf[0] {
 		case 'e':
-			return fmt.Errorf(string(buf[1:]))
+			return fmt.Errorf("%s", string(buf[1:]))
 
 		case 'd':
 			dts := int64(buf[8])<<56 | int64(buf[7])<<48 | int64(buf[6])<<40 | int64(buf[5])<<32 |
