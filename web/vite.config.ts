@@ -23,9 +23,12 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
-    sourcemap: true,
+    // Sourcemaps off for the embed bundle — they roughly triple the
+    // recorder binary size and the recorder ships as a single static
+    // appliance, not a public-facing web property where you'd open
+    // devtools against the prod build. Run `npm run dev` (Vite dev
+    // server) for a sourcemap-friendly debug experience instead.
+    sourcemap: false,
     target: 'es2022',
-    // The Go embed copies the entire dist/ tree, so no special
-    // chunking. Default Vite output is fine.
   },
 });

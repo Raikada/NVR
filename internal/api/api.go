@@ -17,6 +17,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
+	"github.com/bluenviron/mediamtx/internal/web"
 )
 
 const (
@@ -180,6 +181,14 @@ func (a *API) Initialize() error {
 		group.GET("/recorder/hls-muxers", a.onV1RecorderHLSMuxersList)
 		group.GET("/recorder/hls-muxers/:id", a.onV1RecorderHLSMuxersGet)
 		group.GET("/recorder/cameras/:id/snapshot", a.onV1RecorderCameraSnapshot)
+	}
+
+	// Static SPA bundle. Registered AFTER the /v1 group so the API
+	// surface takes precedence; gin's NoRoute catches every other
+	// GET and serves the SPA's index.html so hash-routed deep links
+	// work. See internal/web/web.go.
+	if err := web.Register(router); err != nil {
+		return fmt.Errorf("registering embedded web UI: %w", err)
 	}
 
 	a.httpServer = &httpp.Server{

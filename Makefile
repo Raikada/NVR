@@ -16,6 +16,8 @@ help:
 	@echo "  lint             run linters"
 	@echo "  binaries         build binaries for all supported platforms"
 	@echo "  dockerhub        build and push images to Docker Hub"
+	@echo "  web              rebuild the embedded configuration SPA bundle"
+	@echo "  web-typecheck    typecheck the SPA without producing a bundle"
 	@echo ""
 
 blank :=
