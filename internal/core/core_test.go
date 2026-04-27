@@ -110,10 +110,12 @@ func TestCoreErrors(t *testing.T) {
 func TestCoreHotReloading(t *testing.T) {
 	confPath := filepath.Join(os.TempDir(), "rtsp-conf")
 
-	err := os.WriteFile(confPath, []byte("paths:\n"+
-		"  test1:\n"+
-		"    publishUser: myuser\n"+
-		"    publishPass: mypass\n"),
+	err := os.WriteFile(confPath, []byte(
+		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"paths:\n"+
+			"  test1:\n"+
+			"    publishUser: myuser\n"+
+			"    publishPass: mypass\n"),
 		0o644)
 	require.NoError(t, err)
 	defer os.Remove(confPath)
@@ -129,8 +131,10 @@ func TestCoreHotReloading(t *testing.T) {
 		require.EqualError(t, err, "bad status code: 401 (Unauthorized)")
 	}()
 
-	err = os.WriteFile(confPath, []byte("paths:\n"+
-		"  test1:\n"),
+	err = os.WriteFile(confPath, []byte(
+		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"paths:\n"+
+			"  test1:\n"),
 		0o644)
 	require.NoError(t, err)
 
@@ -148,7 +152,11 @@ func TestCoreHotReloading(t *testing.T) {
 func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 	confPath := filepath.Join(os.TempDir(), "rtsp-conf")
 
-	err := os.WriteFile(confPath, []byte(""),
+	// tenantId is required by Conf.Validate() per the D1 enforcement
+	// added in commit e97ba172. Without it, New() rejects the config
+	// and the test gets a (nil, false) return.
+	err := os.WriteFile(confPath, []byte(
+		"tenantId: 00000000-0000-0000-0000-000000000000\n"),
 		0o644)
 	require.NoError(t, err)
 	defer os.Remove(confPath)
@@ -157,8 +165,10 @@ func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 	require.Equal(t, true, ok)
 	defer p.Close()
 
-	err = os.WriteFile(confPath, []byte("logDestinations: [file]\n"+
-		"logFile: /nonexisting/nonexist\n"),
+	err = os.WriteFile(confPath, []byte(
+		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"logDestinations: [file]\n"+
+			"logFile: /nonexisting/nonexist\n"),
 		0o644)
 	require.NoError(t, err)
 
