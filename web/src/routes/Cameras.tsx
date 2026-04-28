@@ -26,6 +26,7 @@ import {
 } from '../components/primitives';
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
+import { HLSPreview } from '../components/HLSPreview';
 import { PageHeader } from '../components/PageHeader';
 import { fetchCameras, deleteCamera, createCamera, fetchStreams, probeCameraSource } from '../lib/api';
 import type { Camera as ApiCamera, CameraSourceType, Stream } from '../lib/api';
@@ -840,63 +841,11 @@ function DiscoverPanel({ onClose, onAdd }: DiscoverProps) {
                       gap: 16,
                     }}
                   >
-                    <div
-                      style={{
-                        position: 'relative',
-                        aspectRatio: '16/9',
-                        background: 'linear-gradient(135deg, #1a1410, #0d0c0a)',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <Brackets />
-                      <div
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        <Icon name="video" style={{ width: 28, height: 28, color: 'rgba(249,115,22,0.4)' }} />
-                      </div>
-                      <div
-                        style={{
-                          position: 'absolute',
-                          top: 6,
-                          left: 8,
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 9,
-                          color: '#F97316',
-                          letterSpacing: 1,
-                        }}
-                      >
-                        ● LIVE
-                      </div>
-                      <div
-                        style={{
-                          position: 'absolute',
-                          bottom: 6,
-                          left: 8,
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 9,
-                          color: 'rgba(255,255,255,0.7)',
-                        }}
-                      >
-                        {cam.resolution} · H.264 · {cam.fps}fps
-                      </div>
-                      <div
-                        className="scanline"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          bottom: 0,
-                          width: 2,
-                          background:
-                            'linear-gradient(to bottom, transparent, rgba(249,115,22,0.6), transparent)',
-                        }}
-                      />
-                    </div>
+                    <HLSPreview
+                      cameraName={cam.id}
+                      online={cam.status === 'ok'}
+                      meta={`${cam.resolution} · H.264 · ${cam.fps}fps`}
+                    />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       <span
                         style={{
@@ -1526,52 +1475,11 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
               {stream === 'fail' && <StatusBadge kind="error" label="STREAM FAIL · CHECK PATH" size="sm" />}
             </div>
             {stream === 'ok' && (
-              <div
-                style={{
-                  position: 'relative',
-                  aspectRatio: '16/9',
-                  maxWidth: 320,
-                  background: 'linear-gradient(135deg, #1a1410, #0d0c0a)',
-                  overflow: 'hidden',
-                }}
-              >
-                <Brackets />
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Icon name="video" style={{ width: 32, height: 32, color: 'rgba(249,115,22,0.4)' }} />
-                </div>
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 6,
-                    left: 8,
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 9,
-                    color: '#F97316',
-                    letterSpacing: 1,
-                  }}
-                >
-                  ● LIVE
-                </div>
-                <div
-                  className="scanline"
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    bottom: 0,
-                    width: 2,
-                    background:
-                      'linear-gradient(to bottom, transparent, rgba(249,115,22,0.6), transparent)',
-                  }}
-                />
-              </div>
+              <HLSPreview
+                cameraName={f.name || ''}
+                online={Boolean(f.name)}
+                style={{ maxWidth: 320 }}
+              />
             )}
           </div>
         )}
@@ -2061,63 +1969,12 @@ function StreamTab({ c, patch }: TabProps) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {/* Live preview */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        <div
-          style={{
-            position: 'relative',
-            aspectRatio: '16/9',
-            background: 'linear-gradient(135deg, #1a1410, #0d0c0a)',
-            overflow: 'hidden',
-          }}
-        >
-          <Brackets />
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Icon name="video" style={{ width: 32, height: 32, color: 'rgba(249,115,22,0.4)' }} />
-          </div>
-          <div
-            style={{
-              position: 'absolute',
-              top: 8,
-              left: 8,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 9,
-              color: '#F97316',
-              letterSpacing: 1,
-            }}
-          >
-            ● LIVE · MAIN
-          </div>
-          <div
-            style={{
-              position: 'absolute',
-              bottom: 8,
-              left: 8,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 9,
-              color: 'rgba(255,255,255,0.7)',
-            }}
-          >
-            {c.resolution} · H.264 · {c.fps}fps
-          </div>
-          <div
-            className="scanline"
-            style={{
-              position: 'absolute',
-              top: 0,
-              bottom: 0,
-              width: 2,
-              background:
-                'linear-gradient(to bottom, transparent, rgba(249,115,22,0.6), transparent)',
-            }}
-          />
-        </div>
+        <HLSPreview
+          cameraName={c.name}
+          online={c.status === 'online'}
+          liveLabel="● LIVE · MAIN"
+          meta={`${c.resolution} · ${c.codec} · ${c.fps}fps`}
+        />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <SectionHeader>STREAM HEALTH</SectionHeader>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>

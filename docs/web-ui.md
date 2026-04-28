@@ -152,6 +152,20 @@ Recently retired (now wired to real `/v1/`):
 - Cross-platform host metrics: cpu / mem / bandwidth samplers
   rebuilt on gopsutil. Drops 11 per-OS build-tagged files;
   Linux + macOS + Windows + BSD all work from one module.
+- Cameras live preview tiles (drawer Stream tab + manual-add wizard
+  inline preview + manual-add wizard stream-test preview) → real
+  HLS via hls.js (Chrome / Firefox / Edge) or native `<video>`
+  (Safari / iOS), reading from the recorder's HLS server on :8888.
+  URL is constructed from `Camera.name` directly (per ADR 0009 the
+  canonical name is the recorder's path-name). All three tiles are
+  singular (one preview visible at a time), so autoplay is fine —
+  the `manualStart` click-to-play mode on `HLSPreview` is reserved
+  for a future camera-grid view that renders many tiles at once.
+  Gracefully falls back to the original gradient placeholder for
+  offline cameras, simulated wizard cameras whose path doesn't
+  exist on the server, and any HLS player error. The CameraList
+  row's 96×56 thumbnail icon is NOT a video tile — it stays a
+  status icon.
 
 **Overview.**
 - `TEMP` mini-metric — no thermal sensor surface. Cross-platform
@@ -163,6 +177,13 @@ Recently retired (now wired to real `/v1/`):
   recorder doesn't surface yet.
 
 **Cameras.**
+- Drawer Stream tab "STREAM HEALTH" panel (UPTIME, LATENCY,
+  PACKET LOSS, JITTER, GOP, BITRATE) — values are hardcoded
+  beside the now-real live preview. These are RTSP-source-level
+  stream metrics that the recorder doesn't currently surface
+  through `/v1/recorder/hls-muxers` (HLS muxer state has bytes-
+  served but not source jitter / packet-loss). Wiring would need
+  a recorder-side stat surface, separate swing.
 - ONVIF Discover panel — the WS-Discovery probe and identify
   phases are entirely simulated. Real ONVIF discovery needs a
   recorder-side subsystem (probably `internal/onvif/`) with
