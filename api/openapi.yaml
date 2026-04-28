@@ -212,10 +212,19 @@ tags:
   - name: Recorder
     description: |
       Recorder-localized escape hatch per ADR 0009 §D6. Bounded
-      single namespace at `/v1/recorder/...`. Five sub-resources:
-      operational config, camera defaults, RPi-camera source-config,
-      per-camera shell hooks, and HLS muxer state. The MS does not
+      single namespace at `/v1/recorder/...`. Now also surfaces
+      configuration-UI-driven endpoints (identity, network-info,
+      reboot, config-backup, config-restore) that are recorder-
+      operational rather than canonical-entity. The MS does not
       project this namespace upward; it is recorder-internal.
+  - name: Diagnostics
+    description: |
+      Cross-platform diagnostic test runners powering the config
+      UI's Diagnostics page. All handlers are stdlib- or gopsutil-
+      based — no shell-outs to system tools — so they work
+      identically on Linux, macOS, Windows, and BSD. Three runners
+      today: TCP-handshake ping, SNTP drift query, and a TCP probe
+      across every configured camera path.
 
 security:
   - basicAuth: []
@@ -1900,6 +1909,14 @@ components:
         One snapshot, current state only per ADR 0009 §D2. Pre-MS
         the network reachability flags default to `false` until the
         pairing client lands.
+
+        cpu_pct, mem_pct, and bandwidth are host-level — saturated
+        cpu_pct reads ~100 regardless of core count, mem_pct is
+        used-RAM across every process on the box, bandwidth sums
+        across every non-loopback NIC the kernel reports. /v1/health
+        answers the fleet-monitoring question ("is this box hot?"),
+        not "is the recorder process the bottleneck?" — the latter
+        belongs on the Prometheus surface.
       required:
         - id
         - recording_server_id
@@ -1912,6 +1929,7 @@ components:
         - cameras_recording
         - cameras_offline
         - network
+        - bandwidth
         - overall
       properties:
         id:
@@ -1929,9 +1947,20 @@ components:
         cpu_pct:
           type: number
           format: double
+          description: |
+            Host-wide CPU percent (gopsutil cpu.Percent, percpu=false).
+            Saturated reads ~100 regardless of core count. The first
+            reading after process start returns 0 (no previous
+            CPU-time delta to compare against).
         mem_pct:
           type: number
           format: double
+          description: |
+            Host-wide used-memory percent: in-use RAM across every
+            process on the box, divided by total RAM (gopsutil
+            VirtualMemory().UsedPercent). Falls back to the Go
+            runtime's HeapInuse / HeapSys ratio when the OS reading
+            isn't available.
         uptime:
           type: string
         cameras_total:
@@ -1946,8 +1975,29 @@ components:
             $ref: '#/components/schemas/HealthStatusStorage'
         network:
           $ref: '#/components/schemas/HealthStatusNetwork'
+        bandwidth:
+          $ref: '#/components/schemas/HealthStatusBandwidth'
         overall:
           $ref: '#/components/schemas/HealthStatusOverall'
+
+    HealthStatusBandwidth:
+      type: object
+      description: |
+        Host-level network throughput, summed across every
+        non-loopback interface the kernel reports (gopsutil
+        IOCounters(pernic=true) — kernel-maintained per-NIC
+        counters, not process-scoped). Bytes-per-second over the
+        wall-clock interval since the previous /v1/health request.
+        The first reading after process start primes the sampler
+        and reports zero on both fields.
+      required: [rx_bps, tx_bps]
+      properties:
+        rx_bps:
+          type: number
+          format: double
+        tx_bps:
+          type: number
+          format: double
 
     # ----- StorageVolume -------------------------------------------
 
@@ -1999,6 +2049,57 @@ components:
           format: date-time
         priority:
           type: integer
+        write_bytes_per_second:
+          type: integer
+          format: int64
+          nullable: true
+          description: |
+            Recent write throughput, computed by the recorder from
+            used-bytes deltas across successive
+            `/v1/storage-volumes` calls. Optional; populated only
+            after the second sample arrives. Negative deltas
+            (retention pruning) clamp to zero so the field
+            surfaces only positive write activity.
+        smart:
+          $ref: '#/components/schemas/StorageVolumeSMART'
+
+    StorageVolumeSMART:
+      type: object
+      nullable: true
+      description: |
+        Best-effort drive metadata sourced from a `smartctl -j`
+        shell-out, 60-second per-mount cache. Optional — absent
+        on hosts without `smartmontools`, when the mount-path
+        doesn't resolve to a block device, or when the smartctl
+        invocation failed for any reason. Every sub-field is
+        independently optional so a partial smartctl response
+        still yields a partial block.
+      properties:
+        device:
+          type: string
+          x-classification: sensitive
+          description: |
+            Block-device path (`/dev/sda`, `\\.\PHYSICALDRIVE0`, …).
+            Sensitive: filesystem layout reveals deployment
+            topology; same redaction posture as `mount_path`.
+        model_family:
+          type: string
+        model_name:
+          type: string
+        serial_number:
+          type: string
+          x-classification: restricted
+          description: |
+            Drive serial uniquely identifies hardware; never
+            include in non-admin views. Restricted per
+            data-classification.md.
+        power_on_hours:
+          type: integer
+          format: int64
+        health_passed:
+          type: boolean
+        temperature_c:
+          type: integer
 
     StorageVolumeList:
       type: object
@@ -2014,6 +2115,258 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/StorageVolume'
+
+    # ----- Configuration UI surfaces ------------------------------
+
+    RecorderIdentity:
+      type: object
+      description: |
+        Recorder bootstrap identity for the configuration UI's
+        identity card. Hostname and timezone are read-only at this
+        surface (changing them is the host OS's job, not the
+        recorder process's). Location is operator-set (PATCH
+        accepts only `location`). Firmware is build-time stamped.
+      required:
+        - tenant_id
+        - hostname
+        - location
+        - timezone
+        - firmware_version
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        hostname:
+          type: string
+        location:
+          type: string
+          description: |
+            Operator-set free-form label (e.g. "Warehouse A — Rack 2").
+            Empty string when not configured.
+        timezone:
+          type: string
+          description: Recorder process's local-zone abbreviation (UTC, CET, …).
+        firmware_version:
+          type: string
+
+    RecorderIdentityPatch:
+      type: object
+      description: |
+        Identity PATCH body. Only `location` is patchable; any other
+        patchable-field claim returns 400. `tenant_id` may be
+        echoed back to confirm tenant binding (mismatch returns 403).
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+        location:
+          type: string
+
+    NetworkInfo:
+      type: object
+      description: |
+        Cross-platform network information for the configuration
+        UI's Network page. gopsutil-driven; works on Linux, macOS,
+        Windows, and BSD. DNS resolvers are parsed from
+        /etc/resolv.conf on unix and omitted on Windows.
+      required: [os, platform, hostname, interfaces, bandwidth]
+      properties:
+        os:
+          type: string
+          description: GOOS (linux / darwin / windows / freebsd / …).
+        platform:
+          type: string
+          description: |
+            OS distribution string (Ubuntu 22.04, macOS 14.5, …),
+            empty when gopsutil host.Info() is unavailable.
+        hostname:
+          type: string
+        interfaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkInterface'
+        dns:
+          type: array
+          items:
+            type: string
+          description: |
+            DNS resolver IPs in /etc/resolv.conf order. Empty
+            on Windows (no equivalent file path).
+        bandwidth:
+          $ref: '#/components/schemas/BandwidthStats'
+
+    NetworkInterface:
+      type: object
+      required: [name, hardware_addr, mtu, is_up, is_loopback]
+      properties:
+        name:
+          type: string
+        hardware_addr:
+          type: string
+          description: MAC address as `aa:bb:cc:dd:ee:ff`.
+        mtu:
+          type: integer
+        is_up:
+          type: boolean
+        is_loopback:
+          type: boolean
+        addresses:
+          type: array
+          items:
+            type: string
+          description: CIDR strings (`192.0.2.10/24`, `fe80::1/64`, …).
+
+    BandwidthStats:
+      type: object
+      description: |
+        Bandwidth samples + rolling-window stats. now_* are the
+        latest /v1/health.bandwidth reading; peak_bps and avg_bps
+        are computed across a 24h history the bandwidth sampler
+        keeps in-memory (one entry per /v1/health request).
+      required: [now_rx_bps, now_tx_bps, peak_bps, avg_bps, window_sec]
+      properties:
+        now_rx_bps:
+          type: number
+          format: double
+        now_tx_bps:
+          type: number
+          format: double
+        peak_bps:
+          type: number
+          format: double
+        avg_bps:
+          type: number
+          format: double
+        window_sec:
+          type: integer
+
+    CameraProbeRequest:
+      type: object
+      required: [source_url]
+      properties:
+        source_url:
+          type: string
+          description: |
+            Source URL to probe (`rtsp://host:port/path`,
+            `rtmp://…`, `srt://…`, `http(s)://…`). Userinfo is
+            stripped before logging.
+
+    CameraProbeResponse:
+      type: object
+      required: [reachable, host, port, latency_ms]
+      properties:
+        reachable:
+          type: boolean
+        host:
+          type: string
+        port:
+          type: integer
+        latency_ms:
+          type: integer
+          format: int64
+        reason:
+          type: string
+          description: Failure reason; absent when reachable=true.
+
+    PingRequest:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: string
+          description: |
+            Target host or `host:port` or full URL. When no port is
+            given a sensible default is used per scheme (rtsp:554,
+            rtmp:1935, https:443, …).
+        count:
+          type: integer
+          default: 4
+          description: Number of probes; capped at 20 server-side.
+
+    PingResponse:
+      type: object
+      required: [target, samples, avg_ms, loss_pct]
+      properties:
+        target:
+          type: string
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/PingSample'
+        avg_ms:
+          type: number
+          format: double
+        loss_pct:
+          type: number
+          format: double
+
+    PingSample:
+      type: object
+      required: [seq, ok, latency_ms]
+      properties:
+        seq:
+          type: integer
+        ok:
+          type: boolean
+        latency_ms:
+          type: integer
+          format: int64
+        reason:
+          type: string
+
+    NtpRequest:
+      type: object
+      properties:
+        server:
+          type: string
+          default: pool.ntp.org
+
+    NtpResponse:
+      type: object
+      required: [server, ok, offset_ms]
+      properties:
+        server:
+          type: string
+        ok:
+          type: boolean
+        offset_ms:
+          type: number
+          format: double
+          description: |
+            Local-vs-server offset, computed as the SNTP standard
+            ((serverTime - t1) + (serverTime - t4)) / 2.
+        reason:
+          type: string
+
+    RTSPProbeResponse:
+      type: object
+      required: [results, ok_count, total]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RTSPProbeResult'
+        ok_count:
+          type: integer
+        total:
+          type: integer
+
+    RTSPProbeResult:
+      type: object
+      required: [path, url, reachable, latency_ms]
+      properties:
+        path:
+          type: string
+        url:
+          type: string
+          description: Source URL with userinfo redacted.
+        reachable:
+          type: boolean
+        latency_ms:
+          type: integer
+          format: int64
+        reason:
+          type: string
 
     # ----- Recorder-localized escape hatch wire shapes ------------
 
@@ -2518,6 +2871,53 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/cameras/probe:
+    post:
+      tags: [Cameras]
+      summary: Pre-flight reachability check for a candidate source URL.
+      description: |
+        Parses the source URL (rtsp/rtsps/rtmp/rtmps/srt/http/https
+        with scheme-default port fallback when no port is given),
+        attempts a TCP dial against host:port with a 5-second
+        timeout, and returns reachability + handshake-latency.
+        Doesn't open the actual stream — for that you'd need to
+        consume a license, pick a codec, and start a recorder
+        pipeline; for a config-UI pre-flight, "is the host reachable
+        on the right port" is the useful question.
+
+        Cross-platform via stdlib `net.Dialer` — same behavior on
+        Linux, macOS, Windows, BSD.
+
+        Admin-gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraProbeRequest'
+      responses:
+        '200':
+          description: |
+            Probe completed. `reachable` indicates the outcome;
+            unreachable cases populate `reason` with the dial
+            error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CameraProbeResponse'
+        '400':
+          description: Invalid request (missing source_url, unparsable, unsupported scheme).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Admin-action permission denied.
           content:
             application/json:
               schema:
@@ -3544,6 +3944,172 @@ paths:
 
   # ===== Recorder-localized escape hatch =========================
 
+  /v1/recorder/identity:
+    get:
+      tags: [Recorder]
+      summary: Recorder bootstrap identity (hostname / location / timezone / firmware).
+      description: |
+        Pulls hostname from `os.Hostname()`, timezone from
+        `time.Local`, location from `conf.ServerLocation`, and
+        firmware from the build-time-stamped recorder version.
+        Hostname and timezone are read-only at this surface
+        (changing them is the host OS's job); only location is
+        writable via PATCH.
+      responses:
+        '200':
+          description: Identity snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecorderIdentity'
+    patch:
+      tags: [Recorder]
+      summary: Update recorder location.
+      description: |
+        Only `location` is patchable. Any patch body that omits
+        `location` returns 400 so callers don't think they wrote
+        something they didn't. `tenant_id` may be echoed back to
+        confirm tenant binding (mismatch → 403). Admin-gated +
+        audit-emitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecorderIdentityPatch'
+      responses:
+        '200':
+          description: Location updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Bad body (missing `location`, malformed JSON).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Tenant mismatch or admin-action denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/reboot:
+    post:
+      tags: [Recorder]
+      summary: Reboot the recorder host.
+      description: |
+        Admin-gated + audit-emitted. Returns success-on-queue
+        immediately, then sleeps 5 seconds (so the response makes
+        it back to the caller) before invoking `/sbin/reboot`.
+        Best-effort: containers without CAP_SYS_BOOT log the
+        failure and the process keeps running. Non-Linux hosts
+        return 501 (recorder's production target is Linux/Alpine;
+        the reboot semantic doesn't translate to macOS dev hosts).
+      responses:
+        '200':
+          description: Reboot queued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: Reboot not supported on this OS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/config-backup:
+    get:
+      tags: [Recorder]
+      summary: Download the running config as JSON.
+      description: |
+        Returns the same shape `GET /v1/recorder/config` emits,
+        with `Content-Disposition: attachment` so a browser kicks
+        off a save dialog with a timestamped filename. Lets an
+        operator capture a known-good state before making changes.
+        Admin-gated + audit-emitted.
+      responses:
+        '200':
+          description: Config snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecorderConfig'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/config-restore:
+    post:
+      tags: [Recorder]
+      summary: Restore the running config from a JSON body.
+      description: |
+        Decodes the body via the same `OptionalGlobal` /
+        `jsonwrapper` pathway that `PATCH /v1/recorder/config`
+        uses, then validates with `Conf.Validate()` before
+        applying via the standard reload path. Validation failure
+        at any stage leaves the running config untouched.
+        Admin-gated + audit-emitted (a warning-severity
+        `config.applied` Event also fires on success).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecorderConfig'
+      responses:
+        '200':
+          description: Config restored; recorder reloading.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Decode or validation failure; running config untouched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/network-info:
+    get:
+      tags: [Recorder]
+      summary: Cross-platform network information for the configuration UI.
+      description: |
+        gopsutil-driven interface enumeration (name / MAC / MTU /
+        flags / IP addresses), DNS resolvers from
+        `/etc/resolv.conf` on unix, OS platform string, plus the
+        bandwidth sampler's now/peak/avg over the rolling 24h
+        window. Cross-platform: works on Linux, macOS, Windows,
+        BSD.
+      responses:
+        '200':
+          description: Network info snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkInfo'
+
   /v1/recorder/config:
     get:
       tags: [Recorder]
@@ -4003,6 +4569,121 @@ paths:
             no finalized segments, or content unavailable within the
             snapshot deadline). The `?at=` recorded-history path
             never returns 503.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ===== Diagnostics =============================================
+  #
+  # Cross-platform diagnostic test runners powering the config
+  # UI's Diagnostics page. All handlers are stdlib- or gopsutil-
+  # based — no shell-outs to system tools (ping, iperf3, chronyc,
+  # smartctl) — so they work identically on Linux, macOS, Windows,
+  # BSD. The trade-off is that they measure recorder-internal
+  # probes (TCP RTT, SNTP UDP query, TCP RTSP-handshake) rather
+  # than calling out to OS tools an operator might be familiar
+  # with; the values are still real measurements.
+
+  /v1/diagnostics/ping:
+    post:
+      tags: [Diagnostics]
+      summary: TCP-handshake latency probe.
+      description: |
+        Repeatedly dials TCP host:port (configurable count, capped
+        at 20) with a 2-second per-probe timeout. Returns per-sample
+        latencies plus aggregate average + loss%. Not raw ICMP
+        (would need raw sockets / SUID); TCP RTT is the right
+        "is the recorder networking healthy" signal anyway.
+        Admin-gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PingRequest'
+      responses:
+        '200':
+          description: Probe completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PingResponse'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/diagnostics/ntp:
+    post:
+      tags: [Diagnostics]
+      summary: SNTP drift query.
+      description: |
+        Stdlib SNTP (RFC 4330) UDP query against the requested
+        server (default `pool.ntp.org`), three-second timeout.
+        Returns offset_ms — the recorder's local-clock skew
+        relative to the server, computed via the standard
+        ((serverTime - t1) + (serverTime - t4)) / 2 formula. No
+        host NTP daemon dependency. Admin-gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NtpRequest'
+      responses:
+        '200':
+          description: Drift query completed (success or failure).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NtpResponse'
+        '400':
+          description: Invalid request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/diagnostics/rtsp-probe:
+    post:
+      tags: [Diagnostics]
+      summary: TCP probe across every configured camera path.
+      description: |
+        Walks the recorder's path table and runs a TCP-handshake
+        probe against each camera's source URL, with a 3-second
+        timeout per probe. Skips publisher paths (no source to
+        probe) and paths with empty source URLs. Userinfo on the
+        echoed URL is redacted. Admin-gated.
+      responses:
+        '200':
+          description: Probe completed across all paths.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RTSPProbeResponse'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Recorder configuration not loaded.
           content:
             application/json:
               schema:
