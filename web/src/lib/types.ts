@@ -26,6 +26,10 @@ export interface UICamera {
   port?: string;
   path?: string;
   user?: string;
+  /* Transient credential — only populated during the manual-add
+     wizard's submit flow; the recorder redacts userinfo on read-back
+     so it never round-trips here. */
+  pass?: string;
   onvif?: boolean;
   transport?: string;
 }

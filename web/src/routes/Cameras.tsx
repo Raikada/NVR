@@ -79,6 +79,22 @@ const VENDOR_DEFAULTS: Record<string, VendorDefaults> = {
   Generic: { user: 'admin', port: '554', path: '/live' },
 };
 
+// Build the rtsp:// source URL for /v1/cameras POST. When the user
+// supplied credentials in the wizard they're embedded as userinfo —
+// the recorder honors userinfo on write and redacts it on read-back
+// (see internal/defs/camera_translate.go), so this is the canonical
+// way to pass camera auth. encodeURIComponent guards passwords with
+// special chars (':', '@', '/', '?').
+function buildSourceURL(cam: UICamera): string {
+  const host = `${cam.ip}:${cam.port ?? '554'}${cam.path ?? ''}`;
+  if (cam.user) {
+    const u = encodeURIComponent(cam.user);
+    const p = encodeURIComponent(cam.pass ?? '');
+    return `rtsp://${u}:${p}@${host}`;
+  }
+  return `rtsp://${host}`;
+}
+
 // Translate canonical Camera (from /v1/cameras) plus its active
 // Stream (from /v1/streams) into the UICamera shape the list and
 // drawer consume. Cameras without an active stream get '—' for
@@ -143,7 +159,7 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
         await createCamera({
           name: cam.name,
           source_type: 'rtsp',
-          source_url: `rtsp://${cam.ip}:${cam.port ?? '554'}${cam.path ?? ''}`,
+          source_url: buildSourceURL(cam),
         });
         added++;
       } catch (e) {
@@ -172,7 +188,7 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
       await createCamera({
         name: cam.name,
         source_type: (cam as { source_type?: CameraSourceType }).source_type ?? 'rtsp',
-        source_url: `rtsp://${cam.ip}:${cam.port ?? '554'}${cam.path ?? ''}`,
+        source_url: buildSourceURL(cam),
       });
       addToast({ kind: 'success', title: 'ADDED', body: `${cam.name} connected`, icon: 'check-circle' });
       list.refetch();
@@ -1125,6 +1141,7 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
       port: f.port,
       path: f.path,
       user: f.user,
+      pass: f.pass,
       onvif: f.onvif,
       transport: f.transport,
     });
