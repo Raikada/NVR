@@ -852,16 +852,8 @@ function DiscoverPanel({ onClose, onAdd }: DiscoverProps) {
                       background: 'var(--bg-tertiary)',
                       borderTop: '1px solid var(--border)',
                       borderBottom: '1px solid var(--border)',
-                      display: 'grid',
-                      gridTemplateColumns: '240px 1fr',
-                      gap: 16,
                     }}
                   >
-                    <HLSPreview
-                      cameraName={cam.id}
-                      online={cam.status === 'ok'}
-                      meta={`${cam.resolution} · H.264 · ${cam.fps}fps`}
-                    />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       <span
                         style={{
@@ -1491,13 +1483,6 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
               {stream === 'ok' && <StatusBadge kind="online" label="STREAM OK · 30FPS · H.264" size="sm" />}
               {stream === 'fail' && <StatusBadge kind="error" label="STREAM FAIL · CHECK PATH" size="sm" />}
             </div>
-            {stream === 'ok' && (
-              <HLSPreview
-                cameraName={f.name || ''}
-                online={Boolean(f.name)}
-                style={{ maxWidth: 320 }}
-              />
-            )}
           </div>
         )}
 
@@ -1625,47 +1610,11 @@ function CameraList({ cameras, onConfig }: { cameras: UICamera[]; onConfig: (c: 
           onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(249,115,22,0.04)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
-          <div
-            style={{
-              width: 96,
-              height: 56,
-              position: 'relative',
-              background: 'linear-gradient(135deg, #1a1410, #0d0c0a)',
-            }}
-          >
-            <Brackets />
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Icon
-                name={c.status === 'offline' ? 'wifi-off' : 'video'}
-                style={{
-                  width: 16,
-                  height: 16,
-                  color: c.status === 'offline' ? '#EF4444' : 'rgba(249,115,22,0.5)',
-                }}
-              />
-            </div>
-            {c.status !== 'offline' && (
-              <div
-                className="scanline"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  bottom: 0,
-                  width: 2,
-                  background:
-                    'linear-gradient(to bottom, transparent, rgba(249,115,22,0.5), transparent)',
-                }}
-              />
-            )}
-          </div>
+          <HLSPreview
+            cameraName={c.name}
+            online={c.status === 'online'}
+            style={{ width: 96, height: 56, aspectRatio: 'auto' }}
+          />
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span
