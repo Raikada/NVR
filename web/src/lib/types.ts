@@ -32,6 +32,10 @@ export interface UICamera {
   pass?: string;
   onvif?: boolean;
   transport?: string;
+  /* Canonical RecordingPolicy linkage. Populated from
+     /v1/cameras → Camera.recording_policy_id; surfaced in the
+     drawer's Recording tab as the selected policy. */
+  recording_policy_id?: string;
 }
 
 /* ---------- Management server pairing ---------- */
@@ -65,6 +69,7 @@ export interface AppState {
 export const ROUTES = [
   'overview',
   'cameras',
+  'policies',
   'pairing',
   'storage',
   'network',

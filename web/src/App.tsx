@@ -13,6 +13,7 @@ import { ToastStack } from './components/Toast';
 import { SetupWizard } from './components/SetupWizard';
 import { Overview } from './routes/Overview';
 import { Cameras } from './routes/Cameras';
+import { Policies } from './routes/Policies';
 import { Pairing } from './routes/Pairing';
 import { Storage } from './routes/Storage';
 import { Network } from './routes/Network';
@@ -95,6 +96,8 @@ export function App() {
         );
       case 'cameras':
         return <Cameras state={state} setState={setState} addToast={addToast} />;
+      case 'policies':
+        return <Policies addToast={addToast} />;
       case 'pairing':
         return <Pairing state={state} setState={setState} addToast={addToast} />;
       case 'storage':

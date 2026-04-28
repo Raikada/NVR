@@ -28,8 +28,24 @@ import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { HLSPreview } from '../components/HLSPreview';
 import { PageHeader } from '../components/PageHeader';
-import { fetchCameras, deleteCamera, createCamera, fetchStreams, probeCameraSource } from '../lib/api';
-import type { Camera as ApiCamera, CameraSourceType, Stream } from '../lib/api';
+import {
+  ApiError,
+  fetchCameras,
+  deleteCamera,
+  createCamera,
+  fetchStreams,
+  probeCameraSource,
+  patchCamera,
+  fetchRecordingPolicies,
+} from '../lib/api';
+import type {
+  Camera as ApiCamera,
+  CameraSourceType,
+  RecordingPolicy,
+  Stream,
+} from '../lib/api';
+import { PolicyEditorModal } from '../components/PolicyEditorModal';
+import { formatDuration } from '../lib/duration';
 import { useFetch, usePoll } from '../lib/hooks';
 import type { AppState, ToastInput, UICamera } from '../lib/types';
 
@@ -118,6 +134,7 @@ function toUICamera(c: ApiCamera, streamsByCamera: Record<string, Stream>): UICa
     codec: videoTrack?.codec ?? '—',
     vendor: undefined,
     user: c.credentials_ref ?? undefined,
+    recording_policy_id: c.recording_policy_id,
   };
 }
 
@@ -203,20 +220,33 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
     setMode('list');
   }
 
-  // Saving the config drawer's edits is currently STUB — the drawer
-  // collects motion zones, recording mode, ONVIF events, etc. that
-  // don't have a 1:1 /v1/cameras PATCH path yet (RecordingPolicy is
-  // its own resource; motion is recorder-internal; ONVIF events are
-  // recorder-internal). Most-frequently-edited fields (name, source
-  // URL) wire up to PATCH /v1/cameras/{id} in a follow-up. For now
-  // the save just closes the drawer and toasts "saved (locally)".
-  function saveCamera(updated: UICamera) {
-    addToast({
-      kind: 'info',
-      title: 'SAVED LOCALLY',
-      body: `${updated.name} — full PATCH wiring pending`,
-      icon: 'check-circle',
-    });
+  // Saving the config drawer's edits. Today this fires PATCH
+  // /v1/cameras/{id} with the recording_policy_id chosen in the
+  // Recording tab (the only persistable surface wired today).
+  // Other tabs (Motion, ONVIF Events, Advanced) still collect
+  // local-only state pending recorder-side subsystems for their
+  // domains; their values are NOT round-tripped.
+  async function saveCamera(updated: UICamera) {
+    try {
+      await patchCamera(updated.id, {
+        recording_policy_id: updated.recording_policy_id,
+      });
+      addToast({
+        kind: 'success',
+        title: 'CAMERA SAVED',
+        body: updated.name,
+        icon: 'check-circle',
+      });
+      list.refetch();
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : (e as Error).message;
+      addToast({
+        kind: 'danger',
+        title: 'SAVE FAILED',
+        body: msg,
+        icon: 'x',
+      });
+    }
     setConfigCam(null);
   }
 
@@ -298,6 +328,7 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
           onClose={() => setConfigCam(null)}
           onSave={saveCamera}
           onRemove={removeCamera}
+          addToast={addToast}
         />
       )}
     </div>
@@ -1675,11 +1706,12 @@ function CameraList({ cameras, onConfig }: { cameras: UICamera[]; onConfig: (c: 
 
 interface CameraConfig extends UICamera {
   pass: string;
-  recordingMode: string;
-  quality: string;
-  retention: number;
-  prebuffer: number;
-  postbuffer: number;
+  // Recording: only the canonical RecordingPolicy linkage (inherited
+  // via UICamera.recording_policy_id) is persistable today. The old
+  // local-only mode/quality/buffer/retention fields lived inside this
+  // shape to drive the now-removed RecordingTab placeholder; the
+  // Recording tab now picks a policy by id and lets PolicyEditorModal
+  // own everything else.
   substreamEnabled: boolean;
   substreamRes: string;
   substreamFps: number;
@@ -1705,9 +1737,10 @@ interface DrawerProps {
   onClose: () => void;
   onSave: (c: UICamera) => void;
   onRemove: (c: UICamera) => void;
+  addToast: (t: ToastInput) => void;
 }
 
-function CameraConfigDrawer({ camera, onClose, onSave, onRemove }: DrawerProps) {
+function CameraConfigDrawer({ camera, onClose, onSave, onRemove, addToast }: DrawerProps) {
   const [tab, setTab] = useState<DrawerTab>('stream');
   const [c, setC] = useState<CameraConfig>({
     ...camera,
@@ -1718,11 +1751,6 @@ function CameraConfigDrawer({ camera, onClose, onSave, onRemove }: DrawerProps) 
     transport: camera.transport || 'TCP',
     vendor: camera.vendor || 'Hikvision',
     onvif: camera.onvif ?? true,
-    recordingMode: 'CONTINUOUS+EVENT',
-    quality: 'HIGH',
-    retention: 14,
-    prebuffer: 5,
-    postbuffer: 10,
     substreamEnabled: true,
     substreamRes: '640×360',
     substreamFps: 10,
@@ -1886,7 +1914,7 @@ function CameraConfigDrawer({ camera, onClose, onSave, onRemove }: DrawerProps) 
         {/* Tab body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
           {tab === 'stream' && <StreamTab c={c} patch={patch} />}
-          {tab === 'recording' && <RecordingTab c={c} patch={patch} />}
+          {tab === 'recording' && <RecordingTab c={c} patch={patch} addToast={addToast} />}
           {tab === 'motion' && <MotionTab c={c} patch={patch} />}
           {tab === 'events' && <EventsTab c={c} patch={patch} />}
           {tab === 'advanced' && <AdvancedTab c={c} patch={patch} />}
@@ -2052,77 +2080,154 @@ function StreamTab({ c, patch }: TabProps) {
   );
 }
 
-function RecordingTab({ c, patch }: TabProps) {
+interface RecordingTabProps extends TabProps {
+  addToast: (t: ToastInput) => void;
+}
+
+function RecordingTab({ c, patch, addToast }: RecordingTabProps) {
+  // Pull the canonical policy list and pick the camera's current
+  // selection. The picker writes back to the drawer's local state
+  // via patch({ recording_policy_id }); the actual PATCH fires when
+  // the drawer's "Save Changes" button calls saveCamera, keeping
+  // the rest of the drawer's save semantics intact.
+  const policiesFetch = useFetch(fetchRecordingPolicies, []);
+  const policies = policiesFetch.data?.items ?? [];
+  const [editing, setEditing] = useState<RecordingPolicy | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const selectedId = c.recording_policy_id ?? '';
+  const selected = policies.find((p) => p.id === selectedId);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div>
-        <SectionHeader>MODE</SectionHeader>
-        <div style={{ marginTop: 10 }}>
-          <Segmented
-            options={['CONTINUOUS', 'EVENT', 'CONTINUOUS+EVENT', 'SCHEDULE'] as const}
-            value={c.recordingMode as 'CONTINUOUS' | 'EVENT' | 'CONTINUOUS+EVENT' | 'SCHEDULE'}
-            onChange={(v) => patch({ recordingMode: v })}
+        <SectionHeader>RECORDING POLICY</SectionHeader>
+        <div
+          style={{
+            marginTop: 10,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          <select
+            value={selectedId}
+            onChange={(e) => patch({ recording_policy_id: e.target.value || undefined })}
+            disabled={policiesFetch.status !== 'ready'}
+            style={{
+              flex: 1,
+              minWidth: 220,
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              padding: '8px 10px',
+              color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 12,
+              outline: 'none',
+            }}
+          >
+            {policiesFetch.status === 'loading' && <option>Loading…</option>}
+            {policiesFetch.status === 'error' && <option>Recorder unreachable</option>}
+            {policies.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} — {p.mode}
+              </option>
+            ))}
+          </select>
+          <Btn
+            kind="ghost"
             size="sm"
+            icon="settings"
+            disabled={!selected}
+            onClick={() => selected && setEditing(selected)}
+          >
+            Edit
+          </Btn>
+          <Btn kind="secondary" size="sm" icon="plus" onClick={() => setCreating(true)}>
+            New Policy
+          </Btn>
+        </div>
+        {policiesFetch.status === 'error' && (
+          <div
+            style={{
+              marginTop: 8,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              color: '#EF4444',
+              letterSpacing: 0.5,
+            }}
+          >
+            {policiesFetch.error.message}
+          </div>
+        )}
+      </div>
+
+      {selected && (
+        <div
+          style={{
+            padding: 14,
+            background: 'var(--bg-tertiary)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(4,1fr)',
+            gap: 12,
+          }}
+        >
+          <KV k="MODE" v={selected.mode.toUpperCase()} />
+          <KV k="RETENTION" v={formatDuration(selected.retention_duration)} />
+          <KV k="CONTAINER" v={(selected.container || 'fmp4').toUpperCase()} />
+          <KV
+            k={selected.mode === 'schedule' ? 'WINDOWS' : 'BUFFER'}
+            v={
+              selected.mode === 'schedule'
+                ? `${selected.schedule?.windows.length ?? 0}`
+                : selected.mode === 'event_triggered' || selected.mode === 'motion'
+                  ? `${selected.pre_event_buffer ? Math.round(selected.pre_event_buffer / 1e9) : 0}/${selected.post_event_buffer ? Math.round(selected.post_event_buffer / 1e9) : 0}s`
+                  : '—'
+            }
           />
         </div>
-      </div>
-      <div>
-        <SectionHeader>QUALITY</SectionHeader>
-        <div style={{ marginTop: 10 }}>
-          <Segmented
-            options={['LOW', 'MEDIUM', 'HIGH', 'BEST'] as const}
-            value={c.quality as 'LOW' | 'MEDIUM' | 'HIGH' | 'BEST'}
-            onChange={(v) => patch({ quality: v })}
-            size="sm"
-          />
-        </div>
-      </div>
-      <div>
-        <SectionHeader>BUFFER WINDOW</SectionHeader>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 10 }}>
-          <SliderField
-            label={`PRE-BUFFER · ${c.prebuffer}s`}
-            value={c.prebuffer}
-            min={0}
-            max={30}
-            onChange={(v) => patch({ prebuffer: v })}
-          />
-          <SliderField
-            label={`POST-BUFFER · ${c.postbuffer}s`}
-            value={c.postbuffer}
-            min={0}
-            max={60}
-            onChange={(v) => patch({ postbuffer: v })}
-          />
-        </div>
-      </div>
-      <div>
-        <SectionHeader>RETENTION OVERRIDE</SectionHeader>
-        <div style={{ marginTop: 10 }}>
-          <SliderField
-            label={`${c.retention} DAYS · default inherits 14d from MS`}
-            value={c.retention}
-            min={1}
-            max={90}
-            onChange={(v) => patch({ retention: v })}
-          />
-        </div>
-      </div>
+      )}
+
       <div
         style={{
-          padding: 12,
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3,1fr)',
-          gap: 10,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          color: 'var(--text-muted)',
+          letterSpacing: 0.5,
+          textTransform: 'uppercase',
         }}
       >
-        <KV k="EST. DAILY" v="3.4 GB" />
-        <KV k="EST. WEEKLY" v="23.8 GB" />
-        <KV k="DISK IMPACT" v="+1.7%" />
+        Recording behavior is policy-driven. Multiple cameras can share a policy. Changes
+        to a policy affect every camera using it.
       </div>
+
+      {creating && (
+        <PolicyEditorModal
+          onCancel={() => setCreating(false)}
+          onSave={(p) => {
+            setCreating(false);
+            addToast({ kind: 'success', title: 'POLICY CREATED', body: p.name, icon: 'check-circle' });
+            policiesFetch.refetch();
+            // Auto-select the freshly-created policy on the camera.
+            patch({ recording_policy_id: p.id });
+          }}
+        />
+      )}
+      {editing && (
+        <PolicyEditorModal
+          policy={editing}
+          onCancel={() => setEditing(null)}
+          onSave={(p) => {
+            setEditing(null);
+            addToast({ kind: 'success', title: 'POLICY SAVED', body: p.name, icon: 'check-circle' });
+            policiesFetch.refetch();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -159,6 +159,95 @@ export interface CameraCreateBody {
 
 export const createCamera = (body: CameraCreateBody) => api.post<Camera>('/cameras', body);
 
+export interface CameraPatchBody {
+  name?: string;
+  source_type?: CameraSourceType;
+  source_url?: string;
+  recording_policy_id?: string;
+}
+
+export const patchCamera = (id: string, patch: CameraPatchBody) =>
+  api.patch<Camera>(`/cameras/${id}`, patch);
+
+/* ---------- /v1/recording-policies ---------- */
+//
+// RecordingPolicy is the canonical entity defined in
+// platform/docs/domain-model.md §RecordingPolicy. Wire shape is
+// snake_case per ADR 0009; Go's time.Duration JSON-marshals to
+// int64 nanoseconds, so every *_duration / *_buffer field on the
+// wire is a number-of-nanoseconds, not a string. Use the helpers
+// in lib/duration.ts to convert between nanoseconds and the
+// human-friendly units the UI surfaces (days, seconds).
+//
+// The seeded "Default" policy ships at boot with the deterministic
+// UUID DEFAULT_RECORDING_POLICY_ID — clients can rely on its
+// presence and the recorder rejects deleting it through the regular
+// "policy is referenced by N cameras" path-conflict check.
+
+export const DEFAULT_RECORDING_POLICY_ID = '00000000-0000-0000-0000-000000000001';
+
+export type RecordingPolicyMode =
+  | 'continuous'
+  | 'motion'
+  | 'schedule'
+  | 'event_triggered'
+  | 'off';
+
+export type RecordingPolicyContainer = 'fmp4' | 'mpegts';
+
+export interface ScheduleWindow {
+  days: string[];
+  start: string; // HH:MM
+  end: string;   // HH:MM
+}
+
+export interface RecordingPolicySchedule {
+  timezone: string;
+  windows: ScheduleWindow[];
+}
+
+export interface RecordingPolicy {
+  id: string;
+  tenant_id: string;
+  name: string;
+  mode: RecordingPolicyMode;
+  schedule?: RecordingPolicySchedule;
+  retention_duration: number;       // nanoseconds
+  min_segment_duration: number;     // nanoseconds
+  max_segment_duration: number;     // nanoseconds
+  container: RecordingPolicyContainer | '';
+  pre_event_buffer?: number;        // nanoseconds
+  post_event_buffer?: number;       // nanoseconds
+  enabled: boolean;
+  part_duration: number;            // nanoseconds
+  max_part_size: number;            // bytes
+  record_path_template?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecordingPolicyList extends ListEnvelope<RecordingPolicy> {}
+
+// Body shape for POST / PATCH. All fields are optional on PATCH;
+// on POST `name` and `mode` are the minimum viable. Server stamps
+// id / tenant_id / created_at / updated_at.
+export type RecordingPolicyWriteBody = Partial<Omit<RecordingPolicy, 'id' | 'tenant_id' | 'created_at' | 'updated_at'>>;
+
+export const fetchRecordingPolicies = () =>
+  api.get<RecordingPolicyList>('/recording-policies?items_per_page=200');
+
+export const fetchRecordingPolicy = (id: string) =>
+  api.get<RecordingPolicy>(`/recording-policies/${id}`);
+
+export const createRecordingPolicy = (body: RecordingPolicyWriteBody) =>
+  api.post<RecordingPolicy>('/recording-policies', body);
+
+export const updateRecordingPolicy = (id: string, patch: RecordingPolicyWriteBody) =>
+  api.patch<RecordingPolicy>(`/recording-policies/${id}`, patch);
+
+export const deleteRecordingPolicy = (id: string) =>
+  api.delete<{ status: string }>(`/recording-policies/${id}`);
+
 /* ---------- /v1/events ---------- */
 
 export type EventSeverity = 'info' | 'warning' | 'error';
