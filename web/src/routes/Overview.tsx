@@ -17,9 +17,9 @@ import {
 import { Icon } from '../components/Icon';
 import type { IconName } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
-import { fetchHealth, fetchEvents } from '../lib/api';
+import { fetchHealth, fetchEvents, fetchStorageVolumes } from '../lib/api';
 import type { Event as ApiEvent } from '../lib/api';
-import { usePoll, formatUptime, formatTime } from '../lib/hooks';
+import { usePoll, formatUptime, formatTime, formatBytes } from '../lib/hooks';
 import type { AppState, Route, ToastInput, UICamera, BadgeKind } from '../lib/types';
 
 interface OverviewProps {
@@ -50,15 +50,18 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
     ? health.data.bandwidth.rx_bps + health.data.bandwidth.tx_bps
     : 0;
   const bw = (totalBps * 8) / 1_000_000;
-  // Storage: from /v1/health.storage[]. Used = sum(used_pct *
-  // assumed-2TB) is meaningless without absolute capacity, so we
-  // pull from /v1/storage-volumes-derived stats once that route
-  // wires up. For now use the first volume's used_pct against the
-  // legend's 2 TB total (mock).
+  // Storage rollup from /v1/storage-volumes — sum capacity_bytes and
+  // used_bytes across volumes (matches Storage.tsx). 10s poll matches
+  // the Storage page so the two views agree. Retention is policy-
+  // driven via /v1/recording-policies (separately queued) — sub-line
+  // omits it until that wires up.
   const recordingCount = health.data?.cameras_recording ?? 0;
   const cameraTotal = health.data?.cameras_total ?? state.cameras.length;
-  const storage = { used: 256.4, total: 2048, retained: 14 }; // STUB
-  const storagePct = (storage.used / storage.total) * 100;
+  const volumes = usePoll(fetchStorageVolumes, 10_000, []);
+  const volItems = volumes.data?.items ?? [];
+  const storageTotal = volItems.reduce((s, v) => s + v.capacity_bytes, 0);
+  const storageUsed = volItems.reduce((s, v) => s + v.used_bytes, 0);
+  const storagePct = storageTotal > 0 ? (storageUsed / storageTotal) * 100 : 0;
 
   return (
     <div
@@ -320,10 +323,16 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
           />
           <StatCard
             title="STORAGE"
-            value={storage.used.toFixed(1)}
-            unit="GB"
+            value={storageTotal > 0 ? formatBytes(storageUsed) : '—'}
+            unit=""
             tone="accent"
-            sub={`${storagePct.toFixed(1)}% of 2 TB · retention ${storage.retained}D`}
+            sub={
+              storageTotal > 0
+                ? `${storagePct.toFixed(1)}% of ${formatBytes(storageTotal)}`
+                : volumes.status === 'loading'
+                  ? 'priming…'
+                  : 'no volumes'
+            }
             icon="hard-drive"
             progress={storagePct / 100}
             onClick={() => go('storage')}
