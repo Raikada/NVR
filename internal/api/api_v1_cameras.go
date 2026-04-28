@@ -286,6 +286,23 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 		return
 	}
 
+	// Resolve the RecordingPolicy linkage. If the body provided one,
+	// validate it exists; if absent, default to the seeded Default
+	// policy so every camera ships with continuous recording out of
+	// the box (ADR 0009 §D5 Camera.recording_policy_id is required at
+	// the canonical surface; the recorder picks Default to satisfy
+	// that contract for clients that omit it).
+	policyID := conf.DefaultRecordingPolicyID
+	if cam.RecordingPolicyID != nil && *cam.RecordingPolicyID != "" {
+		policyID = *cam.RecordingPolicyID
+	}
+	policyCfg, policyOK := newConf.RecordingPolicies[policyID]
+	if !policyOK || policyCfg == nil {
+		a.writeError(ctx, http.StatusBadRequest,
+			fmt.Errorf("recording_policy_id '%s' does not reference an existing policy", policyID))
+		return
+	}
+
 	// Server issues the UUID per ADR 0009 §D4. For consistency with the
 	// pre-MS deterministic UUIDv5 derivation used elsewhere, we just
 	// derive it from the name; the round-trip stays stable regardless
@@ -296,6 +313,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	cam.CreatedAt = now
 	cam.UpdatedAt = now
 	cam.Runtime = nil
+	cam.RecordingPolicyID = &policyID
 
 	p, err := defs.PathFromCamera(*cam)
 	if err != nil {
@@ -303,11 +321,31 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 		return
 	}
 
+	// Apply the resolved RecordingPolicy onto the path so the per-path
+	// Record / RecordPath / RecordFormat / segment / part / retention
+	// fields reflect the policy. Without this step a freshly-created
+	// camera would carry conf.Path defaults (Record=false) and never
+	// record — the canonical contract is "policy controls recording."
+	defs.ApplyPolicyToPath(p, defs.RecordingPolicyFromConfig(policyID, policyCfg))
+
 	op, err := optionalPathFromConfPath(p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
 	}
+
+	// Capture pre-Validate per-path linkages so they survive the rebuild
+	// inside Validate (which makes a fresh conf.Paths from OptionalPaths,
+	// dropping json:"-" fields like RecordingPolicyID and ID). These
+	// linkages are not on-disk state; they're in-memory associations the
+	// canonical surface owns.
+	preLinkages := make(map[string]string, len(newConf.Paths))
+	for name, pp := range newConf.Paths {
+		if pp != nil && pp.RecordingPolicyID != "" {
+			preLinkages[name] = pp.RecordingPolicyID
+		}
+	}
+
 	if err := newConf.AddPath(cam.Name, op); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
@@ -323,11 +361,14 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	// reading Path fields concurrently, and a post-publish stamp races
 	// with pathManager's reflect.DeepEqual call in pathConfCanBeUpdated
 	// (caught under -race in TestPathManagerConfigHotReload).
+	for name, polID := range preLinkages {
+		if pp, ok := newConf.Paths[name]; ok {
+			pp.RecordingPolicyID = polID
+		}
+	}
 	if storedPath, ok := newConf.Paths[cam.Name]; ok {
 		storedPath.ID = cam.ID
-		if cam.RecordingPolicyID != nil {
-			storedPath.RecordingPolicyID = *cam.RecordingPolicyID
-		}
+		storedPath.RecordingPolicyID = policyID
 	}
 
 	a.Conf = newConf
@@ -394,6 +435,22 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		return
 	}
 
+	// Resolve the post-patch RecordingPolicy linkage: a non-nil patch
+	// value overrides; otherwise preserve the existing path's linkage.
+	// Validate the resolved id references a real policy; reject 400 if
+	// not. No-op (existing == patch) is silently allowed.
+	resolvedPolicyID := existingPath.RecordingPolicyID
+	if patch.RecordingPolicyID != nil {
+		resolvedPolicyID = *patch.RecordingPolicyID
+	}
+	if resolvedPolicyID != "" {
+		if pc, ok := newConf.RecordingPolicies[resolvedPolicyID]; !ok || pc == nil {
+			a.writeError(ctx, http.StatusBadRequest,
+				fmt.Errorf("recording_policy_id '%s' does not reference an existing policy", resolvedPolicyID))
+			return
+		}
+	}
+
 	// Apply the patch onto a clone of existingPath. We let
 	// PathFromCamera produce the full mutation, then merge selectively
 	// — but for Phase 2 simplicity we treat any present, non-zero field
@@ -405,11 +462,36 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
 	}
+
+	// If the policy linkage is changing (or being newly attached), apply
+	// the policy's record fields to the new path so the runtime
+	// behaviour stays in sync with the canonical surface. When the
+	// policy is unchanged, leave the recording fields alone — the patch
+	// may have intentionally-edited camera fields the recorder still
+	// honors path-side (e.g., source URL).
+	if patch.RecordingPolicyID != nil && resolvedPolicyID != "" &&
+		resolvedPolicyID != existingPath.RecordingPolicyID {
+		if pc := newConf.RecordingPolicies[resolvedPolicyID]; pc != nil {
+			defs.ApplyPolicyToPath(newPath, defs.RecordingPolicyFromConfig(resolvedPolicyID, pc))
+		}
+	}
+
 	op, err := optionalPathFromConfPath(newPath)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
 	}
+
+	// Capture pre-Validate per-path linkages so they survive the rebuild
+	// inside Validate (which drops json:"-" fields like RecordingPolicyID).
+	// The patched path's resolved linkage takes precedence after rebuild.
+	preLinkages := make(map[string]string, len(newConf.Paths))
+	for n, pp := range newConf.Paths {
+		if pp != nil && pp.RecordingPolicyID != "" {
+			preLinkages[n] = pp.RecordingPolicyID
+		}
+	}
+
 	if err := newConf.ReplacePath(name, op); err != nil {
 		if errors.Is(err, conf.ErrPathNotFound) {
 			a.writeError(ctx, http.StatusNotFound, err)
@@ -425,13 +507,14 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 
 	// Stamp linkage BEFORE APIConfigSet to avoid the pathManager-vs-handler
 	// race the POST handler also guards against (see comment there).
+	for n, polID := range preLinkages {
+		if pp, ok := newConf.Paths[n]; ok {
+			pp.RecordingPolicyID = polID
+		}
+	}
 	if storedPath, ok := newConf.Paths[name]; ok {
 		storedPath.ID = id
-		if patch.RecordingPolicyID != nil {
-			storedPath.RecordingPolicyID = *patch.RecordingPolicyID
-		} else if existingPath != nil {
-			storedPath.RecordingPolicyID = existingPath.RecordingPolicyID
-		}
+		storedPath.RecordingPolicyID = resolvedPolicyID
 	}
 
 	a.Conf = newConf
@@ -562,6 +645,16 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	}
 
 	newConf := a.Conf.Clone()
+
+	// Capture pre-Validate per-path linkages so they survive the rebuild
+	// inside Validate (json:"-" linkage fields would otherwise be wiped).
+	preLinkages := make(map[string]string, len(newConf.Paths))
+	for n, pp := range newConf.Paths {
+		if pp != nil && pp.RecordingPolicyID != "" && n != name {
+			preLinkages[n] = pp.RecordingPolicyID
+		}
+	}
+
 	if err := newConf.RemovePath(name); err != nil {
 		if errors.Is(err, conf.ErrPathNotFound) {
 			a.writeError(ctx, http.StatusNotFound, err)
@@ -573,6 +666,12 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	if err := newConf.Validate(nil); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
+	}
+
+	for n, polID := range preLinkages {
+		if pp, ok := newConf.Paths[n]; ok {
+			pp.RecordingPolicyID = polID
+		}
 	}
 
 	a.Conf = newConf

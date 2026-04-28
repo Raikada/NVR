@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 )
 
@@ -49,29 +50,19 @@ func invokePolicyHandler(
 	return w.Code, w.Body.Bytes()
 }
 
-// TestV1RecordingPoliciesListSynthesizesOnFirstAccess: when the
-// in-memory map is empty, the first list call walks conf.Paths and
-// synthesizes one policy per unique recording-config tuple.
-func TestV1RecordingPoliciesListSynthesizesOnFirstAccess(t *testing.T) {
-	cnf := tempConf(t, "api: yes\n"+
-		"paths:\n"+
-		"  cam_a:\n"+
-		"    source: rtsp://192.0.2.1:554/stream\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 1h\n"+
-		"  cam_b:\n"+
-		"    source: rtsp://192.0.2.2:554/stream\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 1h\n"+
-		"  cam_c:\n"+
-		"    source: rtsp://192.0.2.3:554/stream\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 30m\n")
-
+// TestV1RecordingPoliciesListReturnsSeededDefault: every Conf.Validate()
+// seeds a deterministic "Default" RecordingPolicy under the well-known
+// DefaultRecordingPolicyID UUID. The cameras handler defaults newly-
+// created cameras to this policy. Listing on a fresh recorder returns
+// exactly the seed.
+func TestV1RecordingPoliciesListReturnsSeededDefault(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf, Parent: &testParent{}}
 
-	// Pre-list: in-memory map empty.
-	require.Empty(t, api.Conf.RecordingPolicies)
+	// The seed is present immediately after Load+Validate, before any
+	// canonical-surface access.
+	require.Len(t, api.Conf.RecordingPolicies, 1)
+	require.Contains(t, api.Conf.RecordingPolicies, conf.DefaultRecordingPolicyID)
 
 	code, body := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
 	require.Equal(t, http.StatusOK, code)
@@ -83,35 +74,24 @@ func TestV1RecordingPoliciesListSynthesizesOnFirstAccess(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(body, &resp))
 
-	// cam_a + cam_b share recording config → 1 policy; cam_c → 1 policy.
-	require.Equal(t, 2, resp.ItemCount)
-	for _, p := range resp.Items {
-		require.NotEmpty(t, p.ID)
-		_, err := uuid.Parse(p.ID)
-		require.NoError(t, err, "policy id is a UUID")
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", p.TenantID)
-	}
-
-	// In-memory map populated after first access.
-	require.Len(t, api.Conf.RecordingPolicies, 2)
+	require.Equal(t, 1, resp.ItemCount)
+	require.Equal(t, conf.DefaultRecordingPolicyID, resp.Items[0].ID)
+	require.Equal(t, "Default", resp.Items[0].Name)
+	require.Equal(t, defs.RecordingPolicyModeContinuous, resp.Items[0].Mode)
+	require.True(t, resp.Items[0].Enabled)
+	require.Equal(t, "00000000-0000-0000-0000-000000000000", resp.Items[0].TenantID)
 }
 
 func TestV1RecordingPoliciesListPagination(t *testing.T) {
-	cnf := tempConf(t, "api: yes\n"+
-		"paths:\n"+
-		"  c1:\n"+
-		"    source: rtsp://192.0.2.1:554/s\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 1h\n"+
-		"  c2:\n"+
-		"    source: rtsp://192.0.2.2:554/s\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 30m\n"+
-		"  c3:\n"+
-		"    source: rtsp://192.0.2.3:554/s\n"+
-		"    record: yes\n"+
-		"    recordSegmentDuration: 15m\n")
+	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	// Seed Default + two operator-created policies → three items total.
+	for _, name := range []string{"P1", "P2"} {
+		body, _ := json.Marshal(map[string]any{"name": name, "mode": "continuous"})
+		code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", body)
+		require.Equal(t, http.StatusCreated, code)
+	}
 
 	code, body := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "items_per_page=2&page=0", "", nil)
 	require.Equal(t, http.StatusOK, code)
@@ -231,51 +211,48 @@ func TestV1RecordingPoliciesPatch(t *testing.T) {
 // reflects the new state. Without the propagation, the canonical surface
 // reports the new policy state but the recorder keeps recording (or
 // fails to start).
+//
+// With the seeded Default in place, two POSTed cameras attach to it by
+// default and share its policy id; flipping the Default's enabled
+// flips both cameras' Record.
 func TestV1RecordingPoliciesPatchAppliesEnabledToConfPath(t *testing.T) {
-	cnf := tempConf(t, "api: yes\n"+
-		"paths:\n"+
-		"  cam_a:\n"+
-		"    source: rtsp://192.0.2.1:554/s\n"+
-		"    record: yes\n"+
-		"  cam_b:\n"+
-		"    source: rtsp://192.0.2.2:554/s\n"+
-		"    record: yes\n")
+	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf, Parent: &testParent{}}
 
-	// Trigger synthesis: cam_a + cam_b share recording config so they
-	// land on a single synthesized policy. Both paths get the same
-	// RecordingPolicyID stamped.
-	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
-	require.Equal(t, http.StatusOK, code)
+	// POST two cameras; both attach to the seeded Default policy.
+	for _, name := range []string{"cam_a", "cam_b"} {
+		body, _ := json.Marshal(map[string]any{
+			"name":        name,
+			"source_type": "rtsp",
+			"source_url":  "rtsp://192.0.2.1:554/" + name,
+		})
+		code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", body)
+		require.Equal(t, http.StatusCreated, code)
+	}
 
-	require.True(t, api.Conf.Paths["cam_a"].Record, "pre-patch: cam_a recording")
-	require.True(t, api.Conf.Paths["cam_b"].Record, "pre-patch: cam_b recording")
+	require.True(t, api.Conf.Paths["cam_a"].Record, "pre-patch: cam_a recording (Default mode=continuous)")
+	require.True(t, api.Conf.Paths["cam_b"].Record, "pre-patch: cam_b recording (Default mode=continuous)")
+	require.Equal(t, conf.DefaultRecordingPolicyID, api.Conf.Paths["cam_a"].RecordingPolicyID)
+	require.Equal(t, conf.DefaultRecordingPolicyID, api.Conf.Paths["cam_b"].RecordingPolicyID)
 
-	policyID := api.Conf.Paths["cam_a"].RecordingPolicyID
-	require.NotEmpty(t, policyID)
-	require.Equal(t, policyID, api.Conf.Paths["cam_b"].RecordingPolicyID,
-		"both cameras share the same synthesized policy")
-
-	// Flip enabled to false.
+	// Flip Default.enabled to false.
 	patch, _ := json.Marshal(map[string]any{"enabled": false})
-	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "", policyID, patch)
+	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "",
+		conf.DefaultRecordingPolicyID, patch)
 	require.Equal(t, http.StatusOK, code)
 
-	// Both cameras must now have Record=false; the canonical policy
-	// surface and the per-camera conf.Path stay in sync.
 	require.False(t, api.Conf.Paths["cam_a"].Record,
-		"post-patch: cam_a Record must reflect policy.Enabled=false")
+		"post-patch: cam_a Record must reflect Default.Enabled=false")
 	require.False(t, api.Conf.Paths["cam_b"].Record,
-		"post-patch: cam_b Record must reflect policy.Enabled=false")
+		"post-patch: cam_b Record must reflect Default.Enabled=false")
 
 	// Flip back to true.
 	patch, _ = json.Marshal(map[string]any{"enabled": true})
-	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "", policyID, patch)
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesPatch, http.MethodPatch, "",
+		conf.DefaultRecordingPolicyID, patch)
 	require.Equal(t, http.StatusOK, code)
-	require.True(t, api.Conf.Paths["cam_a"].Record,
-		"re-flipped: cam_a Record back to true")
-	require.True(t, api.Conf.Paths["cam_b"].Record,
-		"re-flipped: cam_b Record back to true")
+	require.True(t, api.Conf.Paths["cam_a"].Record, "re-flipped: cam_a Record back to true")
+	require.True(t, api.Conf.Paths["cam_b"].Record, "re-flipped: cam_b Record back to true")
 }
 
 func TestV1RecordingPoliciesDelete(t *testing.T) {
@@ -299,33 +276,34 @@ func TestV1RecordingPoliciesDelete(t *testing.T) {
 // Recording-policies — deletion must reject if any Camera still
 // references this policy.
 func TestV1RecordingPoliciesDeleteRejectedWhenReferenced(t *testing.T) {
-	cnf := tempConf(t, "api: yes\n"+
-		"paths:\n"+
-		"  cam:\n"+
-		"    source: rtsp://192.0.2.1:554/s\n"+
-		"    record: yes\n")
+	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf, Parent: &testParent{}}
 
-	// Synthesize → cam gets a policy id stamped in conf.Path.RecordingPolicyID.
-	code, _ := invokePolicyHandler(api, api.onV1RecordingPoliciesList, http.MethodGet, "", "", nil)
-	require.Equal(t, http.StatusOK, code)
+	// Create a custom policy and POST a camera attached to it (we don't
+	// use Default here because the seeded Default isn't deletable from
+	// the recorder anyway in practice, and using a created policy keeps
+	// the test focused on the deletion-conflict semantic).
+	body, _ := json.Marshal(map[string]any{"name": "InUse", "mode": "continuous"})
+	_, respBody := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", body)
+	var created defs.RecordingPolicy
+	require.NoError(t, json.Unmarshal(respBody, &created))
 
-	var policyID string
-	for id := range api.Conf.RecordingPolicies {
-		policyID = id
-		break
-	}
-	require.NotEmpty(t, policyID)
-
-	// Confirm the camera references it.
-	require.Equal(t, policyID, api.Conf.Paths["cam"].RecordingPolicyID)
+	camBody, _ := json.Marshal(map[string]any{
+		"name":                "cam",
+		"source_type":         "rtsp",
+		"source_url":          "rtsp://192.0.2.1:554/s",
+		"recording_policy_id": created.ID,
+	})
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", camBody)
+	require.Equal(t, http.StatusCreated, code)
+	require.Equal(t, created.ID, api.Conf.Paths["cam"].RecordingPolicyID)
 
 	// Attempt delete → 409.
-	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesDelete, http.MethodDelete, "", policyID, nil)
+	code, _ = invokePolicyHandler(api, api.onV1RecordingPoliciesDelete, http.MethodDelete, "", created.ID, nil)
 	require.Equal(t, http.StatusConflict, code)
 
 	// Policy is still in the map.
-	require.Contains(t, api.Conf.RecordingPolicies, policyID)
+	require.Contains(t, api.Conf.RecordingPolicies, created.ID)
 }
 
 func TestV1RecordingPoliciesDeleteNotFound(t *testing.T) {

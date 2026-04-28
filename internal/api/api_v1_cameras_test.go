@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 )
 
@@ -350,6 +351,152 @@ func TestV1CamerasDeleteNotFound(t *testing.T) {
 	missing := cameraIDFromPathName("never_existed")
 	code, _ := invokeCameraHandler(api, api.onV1CamerasDelete, http.MethodDelete, "", missing, nil)
 	require.Equal(t, http.StatusNotFound, code)
+}
+
+// TestV1CamerasPostDefaultsRecordingPolicyToDefault: when the request
+// omits recording_policy_id, the camera attaches to the seeded Default
+// policy and the per-path Record fields reflect Default's settings.
+func TestV1CamerasPostDefaultsRecordingPolicyToDefault(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	body, _ := json.Marshal(map[string]any{
+		"name":        "no_policy_supplied",
+		"source_type": "rtsp",
+		"source_url":  "rtsp://192.0.2.5:554/stream",
+	})
+	code, respBody := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", body)
+	require.Equal(t, http.StatusCreated, code)
+
+	var cam defs.Camera
+	require.NoError(t, json.Unmarshal(respBody, &cam))
+	require.NotNil(t, cam.RecordingPolicyID)
+	require.Equal(t, conf.DefaultRecordingPolicyID, *cam.RecordingPolicyID)
+
+	// In-memory linkage on the conf.Path matches.
+	storedPath := api.Conf.Paths["no_policy_supplied"]
+	require.NotNil(t, storedPath)
+	require.Equal(t, conf.DefaultRecordingPolicyID, storedPath.RecordingPolicyID)
+
+	// Default policy applies its record settings to the path.
+	require.True(t, storedPath.Record, "Default policy continuous+enabled → Record=true")
+}
+
+// TestV1CamerasPostHonorsExplicitRecordingPolicyID: when a body supplies
+// a valid recording_policy_id, the camera attaches to that policy and
+// not to Default.
+func TestV1CamerasPostHonorsExplicitRecordingPolicyID(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	// Create a custom policy first.
+	policyBody, _ := json.Marshal(map[string]any{"name": "Custom", "mode": "continuous"})
+	_, polRespBody := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", policyBody)
+	var custom defs.RecordingPolicy
+	require.NoError(t, json.Unmarshal(polRespBody, &custom))
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                "with_custom",
+		"source_type":         "rtsp",
+		"source_url":          "rtsp://192.0.2.5:554/stream",
+		"recording_policy_id": custom.ID,
+	})
+	code, respBody := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", body)
+	require.Equal(t, http.StatusCreated, code)
+
+	var cam defs.Camera
+	require.NoError(t, json.Unmarshal(respBody, &cam))
+	require.NotNil(t, cam.RecordingPolicyID)
+	require.Equal(t, custom.ID, *cam.RecordingPolicyID)
+
+	require.Equal(t, custom.ID, api.Conf.Paths["with_custom"].RecordingPolicyID)
+}
+
+// TestV1CamerasPostRejectsUnknownRecordingPolicyID: passing a
+// non-existent UUID for recording_policy_id returns 400.
+func TestV1CamerasPostRejectsUnknownRecordingPolicyID(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                "bogus_policy",
+		"source_type":         "rtsp",
+		"source_url":          "rtsp://192.0.2.5:554/stream",
+		"recording_policy_id": "11111111-1111-1111-1111-111111111111",
+	})
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", body)
+	require.Equal(t, http.StatusBadRequest, code)
+}
+
+// TestV1CamerasPatchChangesRecordingPolicyID: PATCHing the policy id
+// re-attaches the camera to the new policy and round-trips on GET.
+func TestV1CamerasPatchChangesRecordingPolicyID(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	// Create a target policy.
+	policyBody, _ := json.Marshal(map[string]any{"name": "Target", "mode": "continuous"})
+	_, polRespBody := invokePolicyHandler(api, api.onV1RecordingPoliciesPost, http.MethodPost, "", "", policyBody)
+	var target defs.RecordingPolicy
+	require.NoError(t, json.Unmarshal(polRespBody, &target))
+
+	// Create a camera attached to Default.
+	camBody, _ := json.Marshal(map[string]any{
+		"name":        "switcher",
+		"source_type": "rtsp",
+		"source_url":  "rtsp://192.0.2.5:554/stream",
+	})
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", camBody)
+	require.Equal(t, http.StatusCreated, code)
+	id := cameraIDFromPathName("switcher")
+	require.Equal(t, conf.DefaultRecordingPolicyID, api.Conf.Paths["switcher"].RecordingPolicyID)
+
+	// PATCH the camera to point at the Target policy.
+	patchBody, _ := json.Marshal(map[string]any{
+		"recording_policy_id": target.ID,
+	})
+	code, patchRespBody := invokeCameraHandler(api, api.onV1CamerasPatch, http.MethodPatch, "", id, patchBody)
+	require.Equal(t, http.StatusOK, code)
+
+	var patchedCam defs.Camera
+	require.NoError(t, json.Unmarshal(patchRespBody, &patchedCam))
+	require.NotNil(t, patchedCam.RecordingPolicyID)
+	require.Equal(t, target.ID, *patchedCam.RecordingPolicyID)
+
+	require.Equal(t, target.ID, api.Conf.Paths["switcher"].RecordingPolicyID)
+
+	// GET round-trip confirms.
+	code, getRespBody := invokeCameraHandler(api, api.onV1CamerasGet, http.MethodGet, "", id, nil)
+	require.Equal(t, http.StatusOK, code)
+	var gotCam defs.Camera
+	require.NoError(t, json.Unmarshal(getRespBody, &gotCam))
+	require.NotNil(t, gotCam.RecordingPolicyID)
+	require.Equal(t, target.ID, *gotCam.RecordingPolicyID)
+}
+
+// TestV1CamerasPatchRejectsUnknownRecordingPolicyID: PATCHing to a
+// non-existent policy id returns 400.
+func TestV1CamerasPatchRejectsUnknownRecordingPolicyID(t *testing.T) {
+	cnf := tempConf(t, "api: yes\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	camBody, _ := json.Marshal(map[string]any{
+		"name":        "valid_cam",
+		"source_type": "rtsp",
+		"source_url":  "rtsp://192.0.2.5:554/stream",
+	})
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPost, http.MethodPost, "", "", camBody)
+	require.Equal(t, http.StatusCreated, code)
+	id := cameraIDFromPathName("valid_cam")
+
+	patchBody, _ := json.Marshal(map[string]any{
+		"recording_policy_id": "99999999-9999-9999-9999-999999999999",
+	})
+	code, _ = invokeCameraHandler(api, api.onV1CamerasPatch, http.MethodPatch, "", id, patchBody)
+	require.Equal(t, http.StatusBadRequest, code)
+
+	// Linkage must NOT have changed — still Default.
+	require.Equal(t, conf.DefaultRecordingPolicyID, api.Conf.Paths["valid_cam"].RecordingPolicyID)
 }
 
 // TestV1CamerasGetSourceURLRedaction asserts that even when the

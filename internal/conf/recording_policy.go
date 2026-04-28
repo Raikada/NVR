@@ -22,6 +22,40 @@ import (
 	"github.com/google/uuid"
 )
 
+// DefaultRecordingPolicyID is the deterministic UUID of the seeded
+// "Default" RecordingPolicy that every recorder ships with. The UI
+// relies on its presence; new cameras without an explicit
+// recording_policy_id attach to it. Stable across restarts so the
+// canonical-ID is a fixed handle the UI can reference.
+const DefaultRecordingPolicyID = "00000000-0000-0000-0000-000000000001"
+
+// NewDefaultRecordingPolicyConfig returns the canonical Default policy
+// seeded at boot when conf.RecordingPolicies is empty (or missing the
+// Default UUID). Settings: continuous mode, fmp4 container, 14d
+// retention, 1m–10m segment range.
+//
+// CreatedAt / UpdatedAt are intentionally left as the zero time.Time.
+// Two reasons: (1) deepClone() in conf.go cannot copy unexported
+// time.Time fields and would zero them anyway on every Clone; (2) a
+// zero timestamp is a clean sentinel for "the seeded Default has not
+// been edited" — operator edits stamp wall-clock UpdatedAt via the
+// /v1/recording-policies PATCH handler.
+//
+// Idempotent: callers test for presence by ID before invoking.
+func NewDefaultRecordingPolicyConfig() *RecordingPolicyConfig {
+	return &RecordingPolicyConfig{
+		Name:               "Default",
+		Mode:               "continuous",
+		RetentionDuration:  Duration(14 * 24 * time.Hour),
+		MinSegmentDuration: Duration(1 * time.Minute),
+		MaxSegmentDuration: Duration(10 * time.Minute),
+		Container:          "fmp4",
+		Enabled:            true,
+		PartDuration:       Duration(1 * time.Second),
+		MaxPartSize:        50 * 1024 * 1024,
+	}
+}
+
 // RecordingPolicyConfig is the persistence shape of one RecordingPolicy
 // as it lives in mediamtx.yml. Fields mirror defs.RecordingPolicy
 // exactly; YAML tags are camelCase per the recorder's existing

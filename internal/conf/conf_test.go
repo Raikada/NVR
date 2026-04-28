@@ -841,3 +841,63 @@ func TestClone(t *testing.T) {
 	conf2 := conf1.Clone()
 	require.Equal(t, conf1, conf2)
 }
+
+// TestDefaultRecordingPolicySeededOnEmptyMap: a freshly-loaded conf with
+// no recordingPolicies: key materializes the canonical Default policy
+// under DefaultRecordingPolicyID. The seed survives subsequent
+// Validate() calls (idempotent — re-Validate doesn't duplicate it).
+func TestDefaultRecordingPolicySeededOnEmptyMap(t *testing.T) {
+	tmpf, err := createTempFile([]byte("tenantId: 00000000-0000-0000-0000-000000000000\n"))
+	require.NoError(t, err)
+	defer os.Remove(tmpf)
+
+	cnf, _, err := Load(tmpf, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, cnf.RecordingPolicies, 1)
+
+	def, ok := cnf.RecordingPolicies[DefaultRecordingPolicyID]
+	require.True(t, ok)
+	require.NotNil(t, def)
+	require.Equal(t, "Default", def.Name)
+	require.Equal(t, "continuous", def.Mode)
+	require.Equal(t, "fmp4", def.Container)
+	require.True(t, def.Enabled)
+
+	// Re-validate: the Default is preserved by reference (same pointer)
+	// and the count stays at 1.
+	beforePtr := cnf.RecordingPolicies[DefaultRecordingPolicyID]
+	require.NoError(t, cnf.Validate(nil))
+	require.Len(t, cnf.RecordingPolicies, 1)
+	require.Same(t, beforePtr, cnf.RecordingPolicies[DefaultRecordingPolicyID],
+		"existing Default must not be replaced on re-Validate")
+}
+
+// TestDefaultRecordingPolicyNotDuplicatedWhenAlreadyPresent: a conf
+// that loads with a Default already in the map (operator-edited or
+// previous-session-persisted) preserves the operator's edits exactly.
+func TestDefaultRecordingPolicyNotDuplicatedWhenAlreadyPresent(t *testing.T) {
+	tmpf, err := createTempFile([]byte(
+		"tenantId: 00000000-0000-0000-0000-000000000000\n" +
+			"recordingPolicies:\n" +
+			"  00000000-0000-0000-0000-000000000001:\n" +
+			"    name: \"Default (Edited)\"\n" +
+			"    mode: continuous\n" +
+			"    container: fmp4\n" +
+			"    retentionDuration: 30d\n" +
+			"    minSegmentDuration: 30s\n" +
+			"    maxSegmentDuration: 5m\n" +
+			"    partDuration: 1s\n" +
+			"    maxPartSize: 52428800\n" +
+			"    enabled: true\n"))
+	require.NoError(t, err)
+	defer os.Remove(tmpf)
+
+	cnf, _, err := Load(tmpf, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, cnf.RecordingPolicies, 1)
+
+	def, ok := cnf.RecordingPolicies[DefaultRecordingPolicyID]
+	require.True(t, ok)
+	require.Equal(t, "Default (Edited)", def.Name, "operator edit preserved")
+	require.Equal(t, Duration(30*24*time.Hour), def.RetentionDuration)
+}

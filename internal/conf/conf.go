@@ -1213,6 +1213,18 @@ func (conf *Conf) Validate(l logger.Writer) error {
 		}
 	}
 
+	// Seed the canonical "Default" RecordingPolicy if absent. The UI
+	// (and the cameras handler defaulting logic) relies on this entry
+	// existing under a deterministic UUID. Idempotent: a Default already
+	// loaded from mediamtx.yml or surviving from a prior in-memory
+	// session is preserved verbatim, including any operator edits.
+	if conf.RecordingPolicies == nil {
+		conf.RecordingPolicies = make(map[string]*RecordingPolicyConfig)
+	}
+	if _, hasDefault := conf.RecordingPolicies[DefaultRecordingPolicyID]; !hasDefault {
+		conf.RecordingPolicies[DefaultRecordingPolicyID] = NewDefaultRecordingPolicyConfig()
+	}
+
 	// Validate persisted RecordingPolicy entries per ADR 0009 §D8.
 	// Keys are UUIDs; values are RecordingPolicyConfig. Synthesis (when
 	// the map is empty) lives in the API package — by the time we hit
