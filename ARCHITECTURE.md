@@ -146,6 +146,14 @@ items below are the **how** for that **what**.
     [`../platform/docs/authentication-flows.md`](../platform/docs/authentication-flows.md) §3.2.
 11. **Remote-access participation.** Terminate sessions brokered by the
     Cloud so off-LAN clients can reach this recorder securely.
+12. **Embedded configuration UI.** Ship a static React SPA built into the
+    recorder binary at compile time and serve it from the API listener
+    (`/`, `/assets/*`, hash-routed sub-paths). The UI is the operator
+    surface for first-run setup, single-recorder management, and (over
+    same-LAN MS connections per ADR 0003) the consolidated dashboard
+    target. Source under [`web/`](web/), embed wiring under
+    [`internal/web/`](internal/web/), refresh workflow documented in
+    [`docs/web-ui.md`](docs/web-ui.md).
 
 ## 6. What the recorder does not own
 

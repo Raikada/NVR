@@ -126,7 +126,32 @@ update an ADR explaining the migration plan.
   tag, config flag defaulting to disabled, no wiring into the runtime)
   or it must not be merged.
 
-## 6. Do not touch the media pipeline unless asked
+## 6. Embedded configuration SPA — keep source and embed in sync
+
+The recorder ships a static React SPA built into the binary at
+compile time. Two trees are coupled:
+
+- `web/` — Vite + React + TypeScript source.
+- `internal/web/dist/` — pre-built bundle that `go:embed` ingests.
+
+Any change under `web/` requires a corresponding refresh of the
+embed. Run `make web` (Docker-isolated, Node 20) and commit the
+resulting `internal/web/dist/` diff in the same change set. Do
+not commit `web/` source diffs without the embed refresh —
+downstream consumers cloning the recorder repo won't see your
+changes until `make web` is run.
+
+The SPA's data layer talks to `/v1/`; mock fallbacks are clearly
+labelled with `STUB:` comments. Wiring a stub to a real `/v1/`
+call is preferred over extending the mock when the recorder
+already has the underlying data; see `docs/web-ui.md` for the
+running stub registry.
+
+For UI-iteration work, prefer `cd web && npm run dev` (hot reload,
+Vite dev server on `:5173` proxying `/v1` to `:9997`). Embed
+rebuild only on commit-worthy state.
+
+## 7. Do not touch the media pipeline unless asked
 
 The media pipeline — RTSP/RTMP/WebRTC/HLS/SRT ingest, the
 `internal/stream` package, segmenting, muxing, the
@@ -140,7 +165,7 @@ product. It is correct, performance-sensitive, and expensive to regress.
 - Adding observability (metrics, structured logs, traces) around the
   pipeline is allowed when requested, but the request must be explicit.
 
-## 7. No new dependencies without justification
+## 8. No new dependencies without justification
 
 - Prefer the standard library and existing dependencies.
 - New Go modules, system packages, or services require explicit approval
@@ -149,7 +174,7 @@ product. It is correct, performance-sensitive, and expensive to regress.
 - Never add a dependency to satisfy a single helper function — copy the
   function (with attribution) instead.
 
-## 8. Respect the offline-first contract
+## 9. Respect the offline-first contract
 
 The recorder **must continue recording** when disconnected from Cloud or
 the Management Server. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §4 and
@@ -161,7 +186,7 @@ the Management Server. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §4 and
 - Cloud / Management Server interactions must be asynchronous, retryable,
   and failure-tolerant. A 30-minute network outage is not an incident.
 
-## 9. Security and data-handling defaults
+## 10. Security and data-handling defaults
 
 - Never log credentials, tokens, session cookies, or full RTSP URLs with
   embedded passwords.
@@ -169,7 +194,7 @@ the Management Server. See [`ARCHITECTURE.md`](ARCHITECTURE.md) §4 and
 - New endpoints must default to authenticated access. Anonymous access
   is opt-in per path, not the default.
 
-## 10. When in doubt, ask
+## 11. When in doubt, ask
 
 If a task seems to require breaking one of these rules — duplicating an
 entity, touching the pipeline, adding a dependency, changing a public

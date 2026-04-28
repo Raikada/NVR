@@ -68,10 +68,25 @@ make format            # runs gofumpt + prettier on docs
 
 # binaries
 make binaries          # builds release binaries for all supported platforms
+
+# embedded configuration SPA (web/ → internal/web/dist/)
+make web               # rebuild + refresh embed (Docker-isolated Node 20)
+make web-typecheck     # TS typecheck only, no bundle
 ```
 
 A change is not ready for review until `make test` (or `make test-nodocker`
 locally) and `make lint` pass on a clean checkout.
+
+If you change anything under `web/`, run `make web` and commit the
+resulting `internal/web/dist/` diff alongside your source diff so
+`go build` stays self-contained — downstream consumers can build a
+working binary without needing Node installed. The Node image is
+pinned in the top-level Makefile so the build is reproducible.
+
+For UI-iteration work, run `cd web && npm run dev` for the Vite dev
+server (hot reload, sourcemaps, proxies `/v1` to `:9997`). Run the
+recorder separately. Embed-rebuild is only needed when you want
+changes baked into the binary.
 
 ---
 
