@@ -273,6 +273,34 @@ outer:
 				break outer
 			}
 
+			// Persist the just-applied conf to disk so API-driven
+			// edits (cameras, recording policies, identity, etc.)
+			// survive a recorder restart. Without this, MediaMTX's
+			// inherited behavior treats every APIConfigSet as
+			// in-memory only, and the operator has to re-add every
+			// camera after every restart.
+			//
+			// Persistence failure is logged but does not roll back
+			// in-memory state — the reload already succeeded, the
+			// recorder is happily running the new conf, and rolling
+			// back would mean tearing down running camera sources
+			// for a reason the operator has no chance to fix mid-
+			// request. The error surfaces in the log so disk
+			// problems become visible.
+			if p.confPath != "" {
+				yamlBytes, saveErr := p.conf.SaveToFile(p.confPath)
+				if saveErr != nil {
+					p.Log(logger.Error,
+						"failed to persist API-driven config to %s: %s",
+						p.confPath, saveErr)
+				} else if p.confWatcher != nil {
+					// Note the just-written content so confwatcher's
+					// fsnotify fire on our own write doesn't loop us
+					// back into another reload.
+					p.confWatcher.NoteSelfWrite(yamlBytes)
+				}
+			}
+
 		case <-interrupt:
 			p.Log(logger.Info, "shutting down gracefully")
 			break outer

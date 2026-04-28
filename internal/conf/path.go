@@ -189,12 +189,14 @@ type Path struct {
 	ID string `json:"-" yaml:"-"`
 
 	// RecordingPolicyID references a canonical RecordingPolicy (per ADR
-	// 0009 §D5 Recording-policies). The on-disk recording fields
-	// (Record, RecordPath, etc.) remain authoritative; this field is the
-	// in-memory linkage produced by SynthesizePoliciesFromPaths and used
-	// by the /v1/recording-policies handlers. Not serialized to
-	// mediamtx.yml.
-	RecordingPolicyID string `json:"-" yaml:"-"`
+	// 0009 §D5 Recording-policies). Persisted to mediamtx.yml so the
+	// linkage survives restarts; OptionalPath carries it through
+	// Validate's rebuild via the json:"recordingPolicyId" tag below.
+	// On-disk recording fields (Record, RecordPath, etc.) remain
+	// authoritative for the recorder's per-path runtime; this field is
+	// the canonical linkage that the /v1/recording-policies handlers
+	// project Camera ↔ RecordingPolicy associations through.
+	RecordingPolicyID string `json:"recordingPolicyId,omitempty"`
 
 	// General
 	Source                     string   `json:"source"`

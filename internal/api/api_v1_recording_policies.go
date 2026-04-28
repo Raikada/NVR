@@ -270,39 +270,36 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 	newConf := a.Conf.Clone()
 	newConf.RecordingPolicies[id.String()] = defs.RecordingPolicyToConfig(merged)
 
-	// Capture which path-names reference this policy BEFORE Validate, so
-	// we can re-stamp RecordingPolicyID and apply the translator AFTER
-	// Validate rebuilds newConf.Paths. (Validate rebuilds Paths from
-	// OptionalPaths every call; RecordingPolicyID is a json:"-" linkage
-	// field that gets blanked in the rebuild — same situation cameras
-	// POST handles by stamping ID/RecordingPolicyID after Validate.)
-	pathsForPolicy := make([]string, 0)
-	for name, p := range newConf.Paths {
-		if p != nil && p.RecordingPolicyID == id.String() {
-			pathsForPolicy = append(pathsForPolicy, name)
-		}
-	}
-
 	if err := newConf.Validate(nil); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
 		return
 	}
 
-	// Re-stamp the RecordingPolicyID and apply the translator on the
-	// freshly-validated paths. Without this step, a PATCH that flips
-	// Enabled (or any other recording-related field on the policy)
-	// would update only the canonical state — the per-camera
-	// conf.Path.Record field would stay stale and the recorder would
-	// keep recording (or fail to start). defs.ApplyPolicyToPath stamps
+	// Apply the patched policy's recording fields to every path that
+	// references it. RecordingPolicyID rides through OptionalPath via
+	// its json tag (so the linkage already survived Validate's
+	// rebuild); we still need ApplyPolicyToPath to stamp the per-path
 	// Record / RecordPath / RecordFormat / part / segment /
-	// delete-after fields from the policy onto each path.
-	for _, name := range pathsForPolicy {
-		p := newConf.Paths[name]
-		if p == nil {
+	// delete-after fields, otherwise a PATCH that flips Enabled would
+	// update only the canonical state and the recorder would keep its
+	// stale per-path recording behavior.
+	for name, p := range newConf.Paths {
+		if p == nil || p.RecordingPolicyID != id.String() {
 			continue
 		}
-		p.RecordingPolicyID = id.String()
 		defs.ApplyPolicyToPath(p, merged)
+		// Re-marshal the OptionalPath so the disk-persisted
+		// recording fields match the canonical policy values; the
+		// in-memory Path is already authoritative for the running
+		// recorder, but mediamtx.yml needs the matching values for
+		// the next boot to come up consistently.
+		op, opErr := optionalPathFromConfPath(p)
+		if opErr != nil {
+			a.writeError(ctx, http.StatusInternalServerError,
+				fmt.Errorf("re-encode path '%s' after policy patch: %w", name, opErr))
+			return
+		}
+		newConf.OptionalPaths[name] = op
 	}
 
 	a.Conf = newConf

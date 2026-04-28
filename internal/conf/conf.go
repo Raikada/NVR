@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -1330,4 +1331,67 @@ func (conf *Conf) RemovePath(name string) error {
 
 	delete(conf.OptionalPaths, name)
 	return nil
+}
+
+// SaveToFile atomically writes the configuration as YAML to fpath.
+//
+// The write is atomic via the standard write-then-rename dance: marshal
+// to bytes, write to a sibling temp file in the same directory (so
+// os.Rename is guaranteed to be on the same filesystem), then rename
+// over the destination. A crash mid-write leaves the original file
+// untouched.
+//
+// File permissions: if the destination already exists, the existing
+// mode is preserved. Otherwise the file is created 0o644.
+//
+// The serialized bytes are also returned so callers (notably the
+// confwatcher self-trigger guard) can hash exactly what landed on
+// disk without re-marshalling.
+func (conf *Conf) SaveToFile(fpath string) ([]byte, error) {
+	yamlBytes, err := yamlwrapper.Marshal(conf)
+	if err != nil {
+		return nil, fmt.Errorf("marshal conf: %w", err)
+	}
+
+	mode := os.FileMode(0o644)
+	if st, statErr := os.Stat(fpath); statErr == nil {
+		mode = st.Mode().Perm()
+	}
+
+	dir := filepath.Dir(fpath)
+	tmpf, err := os.CreateTemp(dir, ".mediamtx-conf-*.tmp")
+	if err != nil {
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmpf.Name()
+	cleanup := func() {
+		_ = os.Remove(tmpName)
+	}
+
+	if _, err := tmpf.Write(yamlBytes); err != nil {
+		_ = tmpf.Close()
+		cleanup()
+		return nil, fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmpf.Sync(); err != nil {
+		_ = tmpf.Close()
+		cleanup()
+		return nil, fmt.Errorf("fsync temp file: %w", err)
+	}
+	if err := tmpf.Close(); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("close temp file: %w", err)
+	}
+
+	if err := os.Chmod(tmpName, mode); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, fpath); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("rename temp file: %w", err)
+	}
+
+	return yamlBytes, nil
 }

@@ -2,8 +2,10 @@
 package confwatcher
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -20,6 +22,18 @@ type ConfWatcher struct {
 
 	inner        *fsnotify.Watcher
 	absolutePath string
+
+	// expectedHash carries the SHA-256 of bytes the recorder itself
+	// just wrote to the watched file via NoteSelfWrite. The watcher
+	// loop compares the on-disk hash against this on each fire and
+	// suppresses the signal when they match — that's the recorder
+	// observing its own SaveToFile, not an external edit, and a
+	// reload would loop pointlessly. Pattern A from the design doc:
+	// content-dedup, race-free regardless of fsnotify timing because
+	// hashes don't depend on event ordering.
+	expectedMu   sync.Mutex
+	expectedHash [sha256.Size]byte
+	expectedSet  bool
 
 	// in
 	terminate chan struct{}
@@ -66,6 +80,48 @@ func (w *ConfWatcher) Close() {
 	<-w.done
 }
 
+// NoteSelfWrite records the SHA-256 of bytes the recorder just persisted
+// to the watched file via SaveToFile. The next fsnotify event whose
+// disk content matches this hash is suppressed; subsequent fires (real
+// external edits) trigger reload normally.
+//
+// Safe to call from any goroutine. A nil receiver or a watcher that
+// hasn't been Initialized yet is a silent no-op — the API config-set
+// handler runs even when no confwatcher is wired (no on-disk config).
+func (w *ConfWatcher) NoteSelfWrite(content []byte) {
+	if w == nil {
+		return
+	}
+	w.expectedMu.Lock()
+	w.expectedHash = sha256.Sum256(content)
+	w.expectedSet = true
+	w.expectedMu.Unlock()
+}
+
+// matchesSelfWrite returns true if the current on-disk content of the
+// watched file hashes to the same value the recorder last persisted via
+// NoteSelfWrite. On match, the cached hash is cleared so a subsequent
+// external edit (which produces different content, then potentially is
+// reverted to the cached content) doesn't get silently swallowed. On
+// any read error, returns false (let the reload fire; Conf.Load will
+// surface the real error).
+func (w *ConfWatcher) matchesSelfWrite() bool {
+	w.expectedMu.Lock()
+	defer w.expectedMu.Unlock()
+	if !w.expectedSet {
+		return false
+	}
+	bytesOnDisk, err := os.ReadFile(w.absolutePath)
+	if err != nil {
+		return false
+	}
+	if sha256.Sum256(bytesOnDisk) != w.expectedHash {
+		return false
+	}
+	w.expectedSet = false
+	return true
+}
+
 func (w *ConfWatcher) run() {
 	defer close(w.done)
 
@@ -94,6 +150,15 @@ outer:
 				// wait some additional time to allow the writer to complete its job
 				time.Sleep(additionalWait)
 				previousWatchedPath = currentWatchedPath
+
+				// Suppress fires whose on-disk content matches what the
+				// recorder itself just persisted via SaveToFile. Without
+				// this guard the API config-set path would chain into a
+				// reload which would chain into another save and so on.
+				if w.matchesSelfWrite() {
+					lastCalled = time.Now()
+					continue
+				}
 
 				lastCalled = time.Now()
 
