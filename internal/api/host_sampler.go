@@ -5,102 +5,79 @@
 // and the BSDs — covers every platform the recorder targets and
 // every platform a developer is realistically using.
 //
-// Three samplers exposed at package scope:
+// Three samplers exposed at package scope, all host-level:
 //
-//   - cpuPctSampler.Sample()        → process CPU % (multi-core
-//     aggregate; saturated 8-core box reads ~800)
-//   - memPctSampler.Sample()        → process RSS as % of system
-//     total memory; falls back to Go runtime heap proxy if the
-//     OS reading is unavailable
+//   - cpuPctSampler.Sample()        → host-wide CPU percent
+//     (saturated reads ~100 regardless of core count; the value
+//     is the host aggregate, not a per-process or per-core
+//     reading)
+//   - memPctSampler.Sample()        → host-wide used-memory
+//     percent (in-use RAM across every process on the box,
+//     divided by total RAM); falls back to a Go-runtime heap
+//     proxy if the OS reading is unavailable
 //   - bandwidthSampler.Sample()     → host network throughput
 //     (rx_bps, tx_bps) summed across non-loopback interfaces
 //
-// Each sampler primes on first call (returns zero) and produces
-// real rates on subsequent calls — same contract the previous
-// build-tagged samplers offered, now without the OS branching.
+// Per ADR 0009 amendment 2026-04-27-adr-0009-amendment-3: the
+// `/v1/health` endpoint answers the fleet-monitoring question
+// ("is this box hot?"), not "is the recorder process itself the
+// bottleneck?" — the latter belongs to the Prometheus surface.
+//
+// CPU and bandwidth samplers prime on first call (return zero or
+// (0, 0)) and produce real readings on subsequent calls. Memory
+// is a point-in-time host reading and does not need priming.
 
 package api
 
 import (
-	"os"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
 	memstat "github.com/shirou/gopsutil/v3/mem"
 	netstat "github.com/shirou/gopsutil/v3/net"
-	"github.com/shirou/gopsutil/v3/process"
 )
 
 /* ---------- CPU ---------- */
 
-type cpuSampler struct {
-	mu       sync.Mutex
-	proc     *process.Process
-	procErr  error
-	prepared bool
-}
+type cpuSampler struct{}
 
-// Sample returns the recorder process's CPU percent, multi-core
-// aggregate (saturated 8-core box reads ~800). First call primes
-// the gopsutil process handle and returns 0.0; subsequent calls
-// return the % since the previous Percent() call.
+// Sample returns the host-wide CPU percent. Saturated reads ~100
+// regardless of core count — the value is the host aggregate,
+// not a per-process or per-core reading. First call after process
+// start returns 0 (gopsutil's cpu.Percent has no previous CPU
+// time delta to compare against on its first invocation);
+// subsequent calls return the % since the previous Sample() call.
 func (s *cpuSampler) Sample() float64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.prepared {
-		s.proc, s.procErr = process.NewProcess(int32(os.Getpid()))
-		s.prepared = true
-	}
-	if s.procErr != nil || s.proc == nil {
+	pcts, err := cpu.Percent(0, false)
+	if err != nil || len(pcts) == 0 {
 		return 0
 	}
-	pct, err := s.proc.Percent(0)
-	if err != nil {
-		return 0
-	}
-	return pct
+	return pcts[0]
 }
 
 var cpuPctSampler = &cpuSampler{}
 
 /* ---------- Memory ---------- */
 
-type memSampler struct {
-	mu      sync.Mutex
-	proc    *process.Process
-	primed  bool
-	procErr error
-}
+type memSampler struct{}
 
-// Sample returns process RSS as a percent of system total memory.
-// Falls back to (HeapInuse / HeapSys) * 100 from Go runtime when
-// gopsutil can't read either value — keeps the field meaningful on
-// constrained dev environments.
+// Sample returns the host-wide used-memory percent (in-use RAM
+// across every process on the box, divided by total RAM). Falls
+// back to (HeapInuse / HeapSys) * 100 from Go runtime when
+// gopsutil can't read the OS value — keeps the field shape
+// coherent on constrained dev environments.
 func (s *memSampler) Sample() float64 {
-	s.mu.Lock()
-	if !s.primed {
-		s.proc, s.procErr = process.NewProcess(int32(os.Getpid()))
-		s.primed = true
-	}
-	proc := s.proc
-	procErr := s.procErr
-	s.mu.Unlock()
-
-	if procErr == nil && proc != nil {
-		mi, err := proc.MemoryInfo()
-		if err == nil && mi != nil {
-			vm, err := memstat.VirtualMemory()
-			if err == nil && vm != nil && vm.Total > 0 {
-				return float64(mi.RSS) / float64(vm.Total) * 100.0
-			}
-		}
+	vm, err := memstat.VirtualMemory()
+	if err == nil && vm != nil {
+		return vm.UsedPercent
 	}
 
-	// Fallback: Go runtime heap. Underreports residency (ignores
-	// reserved-but-unused arenas + non-heap mappings) but keeps the
-	// field shape coherent.
+	// Fallback: Go runtime heap. Process-scoped and underreports
+	// residency, but keeps the field shape coherent when the OS
+	// reading is unavailable.
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	if ms.HeapSys > 0 {

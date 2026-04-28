@@ -43,13 +43,13 @@ type HealthStatusNetwork struct {
 	LastSyncAt                *time.Time `json:"last_sync_at,omitempty"`
 }
 
-// HealthStatusBandwidth is the process-level network bandwidth block
+// HealthStatusBandwidth is the host-level network bandwidth block
 // of a HealthStatus snapshot. Both rates are bytes-per-second over
 // the wall-clock interval since the previous /v1/health request,
-// summed across every non-loopback interface the recorder process
-// can see (so a multi-NIC host shows aggregate throughput, which
-// matches what an operator expects from a "how busy is the
-// recorder's network" reading).
+// summed across every non-loopback interface the kernel reports
+// (gopsutil IOCounters(pernic=true) — these are kernel-maintained
+// per-NIC counters, not process-scoped, so a multi-NIC host shows
+// aggregate throughput across the whole box).
 type HealthStatusBandwidth struct {
 	RxBps float64 `json:"rx_bps"`
 	TxBps float64 `json:"tx_bps"`

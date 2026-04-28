@@ -23,8 +23,9 @@ import (
 )
 
 // onV1HealthGet serves GET /v1/health. Best-effort canonical
-// HealthStatus snapshot from whatever process-level signals the
-// recorder exposes today.
+// HealthStatus snapshot from whatever signals the recorder
+// exposes today. CPU / mem / bandwidth fields are host-level
+// per ADR 0009 amendment 2026-04-27-adr-0009-amendment-3.
 func (a *API) onV1HealthGet(ctx *gin.Context) {
 	a.mutex.RLock()
 	c := a.Conf
@@ -41,18 +42,18 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 		in.Uptime = time.Since(started)
 	}
 
-	// MemPct: process RSS / system total memory, sampled via
-	// gopsutil (cross-platform). Falls back internally to a
-	// Go-runtime heap proxy when the OS reading is unavailable.
+	// MemPct: host-wide used-memory percent (in-use RAM across
+	// every process on the box, divided by total RAM), sampled via
+	// gopsutil's VirtualMemory().UsedPercent. Falls back internally
+	// to a Go-runtime heap proxy when the OS reading is unavailable.
 	in.MemPct = memPctSampler.Sample()
-	// CPUPct: process-level user+system CPU time delta divided by
-	// wall-clock delta between successive /v1/health calls. See
-	// cpu_sampler.go for the sampler design. The first call after
-	// process start returns 0 (no previous sample to diff against);
-	// every subsequent call returns the average CPU percentage of
-	// the interval since the previous call. The value is normalized
-	// to one-CPU-equivalent at 100 (a saturated 8-core box reads
-	// ~800), matching what `top` and similar tools report.
+	// CPUPct: host-wide CPU percent. Saturated reads ~100 regardless
+	// of core count — the value is the host aggregate, not a
+	// per-process or per-core reading. See host_sampler.go for the
+	// sampler design. The first call after process start returns 0
+	// (no previous CPU-time delta to compare against); every
+	// subsequent call returns the average CPU percentage of the
+	// interval since the previous call.
 	in.CPUPct = cpuPctSampler.Sample()
 
 	// Camera counts. We lift them from c.Paths (configured cameras)
@@ -126,10 +127,12 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	}
 	in.Network = probe.Sample(msEndpoint, cloudEndpoint)
 
-	// Bandwidth — process-level network IO summed across non-loopback
-	// interfaces. First call returns (0, 0) and primes the sampler;
-	// subsequent calls return real bytes-per-second over the wall-
-	// clock interval since the previous /v1/health request.
+	// Bandwidth — host-level network IO summed across non-loopback
+	// interfaces (gopsutil IOCounters(pernic=true), so the kernel-
+	// reported per-NIC counters; not process-scoped). First call
+	// returns (0, 0) and primes the sampler; subsequent calls return
+	// real bytes-per-second over the wall-clock interval since the
+	// previous /v1/health request.
 	rxBps, txBps := bandwidthSamplerSingleton.Sample()
 	in.Bandwidth = defs.HealthStatusBandwidth{RxBps: rxBps, TxBps: txBps}
 
