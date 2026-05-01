@@ -190,6 +190,19 @@ func TestSymlinkDeleteCreate(t *testing.T) {
 	err = os.Symlink(fpath, fpath+"-sym")
 	require.NoError(t, err)
 
+	// Both fpath and fpath+"-sym" must be removed at test end.
+	// macOS's TempDir is /var/folders/.../T which is not auto-pruned
+	// the way /tmp is on Linux, so dangling symlinks (real file goes
+	// missing, symlink stays) accumulate across runs and trigger
+	// spurious fsnotify events in unrelated tests that watch the
+	// same temp directory (e.g. internal/core/path_test.go's
+	// TestPathOverridePublisher). Cleaning up reliably here keeps
+	// the test infrastructure hermetic.
+	t.Cleanup(func() {
+		_ = os.Remove(fpath + "-sym")
+		_ = os.Remove(fpath)
+	})
+
 	w := &ConfWatcher{FilePath: fpath + "-sym"}
 	err = w.Initialize()
 	require.NoError(t, err)
