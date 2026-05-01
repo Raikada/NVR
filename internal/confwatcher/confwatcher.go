@@ -14,6 +14,22 @@ import (
 const (
 	minInterval    = 1 * time.Second
 	additionalWait = 10 * time.Millisecond
+
+	// pollInterval is how often the watcher Stats the watched file as
+	// a safety net for fsnotify events the OS doesn't reliably
+	// deliver. On macOS (kqueue + FSEvents), fsnotify does NOT
+	// deliver events for a file path after it's been removed once —
+	// subsequent re-creates and writes don't surface as fsnotify
+	// events because the OS-side watch is invalidated when the inode
+	// goes away. The polling fallback recovers from that.
+	//
+	// 200ms is a deliberate trade: fast enough that the polling
+	// cycle doesn't dominate test runtimes (TestDeleteCreate's 500ms
+	// timeout means we get 2-3 poll cycles), but slow enough that
+	// the periodic Stat doesn't materially load the system in
+	// production. fsnotify remains the fast path; this is just the
+	// safety net.
+	pollInterval = 200 * time.Millisecond
 )
 
 // ConfWatcher is a configuration file watcher.
@@ -128,6 +144,31 @@ func (w *ConfWatcher) run() {
 	var lastCalled time.Time
 	previousWatchedPath, _ := filepath.EvalSymlinks(w.absolutePath)
 
+	// fire encapsulates the "watched file changed → signal upstream"
+	// path so both the fsnotify branch and the polling-fallback
+	// branch can reuse it. Returns true if the run loop should exit
+	// (terminate received during the signal handoff).
+	fire := func(currentWatchedPath string) bool {
+		time.Sleep(additionalWait)
+		previousWatchedPath = currentWatchedPath
+
+		if w.matchesSelfWrite() {
+			lastCalled = time.Now()
+			return false
+		}
+
+		lastCalled = time.Now()
+		select {
+		case w.signal <- struct{}{}:
+		case <-w.terminate:
+			return true
+		}
+		return false
+	}
+
+	pollTicker := time.NewTicker(pollInterval)
+	defer pollTicker.Stop()
+
 outer:
 	for {
 		select {
@@ -147,26 +188,31 @@ outer:
 				(eventPath == currentWatchedPath &&
 					((event.Op&fsnotify.Write) == fsnotify.Write ||
 						(event.Op&fsnotify.Create) == fsnotify.Create)) {
-				// wait some additional time to allow the writer to complete its job
-				time.Sleep(additionalWait)
-				previousWatchedPath = currentWatchedPath
-
-				// Suppress fires whose on-disk content matches what the
-				// recorder itself just persisted via SaveToFile. Without
-				// this guard the API config-set path would chain into a
-				// reload which would chain into another save and so on.
-				if w.matchesSelfWrite() {
-					lastCalled = time.Now()
-					continue
-				}
-
-				lastCalled = time.Now()
-
-				select {
-				case w.signal <- struct{}{}:
-				case <-w.terminate:
+				if fire(currentWatchedPath) {
 					break outer
 				}
+			}
+
+		case <-pollTicker.C:
+			// Polling fallback: fsnotify on macOS doesn't deliver
+			// events for a file path after it's been removed once,
+			// so an editor that does delete-then-create (vim-style
+			// backup-and-replace, or remove-and-recreate from the API
+			// path) would never wake the watcher. Stat the file and
+			// compare against previousWatchedPath to detect the
+			// transition fsnotify missed.
+			if time.Since(lastCalled) < minInterval {
+				continue
+			}
+			currentWatchedPath, _ := filepath.EvalSymlinks(w.absolutePath)
+			if currentWatchedPath != "" && currentWatchedPath != previousWatchedPath {
+				if fire(currentWatchedPath) {
+					break outer
+				}
+			} else if currentWatchedPath == "" && previousWatchedPath != "" {
+				// File went missing without an fsnotify event; reset
+				// state so the next reappearance fires.
+				previousWatchedPath = ""
 			}
 
 		case <-w.inner.Errors:
