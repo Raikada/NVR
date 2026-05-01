@@ -799,6 +799,18 @@ func (p *Core) createResources(initial bool) error {
 			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
 				pa.EmitPairingAudit(ev.Action, ev.Outcome, ev.Attributes)
 			})
+			// Refresh mDNS TXT records (paired=false → paired=true)
+			// after a successful pairing so MS instances on the LAN
+			// see the up-to-date advertisement.
+			if p.mdnsService != nil {
+				ms := p.mdnsService
+				logRef := p
+				p.pairingManager.SetPairedCallback(func() {
+					if err := ms.Refresh(); err != nil {
+						logRef.Log(logger.Warn, "[mdns] refresh after pairing failed: %s", err)
+					}
+				})
+			}
 		}
 
 		// Wire the pipeline-side Event publish target so path.go's

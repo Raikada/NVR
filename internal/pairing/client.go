@@ -38,6 +38,12 @@ type AuditEvent struct {
 // tests).
 type AuditCallback func(AuditEvent)
 
+// PairedCallback fires once after a successful pairing transition
+// (identity persisted, recorder is now paired). Used by Core to
+// refresh the mDNS broadcaster's TXT records so listeners see
+// paired=true. nil callback is allowed.
+type PairedCallback func()
+
 // Manager owns the recorder's pairing-flow state and runs the
 // MS-side conversation in a background goroutine. One pairing flow
 // at a time per recorder; concurrent Start() calls return
@@ -47,6 +53,7 @@ type Manager struct {
 	logger   logger.Writer
 	version  string
 	audit    AuditCallback
+	onPaired PairedCallback
 
 	// httpClient is the base shape; the actual TLS config is built
 	// per-Start() because each pairing pins a different root
@@ -81,6 +88,25 @@ func (m *Manager) SetAuditCallback(cb AuditCallback) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audit = cb
+}
+
+// SetPairedCallback registers a callback to fire once after a
+// successful pairing. Used to refresh the mDNS broadcaster's TXT
+// records (paired=false → paired=true) without coupling pairing
+// directly to the mdns package.
+func (m *Manager) SetPairedCallback(cb PairedCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onPaired = cb
+}
+
+func (m *Manager) firePaired() {
+	m.mu.Lock()
+	cb := m.onPaired
+	m.mu.Unlock()
+	if cb != nil {
+		go cb() // Don't block the pairing goroutine on the callback.
+	}
 }
 
 func (m *Manager) emitAudit(ev AuditEvent) {
@@ -332,6 +358,11 @@ func (m *Manager) completeApproved(ctx context.Context, client *http.Client, msU
 			"cert_not_after":      sr.IssuedCertificate.NotAfter.Format(time.RFC3339),
 		},
 	})
+
+	// Fire the paired callback (Core wires this to mdns.Service.Refresh
+	// so listeners see paired=true in TXT records). Async so the
+	// pairing goroutine doesn't block on whatever the callback does.
+	m.firePaired()
 	return nil
 }
 

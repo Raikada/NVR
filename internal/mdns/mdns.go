@@ -131,6 +131,51 @@ func (s *Service) Stop() {
 	s.wg.Wait()
 }
 
+// Refresh re-registers the broadcaster with current TXT records so
+// state changes (notably paired=false → paired=true after a
+// successful pairing) propagate to LAN listeners. zeroconf doesn't
+// expose in-place TXT updates; the operational shape is shutdown +
+// re-Register, which works fine for mDNS (clients re-resolve on
+// next browse).
+//
+// Safe to call when the service isn't running (no-op). Listener +
+// sweeper goroutines are not affected — only the announcer is
+// refreshed.
+func (s *Service) Refresh() error {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return nil
+	}
+	oldAnnouncer := s.announcer
+	s.announcer = nil
+	s.mu.Unlock()
+
+	if oldAnnouncer != nil {
+		oldAnnouncer.Shutdown()
+	}
+
+	newAnnouncer, err := zeroconf.Register(
+		announceInstancePrefix+s.identity.ID().String()[:8],
+		ServiceTypeRecorder,
+		"local.",
+		s.port,
+		s.recorderTXTRecords(),
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.announcer = newAnnouncer
+	s.mu.Unlock()
+
+	s.logger.Log(logger.Info, "[mdns] re-broadcasting %s id=%s paired=%v",
+		ServiceTypeRecorder, s.identity.ID().String(), s.identity.IsPaired())
+	return nil
+}
+
 // Discovered returns a snapshot of currently-cached MS advertisements.
 func (s *Service) Discovered() []DiscoveredManagement {
 	s.mu.Lock()
