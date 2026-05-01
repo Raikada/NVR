@@ -25,6 +25,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
+	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -128,6 +129,7 @@ type Core struct {
 	api             *api.API
 	confWatcher     *confwatcher.ConfWatcher
 	identity        *identity.Identity
+	pairingManager  *mspairing.Manager
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -382,6 +384,10 @@ func (p *Core) createResources(initial bool) error {
 		p.identity = id
 		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s paired=%v",
 			id.ID().String(), idDir, id.IsPaired())
+	}
+
+	if p.pairingManager == nil {
+		p.pairingManager = mspairing.New(p.identity, p, string(version))
 	}
 
 	if p.authManager == nil {
@@ -749,6 +755,7 @@ func (p *Core) createResources(initial bool) error {
 			Conf:           p.conf,
 			AuthManager:    p.authManager,
 			Identity:       p.identity,
+			Pairing:        p.pairingManager,
 			PathManager:    p.pathManager,
 			RTSPServer:     p.rtspServer,
 			RTSPSServer:    p.rtspsServer,

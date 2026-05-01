@@ -17,6 +17,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	"github.com/bluenviron/mediamtx/internal/web"
 )
@@ -77,6 +78,7 @@ type API struct {
 	Conf           *conf.Conf
 	AuthManager    apiAuthManager
 	Identity       *identity.Identity
+	Pairing        *pairing.Manager
 	PathManager    defs.APIPathManager
 	RTSPServer     defs.APIRTSPServer
 	RTSPSServer    defs.APIRTSPServer
@@ -185,6 +187,11 @@ func (a *API) Initialize() error {
 	group.GET("/recorder/config-backup", a.onV1RecorderConfigBackup)
 	group.POST("/recorder/config-restore", a.onV1RecorderConfigRestore)
 	group.GET("/recorder/network-info", a.onV1RecorderNetworkInfo)
+	// Pairing — recorder-side trigger + status for the MS pairing
+	// flow. Operator drives this from the Setup Wizard.
+	group.POST("/recorder/pair", a.onV1RecorderPairPost)
+	group.GET("/recorder/pair/status", a.onV1RecorderPairStatusGet)
+	group.POST("/recorder/pair/reset", a.onV1RecorderPairResetPost)
 	// Diagnostics suite (cross-platform; no shell-outs).
 	group.POST("/diagnostics/ping", a.onV1DiagnosticsPing)
 	group.POST("/diagnostics/ntp", a.onV1DiagnosticsNTP)
