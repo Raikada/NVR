@@ -2126,13 +2126,31 @@ components:
         surface (changing them is the host OS's job, not the
         recorder process's). Location is operator-set (PATCH
         accepts only `location`). Firmware is build-time stamped.
+
+        `id`, `paired`, `public_key_fingerprint`, and
+        `pinned_root_fingerprints` come from the recorder's
+        persistent device-identity material per ADR 0002 D3 + ADR
+        0011 D1 + ADR 0012 D5. The id is generated UUIDv7 once at
+        first install and never changes. Public-key fingerprint is
+        operator-displayable for out-of-band MITM verification
+        during pairing.
       required:
+        - id
         - tenant_id
         - hostname
         - location
         - timezone
         - firmware_version
+        - paired
+        - public_key_fingerprint
+        - pinned_root_fingerprints
       properties:
+        id:
+          type: string
+          format: uuid
+          description: |
+            Recorder's UUIDv7, self-generated at first install per
+            ADR 0002 D3. Stable for the life of the install.
         tenant_id:
           type: string
           format: uuid
@@ -2148,6 +2166,30 @@ components:
           description: Recorder process's local-zone abbreviation (UTC, CET, …).
         firmware_version:
           type: string
+        paired:
+          type: boolean
+          description: |
+            True iff the recorder has been paired with an MS and
+            holds a currently-valid issued mTLS cert. False before
+            pairing or when the issued cert has expired.
+        public_key_fingerprint:
+          type: string
+          description: |
+            Lower-case hex SHA-256 of the recorder's PKIX-DER-encoded
+            public key. Stable for the life of the install. Operators
+            verify this out-of-band on the MS approval queue to
+            confirm they're approving the recorder they think they
+            are (defends against active LAN-MITM during pairing).
+        pinned_root_fingerprints:
+          type: array
+          items:
+            type: string
+          description: |
+            Lower-case hex SHA-256 fingerprints of the MS root CA(s)
+            this recorder trusts (per ADR 0012 D5). Empty array
+            before pairing. May contain multiple entries during a
+            root-replacement overlap window when the MS is being
+            re-keyed (per ADR 0012 D2).
 
     RecorderIdentityPatch:
       type: object

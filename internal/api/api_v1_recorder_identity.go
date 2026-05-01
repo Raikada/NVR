@@ -32,11 +32,15 @@ import (
 )
 
 type v1RecorderIdentity struct {
-	TenantID       string `json:"tenant_id"`
-	Hostname       string `json:"hostname"`
-	Location       string `json:"location"`
-	Timezone       string `json:"timezone"`
-	FirmwareVersion string `json:"firmware_version"`
+	ID                     string   `json:"id"`
+	TenantID               string   `json:"tenant_id"`
+	Hostname               string   `json:"hostname"`
+	Location               string   `json:"location"`
+	Timezone               string   `json:"timezone"`
+	FirmwareVersion        string   `json:"firmware_version"`
+	Paired                 bool     `json:"paired"`
+	PublicKeyFingerprint   string   `json:"public_key_fingerprint"`
+	PinnedRootFingerprints []string `json:"pinned_root_fingerprints"`
 }
 
 func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
@@ -53,13 +57,29 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 	hostname, _ := os.Hostname()
 	tzName, _ := time.Now().Zone()
 
-	ctx.JSON(http.StatusOK, &v1RecorderIdentity{
-		TenantID:        tenant,
-		Hostname:        hostname,
-		Location:        location,
-		Timezone:        tzName,
-		FirmwareVersion: a.Version,
-	})
+	resp := &v1RecorderIdentity{
+		TenantID:               tenant,
+		Hostname:               hostname,
+		Location:               location,
+		Timezone:               tzName,
+		FirmwareVersion:        a.Version,
+		PinnedRootFingerprints: []string{},
+	}
+
+	// Identity is set in production by Core.createResources; absent
+	// in some lightweight test harnesses. Defensive nil-check.
+	if a.Identity != nil {
+		resp.ID = a.Identity.ID().String()
+		resp.Paired = a.Identity.IsPaired()
+		if fp, err := a.Identity.PublicKeyFingerprint(); err == nil {
+			resp.PublicKeyFingerprint = fp
+		}
+		for _, r := range a.Identity.PinnedRoots() {
+			resp.PinnedRootFingerprints = append(resp.PinnedRootFingerprints, r.FingerprintSHA256)
+		}
+	}
+
+	ctx.JSON(http.StatusOK, resp)
 }
 
 func (a *API) onV1RecorderIdentityPatch(ctx *gin.Context) {

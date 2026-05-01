@@ -244,6 +244,14 @@ type Conf struct {
 	// Identity
 	TenantID string `json:"tenantId"`
 
+	// IdentityDir is the directory holding the recorder's persistent
+	// device identity (per ADR 0002 D3 self-generated UUIDv7 + ADR
+	// 0011 D1 mTLS keypair + ADR 0012 D5 pinned root CA fingerprints).
+	// Generated on first start; stable for the life of the install.
+	// Empty default: derived as <dirname(confPath)>/identity by Core
+	// at startup. Operators with non-standard layouts override here.
+	IdentityDir string `json:"identityDir"`
+
 	// Upstream endpoints (optional bootstrap conveniences).
 	//
 	// These pre-figure the eventual MS-pairing client (ADR 0008,

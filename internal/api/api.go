@@ -15,6 +15,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	"github.com/bluenviron/mediamtx/internal/web"
@@ -75,6 +76,7 @@ type API struct {
 	WriteTimeout   conf.Duration
 	Conf           *conf.Conf
 	AuthManager    apiAuthManager
+	Identity       *identity.Identity
 	PathManager    defs.APIPathManager
 	RTSPServer     defs.APIRTSPServer
 	RTSPSServer    defs.APIRTSPServer

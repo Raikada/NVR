@@ -24,6 +24,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
+	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -126,6 +127,7 @@ type Core struct {
 	srtServer       *srt.Server
 	api             *api.API
 	confWatcher     *confwatcher.ConfWatcher
+	identity        *identity.Identity
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -359,6 +361,27 @@ func (p *Core) createResources(initial bool) error {
 
 		p.externalCmdPool = &externalcmd.Pool{}
 		p.externalCmdPool.Initialize()
+	}
+
+	if p.identity == nil {
+		idDir := p.conf.IdentityDir
+		if idDir == "" {
+			// Derive from the conf-file's parent directory. If
+			// confPath is empty (recorder running without a conf file),
+			// use "./identity" relative to cwd as a last resort.
+			if p.confPath != "" {
+				idDir = filepath.Join(filepath.Dir(p.confPath), "identity")
+			} else {
+				idDir = "identity"
+			}
+		}
+		id, err := identity.Open(idDir)
+		if err != nil {
+			return fmt.Errorf("identity open: %w", err)
+		}
+		p.identity = id
+		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s paired=%v",
+			id.ID().String(), idDir, id.IsPaired())
 	}
 
 	if p.authManager == nil {
@@ -725,6 +748,7 @@ func (p *Core) createResources(initial bool) error {
 			WriteTimeout:   p.conf.WriteTimeout,
 			Conf:           p.conf,
 			AuthManager:    p.authManager,
+			Identity:       p.identity,
 			PathManager:    p.pathManager,
 			RTSPServer:     p.rtspServer,
 			RTSPSServer:    p.rtspsServer,
