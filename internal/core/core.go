@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +27,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
+	"github.com/bluenviron/mediamtx/internal/mdns"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
@@ -130,6 +133,7 @@ type Core struct {
 	confWatcher     *confwatcher.ConfWatcher
 	identity        *identity.Identity
 	pairingManager  *mspairing.Manager
+	mdnsService     *mdns.Service
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -388,6 +392,19 @@ func (p *Core) createResources(initial bool) error {
 
 	if p.pairingManager == nil {
 		p.pairingManager = mspairing.New(p.identity, p, string(version))
+	}
+
+	if p.mdnsService == nil && p.conf.MDNS != nil && *p.conf.MDNS && p.conf.API {
+		// Use the API listen port for mDNS announcements — that's
+		// the surface clients will reach the recorder on. ":port"
+		// stripping is sufficient because APIAddress is "host:port"
+		// or ":port".
+		port := parseAPIPort(p.conf.APIAddress)
+		p.mdnsService = mdns.New(p.identity, p, string(version), port)
+		if err := p.mdnsService.Start(); err != nil {
+			p.Log(logger.Warn, "mdns failed to start: %s", err)
+			p.mdnsService = nil
+		}
 	}
 
 	if p.authManager == nil {
@@ -756,6 +773,7 @@ func (p *Core) createResources(initial bool) error {
 			AuthManager:    p.authManager,
 			Identity:       p.identity,
 			Pairing:        p.pairingManager,
+			MDNS:           p.mdnsService,
 			PathManager:    p.pathManager,
 			RTSPServer:     p.rtspServer,
 			RTSPSServer:    p.rtspsServer,
@@ -1069,6 +1087,14 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.confWatcher = nil
 	}
 
+	// mDNS only closes at full shutdown. Toggling mdns: on/off via
+	// conf reload requires a restart for v1; revisit if customers
+	// hit it.
+	if newConf == nil && p.mdnsService != nil {
+		p.mdnsService.Stop()
+		p.mdnsService = nil
+	}
+
 	if p.api != nil {
 		if closeAPI {
 			p.api.Close()
@@ -1181,4 +1207,23 @@ func (p *Core) APIConfigSet(conf *conf.Conf) {
 	case p.chAPIConfigSet <- conf:
 	case <-p.ctx.Done():
 	}
+}
+
+// parseAPIPort extracts the port number from an APIAddress like
+// "host:port" or ":port". Returns the recorder's default 9997 if
+// parsing fails.
+func parseAPIPort(addr string) int {
+	if addr == "" {
+		return 9997
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		_ = host
+		return 9997
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 9997
+	}
+	return p
 }

@@ -252,6 +252,16 @@ type Conf struct {
 	// at startup. Operators with non-standard layouts override here.
 	IdentityDir string `json:"identityDir"`
 
+	// MDNS controls the convenience mDNS surface per pairing API
+	// contract §8: the recorder broadcasts _raikada-recorder._tcp.local
+	// so MS instances on the LAN can surface it for pairing, and
+	// listens for _raikada-management._tcp.local advertisements so
+	// the recorder's setup wizard can pre-fill discovered MS URLs.
+	// mDNS is a convenience layer; the cryptographic pinning via
+	// QR pairing-token is the trust anchor (per ADR 0012 D5).
+	// Disable on networks where multicast is forbidden.
+	MDNS *bool `json:"mdns,omitempty"`
+
 	// Upstream endpoints (optional bootstrap conveniences).
 	//
 	// These pre-figure the eventual MS-pairing client (ADR 0008,
@@ -738,6 +748,11 @@ func (conf *Conf) Validate(l logger.Writer) error {
 	if conf.TenantID == "" {
 		return fmt.Errorf("'tenantId' is required: every recorder is bound to exactly one tenant. " +
 			"Set this in the bootstrap config until the pairing flow lands per ADR 0002.")
+	}
+
+	if conf.MDNS == nil {
+		on := true
+		conf.MDNS = &on
 	}
 
 	// General (deprecated params)
