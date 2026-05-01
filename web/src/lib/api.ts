@@ -433,6 +433,15 @@ export const fetchPairStatus = () => api.get<PairStatus>('/recorder/pair/status'
 
 export const resetPairing = () => api.post<{ status: string }>('/recorder/pair/reset');
 
+// unpairRecorder wipes the recorder's locally-stored DeviceIdentity
+// (cert + chain + pinned roots) and returns it to unpaired state.
+// The recorder's UUIDv7 + ECDSA keypair survive — per ADR 0002 D3
+// those are stable for the life of the install. The MS still has a
+// pairing record + RecordingServer entry until an MS operator
+// cleans it up; the recorder ↔ MS WebSocket-driven unpair flow
+// (pairing-flows.md §2.5) lands in a later slice.
+export const unpairRecorder = () => api.post<{ status: string }>('/recorder/unpair');
+
 /* ---------- /v1/recorder/discovered-management ---------- */
 
 export interface DiscoveredManagement {

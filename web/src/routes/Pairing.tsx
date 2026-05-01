@@ -31,6 +31,7 @@ import {
   fetchPairStatus,
   resetPairing,
   startPairing,
+  unpairRecorder,
   type DiscoveredManagement,
   type PairStatus,
 } from '../lib/api';
@@ -252,21 +253,44 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
               <Btn kind="secondary" icon="activity">
                 Test Link
               </Btn>
-              {/* STUB — server-side /v1/recorder/unpair endpoint
-                * doesn't exist yet (pairing-flows.md §2.5). Local-
-                * only state clear; revisit when the unpair flow
-                * lands in slice 4+. */}
+              {/* Recorder-local unpair: wipes the issued cert +
+                * chain + pinned roots via /v1/recorder/unpair. The
+                * recorder's UUIDv7 + keypair survive (ADR 0002 D3).
+                * The MS still has a pairing record + RecordingServer
+                * entry until an MS operator cleans it up there; the
+                * MS-initiated unpair flow per pairing-flows.md §2.5
+                * lands when the recorder ↔ MS WebSocket exists. */}
               <Btn
                 kind="danger"
                 icon="unlink"
-                onClick={() => {
-                  setState((s) => ({ ...s, paired: false, managementServer: null }));
-                  addToast({
-                    kind: 'warning',
-                    title: 'UNPAIRED (LOCAL ONLY — STUB)',
-                    body: 'Server-side unpair flow lands in slice 4+',
-                    icon: 'unlink',
-                  });
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      'Unpair this recorder? The locally-stored DeviceIdentity will be wiped. ' +
+                        'The MS will still have a pairing record until an operator cleans it up there. ' +
+                        'You can re-pair afterwards. Recordings are not deleted.',
+                    )
+                  ) {
+                    return;
+                  }
+                  try {
+                    await unpairRecorder();
+                    setState((s) => ({ ...s, paired: false, managementServer: null }));
+                    setPairStatus(null);
+                    addToast({
+                      kind: 'warning',
+                      title: 'UNPAIRED',
+                      body: 'Recorder is standalone. The MS may still hold a stale pairing record.',
+                      icon: 'unlink',
+                    });
+                  } catch (e) {
+                    addToast({
+                      kind: 'danger',
+                      title: 'UNPAIR FAILED',
+                      body: (e as Error).message,
+                      icon: 'alert-triangle',
+                    });
+                  }
                 }}
               >
                 Unpair

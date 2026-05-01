@@ -308,6 +308,35 @@ func (i *Identity) SetIssuedIdentity(certPEM, chainPEM []byte, pinned []PinnedRo
 	return nil
 }
 
+// ClearIssuedIdentity wipes the issued cert + chain + pinned roots
+// from disk and from in-memory state, returning the recorder to its
+// unpaired state. The UUIDv7 and ECDSA keypair are kept — per ADR
+// 0002 D3 those are stable for the life of the install.
+//
+// Used by the recorder-local "unpair" path (an operator deciding to
+// detach this recorder from its current MS, e.g. to re-pair with a
+// different MS or to recover from a mis-pairing). Distinct from the
+// MS-initiated unpair flow per pairing-flows.md §2.5, which lands
+// when the recorder ↔ MS WebSocket exists. After this call, IsPaired
+// returns false, /v1/recorder/identity returns paired=false, and the
+// next pairing flow can run cleanly.
+//
+// Idempotent: calling on an already-unpaired identity is a no-op.
+func (i *Identity) ClearIssuedIdentity() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	for _, name := range []string{certFile, chainFile, pinnedRoots} {
+		if err := os.Remove(filepath.Join(i.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("identity: remove %s: %w", name, err)
+		}
+	}
+	i.cert = nil
+	i.chain = nil
+	i.roots = nil
+	return nil
+}
+
 // BuildCSR builds an X.509 CertificateRequest signed with the
 // recorder's private key, with a SAN URI of
 // raikada://recording_server/<id> per ADR 0011 D3.

@@ -194,6 +194,7 @@ func (a *API) Initialize() error {
 	group.POST("/recorder/pair", a.onV1RecorderPairPost)
 	group.GET("/recorder/pair/status", a.onV1RecorderPairStatusGet)
 	group.POST("/recorder/pair/reset", a.onV1RecorderPairResetPost)
+	group.POST("/recorder/unpair", a.onV1RecorderUnpairPost)
 	group.GET("/recorder/discovered-management", a.onV1RecorderDiscoveredManagementGet)
 	// Diagnostics suite (cross-platform; no shell-outs).
 	group.POST("/diagnostics/ping", a.onV1DiagnosticsPing)
