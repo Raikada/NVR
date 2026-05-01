@@ -93,7 +93,7 @@ func TestSetIssuedIdentity(t *testing.T) {
 		Kind:              "ms_self_signed",
 		PinnedAt:          time.Now(),
 	}
-	require.NoError(t, id.SetIssuedIdentity(leafPEM, chainPEM, []PinnedRoot{root}))
+	require.NoError(t, id.SetIssuedIdentity(leafPEM, chainPEM, []PinnedRoot{root}, nil))
 	require.True(t, id.IsPaired())
 	require.NotEmpty(t, id.IssuedCert())
 	require.NotEmpty(t, id.IssuingChain())
@@ -143,6 +143,6 @@ func TestExpiredCertNotPaired(t *testing.T) {
 	leafPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
 	chainPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	root := PinnedRoot{FingerprintSHA256: "x", CertPEM: string(chainPEM)}
-	require.NoError(t, id.SetIssuedIdentity(leafPEM, chainPEM, []PinnedRoot{root}))
+	require.NoError(t, id.SetIssuedIdentity(leafPEM, chainPEM, []PinnedRoot{root}, nil))
 	require.False(t, id.IsPaired(), "expired cert should not count as paired")
 }

@@ -49,7 +49,7 @@ func TestClearIssuedIdentity(t *testing.T) {
 		CertPEM:           string(chainPEM),
 		Kind:              "ms_self_signed",
 		PinnedAt:          time.Now(),
-	}}))
+	}}, &MSMetadata{IssuerURL: "https://test.local"}))
 	require.True(t, id.IsPaired())
 
 	// Capture the pre-clear UUIDv7 + public key so we can confirm

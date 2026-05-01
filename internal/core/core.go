@@ -25,6 +25,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
+	"github.com/bluenviron/mediamtx/internal/crl"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/mdns"
@@ -134,6 +135,7 @@ type Core struct {
 	identity        *identity.Identity
 	pairingManager  *mspairing.Manager
 	mdnsService     *mdns.Service
+	crlPoller       *crl.Poller
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -405,6 +407,16 @@ func (p *Core) createResources(initial bool) error {
 			p.Log(logger.Warn, "mdns failed to start: %s", err)
 			p.mdnsService = nil
 		}
+	}
+
+	if p.crlPoller == nil {
+		p.crlPoller = crl.New(p.identity, p, time.Duration(p.conf.CRLPollInterval), func(reason string) error {
+			return p.handleCRLRevocation(reason)
+		})
+		// Start now if already paired (recorder restart with valid
+		// identity); the pairing-completed callback below also calls
+		// Start() for the post-pairing transition.
+		p.crlPoller.Start()
 	}
 
 	if p.authManager == nil {
@@ -802,15 +814,22 @@ func (p *Core) createResources(initial bool) error {
 			// Refresh mDNS TXT records (paired=false → paired=true)
 			// after a successful pairing so MS instances on the LAN
 			// see the up-to-date advertisement.
-			if p.mdnsService != nil {
-				ms := p.mdnsService
-				logRef := p
-				p.pairingManager.SetPairedCallback(func() {
+			ms := p.mdnsService
+			poller := p.crlPoller
+			logRef := p
+			p.pairingManager.SetPairedCallback(func() {
+				if ms != nil {
 					if err := ms.Refresh(); err != nil {
 						logRef.Log(logger.Warn, "[mdns] refresh after pairing failed: %s", err)
 					}
-				})
-			}
+				}
+				// Start the CRL poller now that we have an MS to
+				// poll (Start was a no-op pre-pair; calling again
+				// after pairing spins up the goroutine).
+				if poller != nil {
+					poller.Start()
+				}
+			})
 		}
 
 		// Wire the pipeline-side Event publish target so path.go's
@@ -1118,6 +1137,12 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.mdnsService = nil
 	}
 
+	// CRL poller likewise full-shutdown-only.
+	if newConf == nil && p.crlPoller != nil {
+		p.crlPoller.Stop()
+		p.crlPoller = nil
+	}
+
 	if p.api != nil {
 		if closeAPI {
 			p.api.Close()
@@ -1230,6 +1255,51 @@ func (p *Core) APIConfigSet(conf *conf.Conf) {
 	case p.chAPIConfigSet <- conf:
 	case <-p.ctx.Done():
 	}
+}
+
+// handleCRLRevocation runs when the CRL poller detects this
+// recorder's cert in the MS's revoked list. Mirrors the recorder-
+// local unpair sequence: clear the issued DeviceIdentity, reset the
+// pairing-flow state to idle, refresh mDNS so listeners see
+// paired=false, emit a device.unpaired audit entry tagged with the
+// MS-supplied reason. The pairing.Manager / mDNS Service / API
+// audit emitter are all goroutine-safe; we don't need extra locking
+// here.
+func (p *Core) handleCRLRevocation(reason string) error {
+	if p.identity == nil {
+		return nil
+	}
+	recorderID := p.identity.ID().String()
+	prefingerprints := []string{}
+	for _, root := range p.identity.PinnedRoots() {
+		prefingerprints = append(prefingerprints, root.FingerprintSHA256)
+	}
+
+	if err := p.identity.ClearIssuedIdentity(); err != nil {
+		return err
+	}
+	if p.pairingManager != nil {
+		p.pairingManager.Reset()
+	}
+	if p.mdnsService != nil {
+		_ = p.mdnsService.Refresh()
+	}
+	// Audit-emit through the API path so the entry lands in the
+	// recorder's per-emitter chain (matching device.pairing_completed
+	// from the inbound flow).
+	if p.api != nil {
+		attrs := map[string]string{
+			"recording_server_id": recorderID,
+			"reason":              "ms_initiated_revocation:" + reason,
+		}
+		for i, fp := range prefingerprints {
+			attrs[fmt.Sprintf("pinned_root_%d_fingerprint", i)] = fp
+		}
+		p.api.EmitPairingAudit("device.unpaired", "success", attrs)
+	}
+	p.Log(logger.Warn, "[crl] recorder cert revoked by MS (%s) — local DeviceIdentity wiped",
+		reason)
+	return nil
 }
 
 // parseAPIPort extracts the port number from an APIAddress like

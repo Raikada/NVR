@@ -330,11 +330,23 @@ func (m *Manager) completeApproved(ctx context.Context, client *http.Client, msU
 		})
 	}
 
-	// Persist.
+	// Persist. MS metadata is captured here so the recorder's CRL
+	// poller (and the eventual recorder ↔ MS WebSocket) know what
+	// MS to talk to after pairing.
+	var msMeta *identity.MSMetadata
+	if sr.MSMetadata != nil {
+		msMeta = &identity.MSMetadata{
+			IssuerURL:    sr.MSMetadata.IssuerURL,
+			JWKSURL:      sr.MSMetadata.JWKSURL,
+			RootsURL:     sr.MSMetadata.RootsURL,
+			WebSocketURL: sr.MSMetadata.WebSocketURL,
+		}
+	}
 	if err := m.identity.SetIssuedIdentity(
 		[]byte(sr.IssuedCertificate.CertPEM),
 		[]byte(sr.IssuedCertificate.ChainPEM),
 		pinned,
+		msMeta,
 	); err != nil {
 		return fmt.Errorf("persist issued identity: %w", err)
 	}

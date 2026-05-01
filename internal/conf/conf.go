@@ -262,6 +262,13 @@ type Conf struct {
 	// Disable on networks where multicast is forbidden.
 	MDNS *bool `json:"mdns,omitempty"`
 
+	// CRLPollInterval controls how often the recorder polls the
+	// paired MS's /.well-known/raikada-crl endpoint per ADR 0011 D5.
+	// Empty / zero default = 5 minutes. Lower values reduce
+	// revocation-detection latency at the cost of MS load. The
+	// recorder also stops polling when unpaired (no MS to poll).
+	CRLPollInterval Duration `json:"crlPollInterval"`
+
 	// Upstream endpoints (optional bootstrap conveniences).
 	//
 	// These pre-figure the eventual MS-pairing client (ADR 0008,

@@ -50,16 +50,28 @@ import (
 )
 
 const (
-	idFile        = "id"
-	keyFile       = "recorder.key"
-	pubFile       = "recorder.pub"
-	certFile      = "device.crt"
-	chainFile     = "chain.crt"
-	pinnedRoots   = "pinned-roots.json"
-	keyFileMode   = 0o600
-	pubFileMode   = 0o644
-	dirMode       = 0o700
+	idFile         = "id"
+	keyFile        = "recorder.key"
+	pubFile        = "recorder.pub"
+	certFile       = "device.crt"
+	chainFile      = "chain.crt"
+	pinnedRoots    = "pinned-roots.json"
+	msMetadataFile = "ms-metadata.json"
+	keyFileMode    = 0o600
+	pubFileMode    = 0o644
+	dirMode        = 0o700
 )
+
+// MSMetadata is what the MS returned at pairing approval — the
+// endpoints the recorder uses afterwards to talk to its paired MS.
+// Persisted alongside the issued cert so the recorder can reconnect
+// after a restart and so the CRL poller knows where to fetch.
+type MSMetadata struct {
+	IssuerURL    string `json:"issuer_url"`
+	JWKSURL      string `json:"jwks_url"`
+	RootsURL     string `json:"roots_url"`
+	WebSocketURL string `json:"websocket_url"`
+}
 
 // PinnedRoot is one entry in the recorder's trust store of MS root
 // CAs (per ADR 0012 D5).
@@ -86,6 +98,7 @@ type Identity struct {
 	cert     []byte // PEM-encoded issued mTLS cert; nil if unpaired
 	chain    []byte // PEM-encoded chain to MS root; nil if unpaired
 	roots    []PinnedRoot
+	msMeta   *MSMetadata // populated alongside cert; nil if unpaired
 }
 
 // Open opens or creates the recorder's identity at dir. On first call
@@ -187,6 +200,15 @@ func (i *Identity) loadOrCreate() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("identity: read pinned roots: %w", err)
 	}
+	if data, err := os.ReadFile(filepath.Join(i.dir, msMetadataFile)); err == nil {
+		var meta MSMetadata
+		if err := json.Unmarshal(data, &meta); err != nil {
+			return fmt.Errorf("identity: parse ms metadata: %w", err)
+		}
+		i.msMeta = &meta
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("identity: read ms metadata: %w", err)
+	}
 	return nil
 }
 
@@ -273,9 +295,12 @@ func (i *Identity) IsPaired() bool {
 }
 
 // SetIssuedIdentity persists a freshly-issued cert + chain + pinned
-// roots to disk and updates the in-memory state. Called by the
-// pairing client at approval time.
-func (i *Identity) SetIssuedIdentity(certPEM, chainPEM []byte, pinned []PinnedRoot) error {
+// roots + MS metadata to disk and updates the in-memory state.
+// Called by the pairing client at approval time. msMeta may be nil
+// (older callers / tests); when present it persists the MS endpoint
+// URLs the recorder uses afterwards (the CRL poller, future
+// recorder ↔ MS WebSocket, etc.).
+func (i *Identity) SetIssuedIdentity(certPEM, chainPEM []byte, pinned []PinnedRoot, msMeta *MSMetadata) error {
 	if len(certPEM) == 0 {
 		return errors.New("identity: empty cert pem")
 	}
@@ -301,11 +326,34 @@ func (i *Identity) SetIssuedIdentity(certPEM, chainPEM []byte, pinned []PinnedRo
 	if err := writeFileAtomic(filepath.Join(i.dir, pinnedRoots), rootsJSON, pubFileMode); err != nil {
 		return err
 	}
+	if msMeta != nil {
+		metaJSON, err := json.MarshalIndent(msMeta, "", "  ")
+		if err != nil {
+			return fmt.Errorf("identity: marshal ms metadata: %w", err)
+		}
+		if err := writeFileAtomic(filepath.Join(i.dir, msMetadataFile), metaJSON, pubFileMode); err != nil {
+			return err
+		}
+	}
 
 	i.cert = certPEM
 	i.chain = chainPEM
 	i.roots = pinned
+	i.msMeta = msMeta
 	return nil
+}
+
+// MSMetadata returns the persisted MS endpoint URLs, or nil if the
+// recorder is unpaired (or was paired before MS metadata persistence
+// landed).
+func (i *Identity) MSMetadata() *MSMetadata {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.msMeta == nil {
+		return nil
+	}
+	out := *i.msMeta
+	return &out
 }
 
 // ClearIssuedIdentity wipes the issued cert + chain + pinned roots
@@ -326,7 +374,7 @@ func (i *Identity) ClearIssuedIdentity() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	for _, name := range []string{certFile, chainFile, pinnedRoots} {
+	for _, name := range []string{certFile, chainFile, pinnedRoots, msMetadataFile} {
 		if err := os.Remove(filepath.Join(i.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("identity: remove %s: %w", name, err)
 		}
@@ -334,6 +382,7 @@ func (i *Identity) ClearIssuedIdentity() error {
 	i.cert = nil
 	i.chain = nil
 	i.roots = nil
+	i.msMeta = nil
 	return nil
 }
 
