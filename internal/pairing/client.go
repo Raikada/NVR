@@ -23,6 +23,21 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
+// AuditEvent is the shape passed to the AuditCallback. The audit
+// emitter wires this to the recorder's per-emitter audit chain (per
+// ADR 0006) without the pairing package needing to know how the
+// chain is implemented.
+type AuditEvent struct {
+	Action     string            // e.g. "device.pairing_completed"
+	Outcome    string            // "success" | "failure" | "denied"
+	Attributes map[string]string // arbitrary structured detail
+}
+
+// AuditCallback is called when the manager wants to emit an audit
+// entry. nil callback is allowed (events are dropped — useful in
+// tests).
+type AuditCallback func(AuditEvent)
+
 // Manager owns the recorder's pairing-flow state and runs the
 // MS-side conversation in a background goroutine. One pairing flow
 // at a time per recorder; concurrent Start() calls return
@@ -31,6 +46,7 @@ type Manager struct {
 	identity *identity.Identity
 	logger   logger.Writer
 	version  string
+	audit    AuditCallback
 
 	// httpClient is the base shape; the actual TLS config is built
 	// per-Start() because each pairing pins a different root
@@ -53,6 +69,26 @@ func New(id *identity.Identity, log logger.Writer, version string) *Manager {
 			State:     StateIdle,
 			UpdatedAt: time.Now(),
 		},
+	}
+}
+
+// SetAuditCallback wires a callback that the manager fires for
+// pairing-related audit events. Caller-provided so the manager
+// stays decoupled from how audit entries are persisted (the
+// recorder's per-emitter audit chain per ADR 0006 lives in
+// internal/api).
+func (m *Manager) SetAuditCallback(cb AuditCallback) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audit = cb
+}
+
+func (m *Manager) emitAudit(ev AuditEvent) {
+	m.mu.Lock()
+	cb := m.audit
+	m.mu.Unlock()
+	if cb != nil {
+		cb(ev)
 	}
 }
 
@@ -281,6 +317,21 @@ func (m *Manager) completeApproved(ctx context.Context, client *http.Client, msU
 		fmt.Sprintf("paired with %s as recording_server %s", msURL, sr.RecordingServer.ID))
 	m.logger.Log(logger.Info, "pairing complete: ms=%s recording_server_id=%s",
 		msURL, sr.RecordingServer.ID)
+
+	// Audit emission per ADR 0006: recorder is the emitter for
+	// device.pairing_completed (the recorder-local milestone). The
+	// MS emits its own pairing.approved + device.identity_issued
+	// from its side.
+	m.emitAudit(AuditEvent{
+		Action:  "device.pairing_completed",
+		Outcome: "success",
+		Attributes: map[string]string{
+			"ms_url":              msURL,
+			"recording_server_id": sr.RecordingServer.ID,
+			"pairing_request_id":  sr.PairingRequestID,
+			"cert_not_after":      sr.IssuedCertificate.NotAfter.Format(time.RFC3339),
+		},
+	})
 	return nil
 }
 

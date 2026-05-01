@@ -142,21 +142,35 @@ func authActionForOutcome(o defs.AuditOutcome) string {
 }
 
 // emitPairingEvent is the entry point for pairing-related audit
-// entries. The recorder doesn't implement pairing yet — the MS-
-// pairing client surfaces in a later ADR — so this is a stub that
-// real call sites will wire up when pairing lands.
-//
-// TODO when pairing lands: wire this into the MS-pairing-client
-// state machine (token issued / consumed / rotated). The shape here
-// is the contract the eventual call site will use.
+// entries. Wired to internal/pairing.Manager via SetAuditCallback at
+// startup (see core.createResources). The recorder is the emitter
+// for device.pairing_completed; the MS emits its own
+// pairing.token_issued / .consumed / .approved entries.
 func (a *API) emitPairingEvent(action string, outcome defs.AuditOutcome, attrs map[string]string) {
 	a.emitAudit(defs.AuditLogEntryInput{
 		ActorKind:    defs.AuditActorKindSystem,
-		Action:       action, // pairing.token_issued, pairing.consumed, etc.
+		Action:       action, // device.pairing_completed, etc.
 		Outcome:      outcome,
-		ResourceKind: "pairing",
+		ResourceKind: "recording_server",
 		Attributes:   attrs,
 	})
+}
+
+// EmitPairingAudit is the public entry point used by Core to wire
+// the pairing.Manager's audit callback through to the recorder's
+// per-emitter audit chain. Translates string outcomes into the
+// canonical defs.AuditOutcome enum.
+func (a *API) EmitPairingAudit(action, outcome string, attrs map[string]string) {
+	var o defs.AuditOutcome
+	switch outcome {
+	case "success":
+		o = defs.AuditOutcomeSuccess
+	case "denied":
+		o = defs.AuditOutcomeDenied
+	default:
+		o = defs.AuditOutcomeFailure
+	}
+	a.emitPairingEvent(action, o, attrs)
 }
 
 // emitBreakGlassActivated is the entry point for break-glass audit

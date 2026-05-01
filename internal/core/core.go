@@ -790,6 +790,17 @@ func (p *Core) createResources(initial bool) error {
 		}
 		p.api = i
 
+		// Wire the pairing manager's audit callback so
+		// device.pairing_completed lands in the recorder's
+		// per-emitter audit chain (per ADR 0006). Done here, after
+		// both p.api and p.pairingManager exist.
+		if p.pairingManager != nil {
+			pa := p.api
+			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
+				pa.EmitPairingAudit(ev.Action, ev.Outcome, ev.Attributes)
+			})
+		}
+
 		// Wire the pipeline-side Event publish target so path.go's
 		// camera.online / camera.offline emitters land in the same
 		// EventStore that /v1/events serves from. Tenant id is
