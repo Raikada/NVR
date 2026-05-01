@@ -391,6 +391,65 @@ export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity
 export const patchIdentity = (body: { location: string }) =>
   api.patch<{ status: string }>('/recorder/identity', body);
 
+/* ---------- /v1/recorder/pair ---------- */
+
+// Mirrors internal/pairing.State — the recorder-side pairing-flow
+// state machine. Drives the WizPair / Pairing-route UI loop.
+export type PairState =
+  | 'idle'
+  | 'in_progress'
+  | 'approved'
+  | 'rejected'
+  | 'token_expired'
+  | 'token_consumed_elsewhere'
+  | 'failed'
+  | 'already_paired';
+
+export interface PairStatus {
+  state: PairState;
+  started_at?: string;
+  updated_at: string;
+  ms_url?: string;
+  pairing_request_id?: string;
+  detail?: string;
+}
+
+export interface PairStartRequest {
+  ms_url: string;
+  token: string;
+  root_fingerprint?: string; // sha256 hex (with optional `sha256:` prefix); from QR
+}
+
+export interface PairStartResponse {
+  state: PairState;
+  pairing_request_id?: string;
+  detail?: string;
+}
+
+export const startPairing = (body: PairStartRequest) =>
+  api.post<PairStartResponse>('/recorder/pair', body);
+
+export const fetchPairStatus = () => api.get<PairStatus>('/recorder/pair/status');
+
+export const resetPairing = () => api.post<{ status: string }>('/recorder/pair/reset');
+
+/* ---------- /v1/recorder/discovered-management ---------- */
+
+export interface DiscoveredManagement {
+  ms_id?: string;
+  hostname: string;
+  addresses: string[];
+  version?: string;
+  tenant_id?: string;
+  port: number;
+  url: string;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export const fetchDiscoveredManagement = () =>
+  api.get<{ items: DiscoveredManagement[] }>('/recorder/discovered-management');
+
 /* ---------- /v1/recorder system actions ---------- */
 
 export const rebootRecorder = () => api.post<{ status: string }>('/recorder/reboot');

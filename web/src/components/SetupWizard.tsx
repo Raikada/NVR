@@ -5,10 +5,17 @@
 // → Finish. Faithful port of the design's wizard.jsx.
 
 import { useEffect, useState } from 'react';
-import { Btn, Bracket, Stat, StatusBadge } from './primitives';
+import { Btn, Bracket, Input, Stat, StatusBadge } from './primitives';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
-import type { AppState, ManagementServer, ToastInput, UICamera, BadgeKind } from '../lib/types';
+import {
+  fetchDiscoveredManagement,
+  fetchPairStatus,
+  startPairing,
+  type DiscoveredManagement,
+  type PairStatus,
+} from '../lib/api';
+import type { AppState, ToastInput, UICamera, BadgeKind } from '../lib/types';
 
 interface SetupWizardProps {
   state: AppState;
@@ -360,40 +367,125 @@ interface WizPairProps {
   addToast: (t: ToastInput) => void;
 }
 
-const PAIR_CANDIDATES: ManagementServer[] = [
-  { host: 'ms-prod-01.local', ip: '10.0.1.21', mac: 'AC:DE:48:00:11:22', cameras: 24, ver: '4.2.1' },
-  { host: 'ms-backup-02.local', ip: '10.0.1.22', mac: 'AC:DE:48:00:11:33', cameras: 8, ver: '4.2.0' },
-];
-
 function WizPair({ state, setState, addToast }: WizPairProps) {
   const [scanning, setScanning] = useState(!state.paired);
-  const [found, setFound] = useState<ManagementServer[]>([]);
-  const [pairing, setPairing] = useState<string | null>(null);
+  const [discovered, setDiscovered] = useState<DiscoveredManagement[]>([]);
+  const [serverAddr, setServerAddr] = useState('');
+  const [token, setToken] = useState('');
+  const [pairStatus, setPairStatus] = useState<PairStatus | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Real mDNS-discovered list, refreshed every 5s while unpaired.
+  async function rescan() {
+    setScanning(true);
+    try {
+      const res = await fetchDiscoveredManagement();
+      setDiscovered(res.items);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setScanning(false);
+    }
+  }
 
   useEffect(() => {
     if (state.paired) return;
-    setScanning(true);
-    setFound([]);
-    const timers = PAIR_CANDIDATES.map((c, i) =>
-      window.setTimeout(() => setFound((prev) => [...prev, c]), 900 + i * 700),
-    );
-    const stop = window.setTimeout(
-      () => setScanning(false),
-      900 + PAIR_CANDIDATES.length * 700 + 400,
-    );
-    return () => {
-      timers.forEach(clearTimeout);
-      clearTimeout(stop);
-    };
+    void rescan();
+    const id = window.setInterval(rescan, 5000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.paired]);
 
-  function doPair(c: ManagementServer) {
-    setPairing(c.host);
-    window.setTimeout(() => {
-      setState((s) => ({ ...s, paired: true, managementServer: c }));
-      setPairing(null);
-      addToast({ kind: 'success', title: 'PAIRED', body: `Linked to ${c.host}`, icon: 'check-circle' });
-    }, 1400);
+  // On mount, fetch current pair status so refreshing the wizard
+  // mid-flow keeps in-progress visible.
+  useEffect(() => {
+    void fetchPairStatus()
+      .then((s) => setPairStatus(s))
+      .catch(() => {
+        /* no pair flow active = idle, fine */
+      });
+  }, []);
+
+  // Poll status while a pairing is in_progress.
+  useEffect(() => {
+    if (pairStatus?.state !== 'in_progress') return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const s = await fetchPairStatus();
+        if (cancelled) return;
+        setPairStatus(s);
+        if (s.state === 'approved') {
+          setState((prev) => ({
+            ...prev,
+            paired: true,
+            managementServer: {
+              host: s.ms_url ?? 'paired',
+              ip: '',
+              mac: '',
+              cameras: 0,
+              ver: '',
+              trust: 'SIGNED',
+            },
+          }));
+          addToast({
+            kind: 'success',
+            title: 'PAIRED',
+            body: `Linked to ${s.ms_url ?? 'management server'}`,
+            icon: 'check-circle',
+          });
+        } else if (s.state !== 'in_progress') {
+          addToast({
+            kind: 'warning',
+            title: s.state.replace(/_/g, ' ').toUpperCase(),
+            body: s.detail ?? 'pairing did not complete',
+            icon: 'alert-triangle',
+          });
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setError((e as Error).message);
+      }
+    };
+    const id = window.setInterval(tick, 1500);
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [pairStatus?.state, addToast, setState]);
+
+  function useDiscoveredAddress(d: DiscoveredManagement) {
+    setServerAddr(d.url);
+    addToast({
+      kind: 'info',
+      title: 'ADDRESS FILLED',
+      body: `Enter the pairing token from the MS to pair.`,
+      icon: 'info',
+    });
+  }
+
+  async function doPair() {
+    setError(null);
+    if (!serverAddr.startsWith('https://')) {
+      setError('Server address must start with https://');
+      return;
+    }
+    if (!token.trim()) {
+      setError('Pairing token is required.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const r = await startPairing({ ms_url: serverAddr.trim(), token: token.trim() });
+      setPairStatus({ state: r.state, updated_at: new Date().toISOString(), detail: r.detail });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   if (state.paired && state.managementServer) {
@@ -475,14 +567,7 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
             SCANNING
           </span>
         ) : (
-          <Btn
-            kind="tactical"
-            onClick={() => {
-              setScanning(true);
-              setFound([]);
-              window.setTimeout(() => setScanning(false), 1800);
-            }}
-          >
+          <Btn kind="tactical" onClick={rescan}>
             <Icon name="refresh-cw" style={{ width: 12, height: 12 }} /> RESCAN
           </Btn>
         )}
@@ -498,7 +583,7 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
           flexDirection: 'column',
         }}
       >
-        {found.length === 0 && !scanning && (
+        {discovered.length === 0 && !scanning && (
           <div
             style={{
               padding: 24,
@@ -511,9 +596,9 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
             No management servers found on this network.
           </div>
         )}
-        {found.map((c, i) => (
+        {discovered.map((d, i) => (
           <div
-            key={c.host}
+            key={d.ms_id ?? d.hostname}
             style={{
               padding: '12px 14px',
               borderTop: i === 0 ? 'none' : '1px solid var(--border)',
@@ -534,7 +619,7 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
                     color: 'var(--text-primary)',
                   }}
                 >
-                  {c.host}
+                  {d.hostname}
                 </span>
                 <StatusBadge kind="online" label="REACHABLE" size="sm" />
               </div>
@@ -548,22 +633,20 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
                   letterSpacing: 0.5,
                 }}
               >
-                <span>{c.ip}</span>
-                <span>{c.mac}</span>
-                <span>{c.cameras} CAM</span>
-                <span>v{c.ver}</span>
+                <span>{d.url}</span>
+                {d.version && <span>{d.version}</span>}
+                {d.ms_id && <span>id:{d.ms_id.slice(0, 8)}</span>}
               </div>
             </div>
-            <Btn kind="primary" size="sm" disabled={!!pairing} onClick={() => doPair(c)}>
-              {pairing === c.host ? 'Pairing…' : 'Pair'}
+            <Btn kind="secondary" size="sm" onClick={() => useDiscoveredAddress(d)}>
+              Use This
             </Btn>
           </div>
         ))}
-        {scanning && (
+        {scanning && discovered.length === 0 && (
           <div
             style={{
               padding: '12px 14px',
-              borderTop: found.length > 0 ? '1px solid var(--border)' : 'none',
               display: 'flex',
               alignItems: 'center',
               gap: 10,
@@ -584,26 +667,98 @@ function WizPair({ state, setState, addToast }: WizPairProps) {
                 opacity: 0.6,
               }}
             />
-            Probing subnet 10.0.1.0/24…
+            Listening for mDNS announcements…
           </div>
         )}
       </div>
 
       <div
         style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
           paddingTop: 8,
           borderTop: '1px solid var(--border)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
         }}
       >
-        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-muted)' }}>
-          Can't find your server?
-        </span>
-        <Btn kind="ghost" icon="plus">
-          Add manually
-        </Btn>
+        <div
+          style={{
+            fontFamily: 'var(--font-sans)',
+            fontSize: 12,
+            color: 'var(--text-secondary)',
+            lineHeight: 1.5,
+          }}
+        >
+          Issue a pairing token in the MS UI under "Pair a recorder", then enter the MS address
+          and the token below. The MS operator must approve the recorder before pairing
+          completes.
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+          <Input
+            label="SERVER ADDRESS"
+            value={serverAddr}
+            onChange={setServerAddr}
+            placeholder="https://ms.example.com:8443"
+            mono
+            disabled={pairStatus?.state === 'in_progress'}
+          />
+          <Input
+            label="PAIRING TOKEN"
+            value={token}
+            onChange={setToken}
+            placeholder="XXXX-XXXX-XXXX-XXXX-…"
+            mono
+            disabled={pairStatus?.state === 'in_progress'}
+          />
+        </div>
+        {error && (
+          <div
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: '#EF4444',
+            }}
+          >
+            {error}
+          </div>
+        )}
+        {pairStatus && pairStatus.state !== 'idle' && (
+          <div
+            style={{
+              padding: '10px 12px',
+              background: 'rgba(249,115,22,0.06)',
+              border: '1px solid rgba(249,115,22,0.27)',
+              borderRadius: 4,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: 'var(--text-primary)',
+            }}
+          >
+            <div
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                letterSpacing: 1,
+                color: '#F97316',
+                textTransform: 'uppercase',
+                marginBottom: 4,
+              }}
+            >
+              STATE: {pairStatus.state.replace(/_/g, ' ')}
+            </div>
+            {pairStatus.detail && <div>{pairStatus.detail}</div>}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Btn
+            kind="primary"
+            icon="link"
+            onClick={doPair}
+            disabled={submitting || pairStatus?.state === 'in_progress'}
+          >
+            {submitting || pairStatus?.state === 'in_progress' ? 'Pairing…' : 'Pair'}
+          </Btn>
+        </div>
       </div>
     </div>
   );

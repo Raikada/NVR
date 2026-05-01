@@ -1,9 +1,21 @@
-// Pairing route — LAN autodiscover + manual fallback. Faithful port
-// of the design's PairingRoute. Discovery seeds three candidate MS
-// hosts over ~1.4 seconds; pairing/unpairing is local-state only
-// (mock).
+// Pairing route — real backend wiring per
+// platform/docs/api-contracts/recorder-management-pairing.md.
+//
+// Discovery surfaces management servers heard via mDNS through the
+// recorder's /v1/recorder/discovered-management endpoint (per pairing
+// API contract §8). Pairing itself runs through /v1/recorder/pair +
+// status long-poll: the operator types the MS URL + the token they
+// received from the MS UI (the QR-with-fingerprint path is a future
+// enhancement that pre-fills root_fingerprint), submits, and the UI
+// polls until the recorder transitions to a terminal state.
+//
+// mDNS is informational — clicking a discovered card pre-fills the
+// MS URL field but the operator still enters the token. This matches
+// the platform's threat model: discovery is unauthenticated, the
+// cryptographic pinning via the operator-typed token is the trust
+// anchor.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Btn,
   Card,
@@ -14,7 +26,15 @@ import {
 } from '../components/primitives';
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
-import type { AppState, ManagementServer, ToastInput } from '../lib/types';
+import {
+  fetchDiscoveredManagement,
+  fetchPairStatus,
+  resetPairing,
+  startPairing,
+  type DiscoveredManagement,
+  type PairStatus,
+} from '../lib/api';
+import type { AppState, ToastInput } from '../lib/types';
 
 interface PairingProps {
   state: AppState;
@@ -22,35 +42,142 @@ interface PairingProps {
   addToast: (t: ToastInput) => void;
 }
 
-const POOL: ManagementServer[] = [
-  { host: 'ms-prod-01.local', ip: '10.0.1.21', mac: 'AC:DE:48:00:11:22', cameras: 24, ver: '4.2.1', trust: 'SIGNED' },
-  { host: 'ms-backup-02.local', ip: '10.0.1.22', mac: 'AC:DE:48:00:11:33', cameras: 8, ver: '4.2.0', trust: 'SIGNED' },
-  { host: 'ms-lab-dev.local', ip: '10.0.1.45', mac: 'AC:DE:48:00:22:01', cameras: 2, ver: '4.3.0-beta', trust: 'SELF' },
-];
+const POLL_INTERVAL_MS = 1500;
 
 export function Pairing({ state, setState, addToast }: PairingProps) {
+  const [discovered, setDiscovered] = useState<DiscoveredManagement[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [found, setFound] = useState<ManagementServer[]>([]);
   const [serverAddr, setServerAddr] = useState('');
   const [token, setToken] = useState('');
+  const [pairStatus, setPairStatus] = useState<PairStatus | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function rescan() {
+  // Poll the recorder's pair-status endpoint while a flow is
+  // in_progress. Exits when the state becomes terminal.
+  const stopPollRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (pairStatus?.state !== 'in_progress') return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const s = await fetchPairStatus();
+        if (cancelled) return;
+        setPairStatus(s);
+        if (s.state === 'approved') {
+          setState((prev) => ({
+            ...prev,
+            paired: true,
+            managementServer: {
+              host: s.ms_url ?? 'paired',
+              ip: '',
+              mac: '',
+              cameras: 0,
+              ver: '',
+              trust: 'SIGNED',
+            },
+          }));
+          addToast({
+            kind: 'success',
+            title: 'PAIRED',
+            body: `Linked to ${s.ms_url ?? 'management server'}`,
+            icon: 'check-circle',
+          });
+        } else if (s.state !== 'in_progress') {
+          addToast({
+            kind: 'warning',
+            title: s.state.replace(/_/g, ' ').toUpperCase(),
+            body: s.detail ?? 'pairing did not complete',
+            icon: 'alert-triangle',
+          });
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setError((e as Error).message);
+      }
+    };
+    const id = window.setInterval(tick, POLL_INTERVAL_MS);
+    void tick();
+    stopPollRef.current = () => window.clearInterval(id);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [pairStatus?.state, addToast, setState]);
+
+  async function rescan() {
     setScanning(true);
-    setFound([]);
-    POOL.forEach((c, i) =>
-      window.setTimeout(() => setFound((prev) => [...prev, c]), 500 + i * 450),
-    );
-    window.setTimeout(() => setScanning(false), 500 + POOL.length * 450 + 500);
+    try {
+      const res = await fetchDiscoveredManagement();
+      setDiscovered(res.items);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setScanning(false);
+    }
   }
 
+  // Initial discovery + a refresh on a 5s cadence while the page is
+  // open and the recorder is unpaired. mDNS announcements arrive
+  // every ~30s on the LAN, so this is conservative.
   useEffect(() => {
-    if (!state.paired) rescan();
+    if (state.paired) return;
+    void rescan();
+    const id = window.setInterval(rescan, 5000);
+    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.paired]);
+
+  // On mount, also fetch the current pair status so refreshing the
+  // page mid-flow doesn't lose the in-progress signal.
+  useEffect(() => {
+    void fetchPairStatus()
+      .then((s) => setPairStatus(s))
+      .catch(() => {
+        /* idle pre-pair returns idle; non-200 is rare here */
+      });
   }, []);
 
-  function pair(c: ManagementServer) {
-    setState((s) => ({ ...s, paired: true, managementServer: c }));
-    addToast({ kind: 'success', title: 'PAIRED', body: `Linked to ${c.host}`, icon: 'check-circle' });
+  function useDiscoveredAddress(d: DiscoveredManagement) {
+    setServerAddr(d.url);
+    addToast({
+      kind: 'info',
+      title: 'ADDRESS FILLED',
+      body: `Enter the pairing token from the MS to complete pairing.`,
+      icon: 'info',
+    });
+  }
+
+  async function pairManually() {
+    setError(null);
+    if (!serverAddr.startsWith('https://')) {
+      setError('Server address must start with https://');
+      return;
+    }
+    if (!token.trim()) {
+      setError('Pairing token is required.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const r = await startPairing({ ms_url: serverAddr.trim(), token: token.trim() });
+      setPairStatus({ state: r.state, updated_at: new Date().toISOString(), detail: r.detail });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function clearPairState() {
+    try {
+      await resetPairing();
+    } catch {
+      /* ignore — best-effort */
+    }
+    setPairStatus(null);
+    setError(null);
   }
 
   return (
@@ -125,6 +252,10 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
               <Btn kind="secondary" icon="activity">
                 Test Link
               </Btn>
+              {/* STUB — server-side /v1/recorder/unpair endpoint
+                * doesn't exist yet (pairing-flows.md §2.5). Local-
+                * only state clear; revisit when the unpair flow
+                * lands in slice 4+. */}
               <Btn
                 kind="danger"
                 icon="unlink"
@@ -132,8 +263,8 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                   setState((s) => ({ ...s, paired: false, managementServer: null }));
                   addToast({
                     kind: 'warning',
-                    title: 'UNPAIRED',
-                    body: 'Recorder is standalone',
+                    title: 'UNPAIRED (LOCAL ONLY — STUB)',
+                    body: 'Server-side unpair flow lands in slice 4+',
                     icon: 'unlink',
                   });
                 }}
@@ -154,7 +285,7 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                 alignItems: 'center',
               }}
             >
-              <SectionHeader style={{ margin: 0 }}>DISCOVERED SERVERS</SectionHeader>
+              <SectionHeader style={{ margin: 0 }}>DISCOVERED SERVERS (mDNS)</SectionHeader>
               {scanning && (
                 <span
                   style={{
@@ -182,9 +313,9 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                 </span>
               )}
             </div>
-            {found.map((c, i) => (
+            {discovered.map((d, i) => (
               <div
-                key={c.host}
+                key={d.ms_id ?? d.hostname}
                 style={{
                   padding: 14,
                   borderTop: i === 0 ? 'none' : '1px solid var(--border)',
@@ -205,14 +336,9 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                         color: 'var(--text-primary)',
                       }}
                     >
-                      {c.host}
+                      {d.hostname}
                     </span>
                     <StatusBadge kind="online" label="REACHABLE" size="sm" />
-                    <StatusBadge
-                      kind={c.trust === 'SIGNED' ? 'paired' : 'warn'}
-                      label={c.trust === 'SIGNED' ? 'TRUSTED CERT' : 'SELF-SIGNED'}
-                      size="sm"
-                    />
                   </div>
                   <div
                     style={{
@@ -224,18 +350,17 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                       letterSpacing: 0.5,
                     }}
                   >
-                    <span>{c.ip}</span>
-                    <span>{c.mac}</span>
-                    <span>{c.cameras} CAM MANAGED</span>
-                    <span>v{c.ver}</span>
+                    <span>{d.url}</span>
+                    {d.version && <span>{d.version}</span>}
+                    {d.ms_id && <span>id:{d.ms_id.slice(0, 8)}</span>}
                   </div>
                 </div>
-                <Btn kind="primary" onClick={() => pair(c)}>
-                  Pair
+                <Btn kind="secondary" onClick={() => useDiscoveredAddress(d)}>
+                  Use This
                 </Btn>
               </div>
             ))}
-            {found.length === 0 && !scanning && (
+            {discovered.length === 0 && !scanning && (
               <div
                 style={{
                   padding: 30,
@@ -245,47 +370,105 @@ export function Pairing({ state, setState, addToast }: PairingProps) {
                   color: 'var(--text-muted)',
                 }}
               >
-                No management servers found. Ensure a server is reachable on this subnet.
+                No management servers found via mDNS. Use manual pairing below if your network
+                blocks multicast.
               </div>
             )}
           </Card>
         )}
-        <Card>
-          <SectionHeader>MANUAL PAIRING</SectionHeader>
-          <p
-            style={{
-              fontFamily: 'var(--font-sans)',
-              fontSize: 12,
-              color: 'var(--text-secondary)',
-              lineHeight: 1.5,
-              margin: '0 0 12px',
-            }}
-          >
-            If autodiscovery is blocked (different VLAN, firewall), enter the management server address and use a
-            bearer token to pair.
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
-            <Input
-              label="SERVER ADDRESS"
-              value={serverAddr}
-              onChange={setServerAddr}
-              placeholder="https://ms.example.com:7443"
-              mono
-            />
-            <Input
-              label="PAIRING TOKEN"
-              value={token}
-              onChange={setToken}
-              placeholder="XXXX-XXXX-XXXX"
-              mono
-            />
-          </div>
-          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-            <Btn kind="secondary" icon="link">
-              Pair Manually
-            </Btn>
-          </div>
-        </Card>
+        {!state.paired && (
+          <Card>
+            <SectionHeader>
+              {pairStatus?.state === 'in_progress' ? 'PAIRING IN PROGRESS' : 'PAIR WITH MANAGEMENT SERVER'}
+            </SectionHeader>
+            <p
+              style={{
+                fontFamily: 'var(--font-sans)',
+                fontSize: 12,
+                color: 'var(--text-secondary)',
+                lineHeight: 1.5,
+                margin: '0 0 12px',
+              }}
+            >
+              Issue a pairing token in the MS UI under "Pair a recorder", then enter the MS
+              address and the token here. The MS operator must approve this recorder before
+              pairing completes.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+              <Input
+                label="SERVER ADDRESS"
+                value={serverAddr}
+                onChange={setServerAddr}
+                placeholder="https://ms.example.com:8443"
+                mono
+                disabled={pairStatus?.state === 'in_progress'}
+              />
+              <Input
+                label="PAIRING TOKEN"
+                value={token}
+                onChange={setToken}
+                placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"
+                mono
+                disabled={pairStatus?.state === 'in_progress'}
+              />
+            </div>
+            {error && (
+              <div
+                style={{
+                  marginTop: 10,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: '#EF4444',
+                }}
+              >
+                {error}
+              </div>
+            )}
+            {pairStatus && pairStatus.state !== 'idle' && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '10px 12px',
+                  background: 'rgba(249,115,22,0.06)',
+                  border: '1px solid rgba(249,115,22,0.27)',
+                  borderRadius: 4,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--text-primary)',
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    color: '#F97316',
+                    textTransform: 'uppercase',
+                    marginBottom: 4,
+                  }}
+                >
+                  STATE: {pairStatus.state.replace(/_/g, ' ')}
+                </div>
+                {pairStatus.detail && <div>{pairStatus.detail}</div>}
+              </div>
+            )}
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              {pairStatus && pairStatus.state !== 'idle' && pairStatus.state !== 'in_progress' && (
+                <Btn kind="ghost" onClick={clearPairState}>
+                  Reset
+                </Btn>
+              )}
+              <Btn
+                kind="primary"
+                icon="link"
+                onClick={pairManually}
+                disabled={submitting || pairStatus?.state === 'in_progress'}
+              >
+                {submitting || pairStatus?.state === 'in_progress' ? 'Pairing…' : 'Pair'}
+              </Btn>
+            </div>
+          </Card>
+        )}
       </div>
     </div>
   );
