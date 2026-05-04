@@ -380,11 +380,15 @@ export const patchRecorderConfig = (body: Partial<RecorderConfig>) =>
 /* ---------- /v1/recorder/identity ---------- */
 
 export interface RecorderIdentity {
+  id: string;
   tenant_id: string;
   hostname: string;
   location: string;
   timezone: string;
   firmware_version: string;
+  paired: boolean;
+  public_key_fingerprint: string;
+  pinned_root_fingerprints: string[];
 }
 
 export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');

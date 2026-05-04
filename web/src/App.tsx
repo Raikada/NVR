@@ -21,6 +21,7 @@ import { Logs } from './routes/Logs';
 import { Diagnostics } from './routes/Diagnostics';
 import { Settings } from './routes/Settings';
 import { INITIAL_CAMERAS } from './lib/mockdata';
+import { fetchIdentity } from './lib/api';
 import type { AppState, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
 
@@ -61,6 +62,60 @@ export function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
+
+  // Periodic identity poll so the SPA reflects backend pairing-state
+  // transitions the operator didn't trigger from this tab — most
+  // notably MS-initiated unpair (the recorder's CRL poller detects
+  // its own cert was revoked, runs ClearIssuedIdentity, and
+  // /v1/recorder/identity flips to paired:false). Without this
+  // poll the operator would see a stale "paired" state until a
+  // manual refresh.
+  //
+  // 30s is a deliberate trade: fast enough that a remote unpair
+  // surfaces within roughly a minute (CRL poll interval + identity
+  // poll interval), slow enough that an idle browser tab isn't
+  // burning recorder CPU on a request the operator usually doesn't
+  // care about.
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const id = await fetchIdentity();
+        if (cancelled) return;
+        setState((prev) => {
+          // Backend says unpaired but local state still thinks
+          // paired: MS-initiated unpair (or another tab unpaired)
+          // while this tab was open.
+          if (prev.paired && !id.paired) {
+            queueMicrotask(() =>
+              addToast({
+                kind: 'warning',
+                title: 'UNPAIRED BY MANAGEMENT SERVER',
+                body: 'The MS revoked this recorder. You can re-pair from the Pairing page.',
+                icon: 'unlink',
+              }),
+            );
+            return { ...prev, paired: false, managementServer: null };
+          }
+          // Backend says paired but local doesn't — rare (the
+          // pairing flow updates local state directly), but covers
+          // the case where another tab paired this recorder.
+          if (!prev.paired && id.paired) {
+            return { ...prev, paired: true };
+          }
+          return prev;
+        });
+      } catch {
+        // Network blips are expected; next tick will retry.
+      }
+    };
+    void tick();
+    const interval = window.setInterval(tick, 30 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [addToast]);
 
   const go = useCallback((r: Route) => {
     setRoute(r);
