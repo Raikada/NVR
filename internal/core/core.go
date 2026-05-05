@@ -23,6 +23,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/api"
 	"github.com/bluenviron/mediamtx/internal/auth"
+	"github.com/bluenviron/mediamtx/internal/camerasync"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
 	"github.com/bluenviron/mediamtx/internal/crl"
@@ -133,9 +134,10 @@ type Core struct {
 	api             *api.API
 	confWatcher     *confwatcher.ConfWatcher
 	identity        *identity.Identity
-	pairingManager  *mspairing.Manager
-	mdnsService     *mdns.Service
-	crlPoller       *crl.Poller
+	pairingManager   *mspairing.Manager
+	mdnsService      *mdns.Service
+	crlPoller        *crl.Poller
+	cameraSyncPoller *camerasync.Poller
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -806,6 +808,31 @@ func (p *Core) createResources(initial bool) error {
 		// device.pairing_completed lands in the recorder's
 		// per-emitter audit chain (per ADR 0006). Done here, after
 		// both p.api and p.pairingManager exist.
+		// Camera-sync poller (slice 4-B per ADR 0016 D2). Polls the MS
+		// every MSPollInterval for desired-state and applies any
+		// drift via the API's camerasync adapter. Dormant pre-pair
+		// AND pre-import (canonical_source != ms gates inside the
+		// goroutine).
+		if p.cameraSyncPoller == nil && p.identity != nil {
+			csp, err := camerasync.New(camerasync.PollerOptions{
+				Identity:     p.identity,
+				Logger:       p,
+				PollInterval: time.Duration(p.conf.MSPollInterval),
+				Applier:      p.api.CameraApplier(),
+				AuditEmitter: p.api.CameraAuditEmitter(),
+				Mu:           p.api.CameraApplyLock(),
+			})
+			if err != nil {
+				p.Log(logger.Warn, "[camerasync] failed to construct poller: %s", err)
+			} else {
+				p.cameraSyncPoller = csp
+				// Start now if already paired (recorder restart with a
+				// valid identity that's already canonical_source=ms);
+				// the post-pairing callback below also Starts.
+				p.cameraSyncPoller.Start()
+			}
+		}
+
 		if p.pairingManager != nil {
 			pa := p.api
 			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
@@ -816,6 +843,7 @@ func (p *Core) createResources(initial bool) error {
 			// see the up-to-date advertisement.
 			ms := p.mdnsService
 			poller := p.crlPoller
+			cameraPoller := p.cameraSyncPoller
 			logRef := p
 			p.pairingManager.SetPairedCallback(func() {
 				if ms != nil {
@@ -828,6 +856,13 @@ func (p *Core) createResources(initial bool) error {
 				// after pairing spins up the goroutine).
 				if poller != nil {
 					poller.Start()
+				}
+				// Start the camera-sync poller too. Internally it
+				// gates on canonical_source = ms, so this is a no-op
+				// until the MS finishes its first push (which flips
+				// the recorder's identity).
+				if cameraPoller != nil {
+					cameraPoller.Start()
 				}
 			})
 		}
@@ -1141,6 +1176,13 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 	if newConf == nil && p.crlPoller != nil {
 		p.crlPoller.Stop()
 		p.crlPoller = nil
+	}
+
+	// Camera-sync poller full-shutdown-only too. The poller's
+	// background goroutine exits within one tick of Stop().
+	if newConf == nil && p.cameraSyncPoller != nil {
+		p.cameraSyncPoller.Stop()
+		p.cameraSyncPoller = nil
 	}
 
 	if p.api != nil {

@@ -94,6 +94,13 @@ type API struct {
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
 	networkProbe *networkProbe
+
+	// cameraAppliedVersions tracks the most recent MS-issued version
+	// applied per camera id (slice 4-B per ADR 0016 D4). Populated by
+	// the camerasync apply path; read by the apply diff. Guarded by
+	// a.mutex (write-locked during apply, read-locked otherwise).
+	// Transient — recovered on the next poll if the recorder restarts.
+	cameraAppliedVersions map[string]int64
 }
 
 // Initialize initializes API.

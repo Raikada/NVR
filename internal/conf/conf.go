@@ -269,6 +269,14 @@ type Conf struct {
 	// recorder also stops polling when unpaired (no MS to poll).
 	CRLPollInterval Duration `json:"crlPollInterval"`
 
+	// MSPollInterval controls how often the recorder polls the paired
+	// MS's /v1/recording-servers/{id}/cameras-desired-state endpoint
+	// per ADR 0016 D2. Empty / zero default = 30 seconds. The poll is
+	// the recovery mechanism for missed pushes; lower values catch
+	// drift faster at the cost of MS load. The recorder only polls
+	// when canonical_source = ms (post-import / 4-B-active).
+	MSPollInterval Duration `json:"msPollInterval"`
+
 	// Upstream endpoints (optional bootstrap conveniences).
 	//
 	// These pre-figure the eventual MS-pairing client (ADR 0008,
