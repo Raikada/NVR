@@ -2237,6 +2237,103 @@ components:
         bandwidth:
           $ref: '#/components/schemas/BandwidthStats'
 
+    PairingState:
+      type: string
+      enum:
+        - idle
+        - in_progress
+        - approved
+        - rejected
+        - token_expired
+        - token_consumed_elsewhere
+        - failed
+        - already_paired
+
+    PairStartRequest:
+      type: object
+      required: [ms_url, token]
+      properties:
+        ms_url:
+          type: string
+          description: Management Server base URL.
+        token:
+          type: string
+          x-classification: credential
+          description: Operator pairing token.
+        root_fingerprint:
+          type: string
+          description: |
+            Optional sha256 hex fingerprint pinned from the QR
+            bootstrap flow.
+
+    PairStartResult:
+      type: object
+      required: [state]
+      properties:
+        state:
+          $ref: '#/components/schemas/PairingState'
+        pairing_request_id:
+          type: string
+          description: MS pairing-request identifier.
+        detail:
+          type: string
+
+    PairStatus:
+      type: object
+      required: [state, updated_at]
+      properties:
+        state:
+          $ref: '#/components/schemas/PairingState'
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        ms_url:
+          type: string
+        pairing_request_id:
+          type: string
+        detail:
+          type: string
+
+    DiscoveredManagement:
+      type: object
+      required: [hostname, addresses, port, url, first_seen_at, last_seen_at]
+      properties:
+        ms_id:
+          type: string
+        hostname:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        version:
+          type: string
+        tenant_id:
+          type: string
+          format: uuid
+        port:
+          type: integer
+        url:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+
+    DiscoveredManagementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveredManagement'
+
     NetworkInterface:
       type: object
       required: [name, hardware_addr, mtu, is_up, is_loopback]
@@ -4151,6 +4248,153 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/NetworkInfo'
+
+  /v1/recorder/pair:
+    post:
+      tags: [Recorder]
+      summary: Start the recorder-side MS pairing flow.
+      description: |
+        Starts the recorder-local pairing conversation with the
+        Management Server. The operator supplies the MS URL,
+        pairing token, and optional QR-pinned root fingerprint.
+        The flow runs asynchronously in the recorder; this
+        endpoint only kicks it off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairStartRequest'
+      responses:
+        '202':
+          description: Pairing flow started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairStartResult'
+        '400':
+          description: Invalid request body or pairing input.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Pairing already in progress or recorder already paired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Pairing manager not initialized or admin surface degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/pair/status:
+    get:
+      tags: [Recorder]
+      summary: Get the current pairing status.
+      description: |
+        Returns the recorder's local pairing state machine snapshot
+        so the operator UI can poll it while the MS approval flow is
+        in progress.
+      responses:
+        '200':
+          description: Pairing status snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairStatus'
+        '503':
+          description: Pairing manager not initialized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/pair/reset:
+    post:
+      tags: [Recorder]
+      summary: Reset the pairing flow to idle.
+      description: |
+        Clears terminal pairing state so the operator can retry a
+        fresh pairing attempt from the setup UI.
+      responses:
+        '200':
+          description: Pairing state reset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Pairing manager not initialized or admin surface degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/unpair:
+    post:
+      tags: [Recorder]
+      summary: Clear the issued MS identity and unpair the recorder.
+      description: |
+        Wipes the issued cert, chain, and pinned roots while keeping
+        the recorder's self-generated UUID and keypair intact. This
+        is the recorder-local unpair path used by the operator UI.
+      responses:
+        '200':
+          description: Recorder unpaired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '403':
+          description: Admin-action permission denied.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Recorder is not currently paired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Recorder identity not initialized or admin surface degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/discovered-management:
+    get:
+      tags: [Recorder]
+      summary: List mDNS-discovered Management Servers.
+      description: |
+        Returns the recorder's current mDNS discovery cache so the
+        setup wizard can offer prefilled MS URLs. Empty when mDNS is
+        disabled or nothing has been discovered yet.
+      responses:
+        '200':
+          description: Discovered Management Servers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveredManagementList'
 
   /v1/recorder/config:
     get:
