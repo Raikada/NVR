@@ -268,6 +268,9 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !a.guardAdminAction(ctx) {
 		return
 	}
+	if !a.applyCameraLockdown(ctx, "", "create") {
+		return
+	}
 	cam, _, ok := a.decodeCameraBody(ctx)
 	if !ok {
 		return
@@ -375,6 +378,8 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", cam.ID, "create", map[string]string{"camera_id": cam.ID})
 
+	a.engageLockdownIfMSSourced(ctx)
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
 	ctx.JSON(http.StatusCreated, &cam2)
 }
@@ -386,6 +391,9 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
+		return
+	}
+	if !a.applyCameraLockdown(ctx, id, "update") {
 		return
 	}
 
@@ -512,6 +520,8 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "update", map[string]string{"camera_id": id})
 
+	a.engageLockdownIfMSSourced(ctx)
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -523,6 +533,9 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
+		return
+	}
+	if !a.applyCameraLockdown(ctx, id, "replace") {
 		return
 	}
 
@@ -605,6 +618,8 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "replace", map[string]string{"camera_id": id})
 
+	a.engageLockdownIfMSSourced(ctx)
+
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -616,6 +631,9 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
+		return
+	}
+	if !a.applyCameraLockdown(ctx, id, "delete") {
 		return
 	}
 
@@ -658,6 +676,8 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("camera", id, "delete", map[string]string{"camera_id": id})
+
+	a.engageLockdownIfMSSourced(ctx)
 
 	a.writeOK(ctx)
 }

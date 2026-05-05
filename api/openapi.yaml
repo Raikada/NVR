@@ -2852,6 +2852,18 @@ paths:
         recorder's bound tenant, the recorder returns 403.
         Server-managed fields (`id`, `runtime`, `created_at`,
         `updated_at`) on the body are ignored.
+
+        **Slice 4-B lockdown (per ADR 0016 D5).** When the recorder's
+        `canonical_source = ms` (visible at
+        `GET /v1/recorder/identity`), this endpoint accepts mutations
+        only from the MS service principal — JWT with
+        `principal_kind = service_account` and `scope` containing
+        `camera.push`. Operator-JWT calls receive `403` with
+        `code = camera_canonical_source_is_ms`. A local-admin
+        diagnostic break-glass path is available by setting the
+        `X-Local-Admin-Override: true` header on the request; an
+        admin-tier principal must accompany. Break-glass mutations
+        emit `camera.local_override` audit at high severity.
       requestBody:
         required: true
         content:

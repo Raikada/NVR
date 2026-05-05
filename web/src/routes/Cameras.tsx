@@ -37,6 +37,7 @@ import {
   probeCameraSource,
   patchCamera,
   fetchRecordingPolicies,
+  fetchIdentity,
 } from '../lib/api';
 import type {
   Camera as ApiCamera,
@@ -147,6 +148,18 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
   // come and go.
   const list = useFetch(() => fetchCameras(0, 100), []);
   const streams = usePoll(fetchStreams, 5000, []);
+
+  // Slice 4-B / ADR 0016 D3+D5: when canonical_source = "ms", the
+  // recorder's local Camera mutation endpoints are locked down to the
+  // MS service principal. The SPA reads /v1/recorder/identity to
+  // discover the lockdown state and greys out Add/Edit/Delete
+  // affordances accordingly. Pre-import (or pre-4-B) recorders surface
+  // canonical_source = "recorder" (or omit the field) and behave as
+  // before. Polled every 30s so an MS auto-import flips the UI without
+  // requiring a page reload.
+  const identity = usePoll(fetchIdentity, 30_000, []);
+  const lockedDown =
+    identity.status === 'ready' && identity.data.canonical_source === 'ms';
 
   // Index streams by camera_id for O(1) lookup in toUICamera.
   const streamsByCamera: Record<string, Stream> = {};
@@ -305,22 +318,57 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
             <Btn
               kind="secondary"
               icon="radar"
-              onClick={() => setMode(mode === 'scan' ? 'list' : 'scan')}
+              disabled={lockedDown}
+              title={lockedDown ? 'Cameras managed by Management Server' : undefined}
+              onClick={() => {
+                if (lockedDown) return;
+                setMode(mode === 'scan' ? 'list' : 'scan');
+              }}
             >
               Discover
             </Btn>
-            <Btn kind="primary" icon="plus" onClick={() => setMode(mode === 'manual' ? 'list' : 'manual')}>
+            <Btn
+              kind="primary"
+              icon="plus"
+              disabled={lockedDown}
+              title={lockedDown ? 'Cameras managed by Management Server' : undefined}
+              onClick={() => {
+                if (lockedDown) return;
+                setMode(mode === 'manual' ? 'list' : 'manual');
+              }}
+            >
               Add Camera
             </Btn>
           </>
         }
       />
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {mode === 'scan' && <DiscoverPanel onClose={() => setMode('list')} onAdd={bulkAdd} />}
-        {mode === 'manual' && (
+        {lockedDown && (
+          <div
+            style={{
+              background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+              border: '1px solid var(--border, rgba(255,255,255,0.08))',
+              borderLeft: '3px solid var(--accent-info, #4a90e2)',
+              padding: '12px 16px',
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: 'var(--text-secondary, #aaa)',
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--text-primary, #fff)', marginBottom: 4 }}>
+              Cameras managed by Management Server
+            </div>
+            This recorder is paired with a Management Server that has taken canonical
+            authority for cameras. Add, edit, and delete operations are performed in the
+            Management Server UI. The list and stream views remain available here for
+            reference.
+          </div>
+        )}
+        {mode === 'scan' && !lockedDown && <DiscoverPanel onClose={() => setMode('list')} onAdd={bulkAdd} />}
+        {mode === 'manual' && !lockedDown && (
           <ManualAddWizard onCancel={() => setMode('list')} onSubmit={singleAdd} addToast={addToast} />
         )}
-        <CameraList cameras={cameras} onConfig={setConfigCam} />
+        <CameraList cameras={cameras} onConfig={lockedDown ? undefined : setConfigCam} />
       </div>
       {configCam && (
         <CameraConfigDrawer
@@ -1617,7 +1665,17 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
    CAMERA LIST
 ================================================================ */
 
-function CameraList({ cameras, onConfig }: { cameras: UICamera[]; onConfig: (c: UICamera) => void }) {
+function CameraList({
+  cameras,
+  onConfig,
+}: {
+  cameras: UICamera[];
+  onConfig?: (c: UICamera) => void;
+}) {
+  // Slice 4-B: when canonical_source = "ms" the parent passes
+  // onConfig=undefined to grey out the CONFIG button + suppress the
+  // drawer. Read paths remain functional.
+  const interactive = onConfig !== undefined;
   return (
     <Card style={{ padding: 0 }}>
       <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -1626,19 +1684,24 @@ function CameraList({ cameras, onConfig }: { cameras: UICamera[]; onConfig: (c: 
       {cameras.map((c, i) => (
         <div
           key={c.id}
-          onClick={() => onConfig(c)}
+          onClick={() => {
+            if (interactive) onConfig!(c);
+          }}
           style={{
             display: 'grid',
             gridTemplateColumns: '96px 1fr 1fr auto auto',
             gap: 14,
             padding: 12,
             alignItems: 'center',
-            cursor: 'pointer',
+            cursor: interactive ? 'pointer' : 'default',
             borderTop: i === 0 ? 'none' : '1px solid var(--border)',
             opacity: c.status === 'offline' ? 0.65 : 1,
             transition: 'background 0.1s',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(249,115,22,0.04)')}
+          onMouseEnter={(e) => {
+            if (interactive)
+              e.currentTarget.style.background = 'rgba(249,115,22,0.04)';
+          }}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           <HLSPreview
@@ -1686,9 +1749,11 @@ function CameraList({ cameras, onConfig }: { cameras: UICamera[]; onConfig: (c: 
           <Btn
             kind="tactical"
             size="sm"
+            disabled={!interactive}
+            title={interactive ? undefined : 'Cameras managed by Management Server'}
             onClick={(e) => {
               e.stopPropagation();
-              onConfig(c);
+              if (interactive) onConfig!(c);
             }}
           >
             CONFIG

@@ -41,6 +41,11 @@ type v1RecorderIdentity struct {
 	Paired                 bool     `json:"paired"`
 	PublicKeyFingerprint   string   `json:"public_key_fingerprint"`
 	PinnedRootFingerprints []string `json:"pinned_root_fingerprints"`
+	// CanonicalSource is `recorder` pre-slice-4-B-import or `ms` once
+	// the recorder has accepted its first MS-source Camera mutation per
+	// ADR 0016 D3. Used by the recorder's local SPA to grey out
+	// Add/Edit/Delete on the Cameras page when MS-canonical.
+	CanonicalSource string `json:"canonical_source"`
 }
 
 func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
@@ -64,6 +69,7 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 		Timezone:               tzName,
 		FirmwareVersion:        a.Version,
 		PinnedRootFingerprints: []string{},
+		CanonicalSource:        "recorder",
 	}
 
 	// Identity is set in production by Core.createResources; absent
@@ -77,6 +83,7 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 		for _, r := range a.Identity.PinnedRoots() {
 			resp.PinnedRootFingerprints = append(resp.PinnedRootFingerprints, r.FingerprintSHA256)
 		}
+		resp.CanonicalSource = a.Identity.CanonicalSource()
 	}
 
 	ctx.JSON(http.StatusOK, resp)

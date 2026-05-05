@@ -27,6 +27,10 @@ interface BtnProps {
   type?: 'button' | 'submit';
   size?: BtnSize;
   icon?: IconName;
+  // Native title attribute — used as a tooltip / hover hint, e.g. for
+  // explaining why a disabled button is disabled. Slice 4-B uses it on
+  // the Cameras page lockdown affordances.
+  title?: string;
 }
 
 export function Btn({
@@ -38,6 +42,7 @@ export function Btn({
   type = 'button',
   size = 'md',
   icon,
+  title,
 }: BtnProps) {
   const base: CSSProperties = {
     fontFamily: 'var(--font-sans)',
@@ -90,7 +95,13 @@ export function Btn({
     },
   };
   return (
-    <button type={type} disabled={disabled} style={{ ...base, ...kinds[kind], ...style }} onClick={onClick}>
+    <button
+      type={type}
+      disabled={disabled}
+      title={title}
+      style={{ ...base, ...kinds[kind], ...style }}
+      onClick={onClick}
+    >
       {icon && <Icon name={icon} style={{ width: 14, height: 14 }} />}
       {children}
     </button>

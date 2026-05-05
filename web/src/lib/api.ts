@@ -389,6 +389,10 @@ export interface RecorderIdentity {
   paired: boolean;
   public_key_fingerprint: string;
   pinned_root_fingerprints: string[];
+  // Slice 4-B per ADR 0016 D3 / D5: when "ms", recorder Camera mutation
+  // endpoints are locked down to the MS service principal. SPA uses
+  // this to grey out Add/Edit/Delete affordances on the Cameras page.
+  canonical_source?: 'recorder' | 'ms';
 }
 
 export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');

@@ -50,16 +50,24 @@ import (
 )
 
 const (
-	idFile         = "id"
-	keyFile        = "recorder.key"
-	pubFile        = "recorder.pub"
-	certFile       = "device.crt"
-	chainFile      = "chain.crt"
-	pinnedRoots    = "pinned-roots.json"
-	msMetadataFile = "ms-metadata.json"
-	keyFileMode    = 0o600
-	pubFileMode    = 0o644
-	dirMode        = 0o700
+	idFile               = "id"
+	keyFile              = "recorder.key"
+	pubFile              = "recorder.pub"
+	certFile             = "device.crt"
+	chainFile            = "chain.crt"
+	pinnedRoots          = "pinned-roots.json"
+	msMetadataFile       = "ms-metadata.json"
+	canonicalSourceFile  = "canonical-source"
+	keyFileMode          = 0o600
+	pubFileMode          = 0o644
+	dirMode              = 0o700
+)
+
+// CanonicalSource constants — mirrors the MS-side
+// store.CanonicalSourceRecorder / store.CanonicalSourceMS.
+const (
+	CanonicalSourceRecorder = "recorder"
+	CanonicalSourceMS       = "ms"
 )
 
 // MSMetadata is what the MS returned at pairing approval — the
@@ -88,17 +96,20 @@ type PinnedRoot struct {
 // and keypair are set once at first install and never change for the
 // life of the recorder (per ADR 0002 D3). The issued cert and pinned
 // roots are populated at pairing and rotated thereafter per ADR 0011
-// D4.
+// D4. canonicalSource reflects whether Camera authority is local
+// (`recorder`) or has shifted to the MS (`ms`) per ADR 0016 D3 — flipped
+// to `ms` after the first successful MS push or poll-reconcile.
 type Identity struct {
 	dir string
 	mu  sync.RWMutex
 
-	id       uuid.UUID
-	priv     *ecdsa.PrivateKey
-	cert     []byte // PEM-encoded issued mTLS cert; nil if unpaired
-	chain    []byte // PEM-encoded chain to MS root; nil if unpaired
-	roots    []PinnedRoot
-	msMeta   *MSMetadata // populated alongside cert; nil if unpaired
+	id              uuid.UUID
+	priv            *ecdsa.PrivateKey
+	cert            []byte // PEM-encoded issued mTLS cert; nil if unpaired
+	chain           []byte // PEM-encoded chain to MS root; nil if unpaired
+	roots           []PinnedRoot
+	msMeta          *MSMetadata // populated alongside cert; nil if unpaired
+	canonicalSource string      // "recorder" | "ms" per ADR 0016 D3 / D5
 }
 
 // Open opens or creates the recorder's identity at dir. On first call
@@ -208,6 +219,23 @@ func (i *Identity) loadOrCreate() error {
 		i.msMeta = &meta
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("identity: read ms metadata: %w", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(i.dir, canonicalSourceFile)); err == nil {
+		s := string(stripTrailing(data))
+		switch s {
+		case CanonicalSourceRecorder, CanonicalSourceMS:
+			i.canonicalSource = s
+		default:
+			// Unknown content — treat as recorder-canonical (the safe
+			// default — per ADR 0016 D3 the recorder is authoritative
+			// pre-import). The next successful MS push or poll will
+			// flip this to ms.
+			i.canonicalSource = CanonicalSourceRecorder
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		i.canonicalSource = CanonicalSourceRecorder
+	} else {
+		return fmt.Errorf("identity: read canonical source: %w", err)
 	}
 	return nil
 }
@@ -356,6 +384,40 @@ func (i *Identity) MSMetadata() *MSMetadata {
 	return &out
 }
 
+// CanonicalSource returns whether Camera authority is local
+// (`recorder`) or has shifted to the MS (`ms`) per ADR 0016 D3.
+// Defaults to `recorder` (no on-disk file == pre-4-B / pre-import).
+func (i *Identity) CanonicalSource() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if i.canonicalSource == "" {
+		return CanonicalSourceRecorder
+	}
+	return i.canonicalSource
+}
+
+// SetCanonicalSource persists the new canonical-source value to disk
+// and updates in-memory state. Called by the camerasync apply layer
+// when the recorder receives its first MS push or poll-reconcile (the
+// flip is one-way per ADR 0016 D9; ClearIssuedIdentity rolls it back
+// only as part of a full unpair).
+func (i *Identity) SetCanonicalSource(source string) error {
+	if source != CanonicalSourceRecorder && source != CanonicalSourceMS {
+		return fmt.Errorf("identity: invalid canonical source %q", source)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.canonicalSource == source {
+		return nil
+	}
+	if err := writeFileAtomic(filepath.Join(i.dir, canonicalSourceFile),
+		[]byte(source+"\n"), pubFileMode); err != nil {
+		return err
+	}
+	i.canonicalSource = source
+	return nil
+}
+
 // ClearIssuedIdentity wipes the issued cert + chain + pinned roots
 // from disk and from in-memory state, returning the recorder to its
 // unpaired state. The UUIDv7 and ECDSA keypair are kept — per ADR
@@ -374,7 +436,7 @@ func (i *Identity) ClearIssuedIdentity() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
-	for _, name := range []string{certFile, chainFile, pinnedRoots, msMetadataFile} {
+	for _, name := range []string{certFile, chainFile, pinnedRoots, msMetadataFile, canonicalSourceFile} {
 		if err := os.Remove(filepath.Join(i.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("identity: remove %s: %w", name, err)
 		}
@@ -383,6 +445,7 @@ func (i *Identity) ClearIssuedIdentity() error {
 	i.chain = nil
 	i.roots = nil
 	i.msMeta = nil
+	i.canonicalSource = CanonicalSourceRecorder
 	return nil
 }
 
