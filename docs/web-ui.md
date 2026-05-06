@@ -278,11 +278,18 @@ Recently retired (now wired to real `/v1/`):
 - MS tunnel port row — depends on the pairing client landing.
 
 **Settings.**
-- Firmware update flow ("Check for Updates" button) — no update
-  endpoint surfaced. Architectural decision pending: binary
-  signing, rollback semantics, update channel.
+- Firmware update flow ("Updates →" button) — Wave 6 (ADR 0014)
+  shipped the apply path. The recorder is the apply mechanism,
+  not the approval surface (D6); operators drive approve + apply
+  from the MS UI. The recorder SPA's button surfaces an info toast
+  pointing to the MS, rather than self-polling. The actual apply
+  endpoint lives at `POST /v1/recorder/software-updates/apply` and
+  is gated on the MS-issued service JWT carrying scope
+  `["software_update.manage"]`.
 - Auto-update / Telemetry toggles — stored locally only;
-  recorder doesn't have the corresponding flags.
+  recorder doesn't have the corresponding flags. Auto-update
+  policy is configured on the MS instead per ADR 0014 D5; the
+  recorder simply receives push from the MS when policy fires.
 - Factory Reset — no recorder endpoint; needs scope decision
   (what state survives?). Button toasts.
 

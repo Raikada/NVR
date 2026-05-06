@@ -34,6 +34,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/policysync"
+	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -858,6 +859,56 @@ func (p *Core) createResources(initial bool) error {
 			} else {
 				p.policySyncPoller = psp
 				p.policySyncPoller.Start()
+			}
+		}
+
+		// Wave 6: software-update applier wiring per ADR 0014. Wired
+		// only when the operator has provisioned a Raikada release
+		// public key in conf; without one the apply endpoint surfaces
+		// a stable 503.
+		if p.conf.RaikadaUpdatePublicKey != "" && p.identity != nil {
+			pubKey, err := softwareupdate.LoadPublicKeyB64(p.conf.RaikadaUpdatePublicKey)
+			if err != nil {
+				p.Log(logger.Warn, "[softwareupdate] invalid public key, applier disabled: %s", err)
+			} else {
+				stateDir := p.conf.IdentityDir
+				if stateDir == "" {
+					if p.confPath != "" {
+						stateDir = filepath.Join(filepath.Dir(p.confPath), "identity")
+					} else {
+						stateDir = "identity"
+					}
+				}
+				stateStore, err := softwareupdate.NewStateStore(stateDir)
+				if err != nil {
+					p.Log(logger.Warn, "[softwareupdate] state store init failed: %s", err)
+				} else {
+					binPath, _ := os.Executable()
+					applier := &softwareupdate.Applier{
+						BinaryPath:     binPath,
+						PublicKey:      pubKey,
+						State:          stateStore,
+						Logger:         p,
+						Audit:          p.api.SoftwareUpdateAuditEmitter(),
+						CurrentVersion: string(version),
+						SignalSelf: func() error {
+							// Send SIGTERM to self so the host's process
+							// supervisor (systemd / launchd / docker
+							// restart-policy) relaunches with the new
+							// binary. Recorders run without a supervisor
+							// will exit cleanly and not relaunch — this
+							// is the documented v1 limitation.
+							pr, err := os.FindProcess(os.Getpid())
+							if err != nil {
+								return err
+							}
+							return pr.Signal(syscall.SIGTERM)
+						},
+					}
+					p.api.SetSoftwareUpdateApplier(func(_ *gin.Context, opts softwareupdate.ApplyOptions) error {
+						return applier.Apply(context.Background(), opts)
+					})
+				}
 			}
 		}
 

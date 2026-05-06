@@ -104,6 +104,11 @@ type API struct {
 	// policyAppliedVersions is the slice-4-C analogue per ADR 0017 D4.
 	// Populated by the policysync apply path. Same locking convention.
 	policyAppliedVersions map[string]int64
+
+	// Wave 6: software-update applier. Wired by Core at startup when a
+	// pinned Raikada release public key is configured. Guarded by
+	// a.mutex.
+	softwareUpdateApplier softwareUpdateApplierField
 }
 
 // Initialize initializes API.
@@ -231,6 +236,9 @@ func (a *API) Initialize() error {
 	group.POST("/recorder/pair/reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairResetPost)
 	group.POST("/recorder/unpair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderUnpairPost)
 	group.GET("/recorder/discovered-management", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderDiscoveredManagementGet)
+	// Wave 6: software-update apply endpoint. The MS pushes here with
+	// scope ["software_update.manage"] in its service JWT.
+	group.POST("/recorder/software-updates/apply", a.requirePermission("software_update.manage"), a.onV1RecorderSoftwareUpdateApplyPost)
 	// Diagnostics suite (cross-platform; no shell-outs). ping + ntp
 	// are recorder-config-manage; rtsp-probe targets a camera and
 	// is gated on camera.create (the typical caller is the manual-add

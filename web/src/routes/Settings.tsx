@@ -220,22 +220,27 @@ export function Settings({ state, addToast }: SettingsProps) {
                 {identity.data?.firmware_version || '—'}
               </div>
             </div>
-            {/* STUB: update flow needs an architectural decision
-                (binary signing, rollback semantics, update channel).
-                No /v1/recorder/update endpoint today. */}
+            {/* Wave 6: updates are coordinated by the paired
+                Management Server per ADR 0014 D6. The recorder is the
+                apply mechanism, not the approval surface — operators
+                drive approve/apply from the MS UI. The button below
+                just opens an info toast pointing operators at the MS. */}
             <Btn
               kind="ghost"
               icon="info"
               onClick={() =>
                 addToast({
                   kind: 'info',
-                  title: 'UPDATE FLOW NOT WIRED',
-                  body: 'See docs/web-ui.md stub list',
+                  title: 'UPDATES ARE COORDINATED BY THE MS',
+                  body:
+                    identity.data?.paired
+                      ? 'Approve + apply updates from the Management Server UI (ADR 0014 D6).'
+                      : 'Pair this recorder with a Management Server to receive updates.',
                   icon: 'info',
                 })
               }
             >
-              Check for Updates
+              Updates →
             </Btn>
           </div>
           <div

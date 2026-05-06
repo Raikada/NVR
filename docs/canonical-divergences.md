@@ -853,3 +853,79 @@ Limitations / follow-ups:
   / Credential get explicit annotations. Restricted has no
   in-tree fields today; when one arrives the annotation set will
   extend.
+
+### D14. Software-update v1 limitations (Wave 6, ADR 0014)
+
+**Active 2026-05-06.** Wave 6 implements the firmware/software
+update lifecycle per ADR 0014 with a deliberately bounded v1
+surface. The full ADR is much larger; the implementation makes
+pragmatic v1 cuts that are tracked here.
+
+- **No Cloud channel.** ADR 0014 D4 lists Raikada Cloud, customer
+  mirror, and signed offline bundles as the three distribution
+  paths. The Cloud tier doesn't exist yet, so v1 supports only the
+  customer-mirror polling loop and the offline-bundle import stub.
+  The Cloud channel field is reserved on the manifest schema; UI
+  exposure of it is deferred to the slice that lands the Cloud
+  tier.
+
+- **Beta channel is schema-only.** The four channels from D10
+  (`stable`, `security`, `beta`, `pinned`) are all valid in the
+  schema, but the Updates UI surfaces only `stable` + `security`
+  toggles in the per-MS auto-apply policy editor. Beta channel
+  switching UI is a future-slice item.
+
+- **Offline-bundle import is a stub.** The
+  `POST /v1/software-updates/manifests/import` endpoint accepts a
+  single `SignedManifest` body (manifest + signature) and persists
+  it. The full multi-artifact bundle parser per D12 is deferred;
+  the endpoint returns `software_update.bundle_import.future_slice`
+  if the operator passes a wrapped-bundle body shape.
+
+- **A/B-slot rollback is simulated, not real.** ADR 0014 D8 names
+  A/B slots as the preferred rollback implementation. v1 instead
+  saves the previous binary at `<binary>.bak`, swaps the new
+  binary into place atomically, and restores `<binary>.bak` if a
+  post-restart health check fails within 5 minutes. This satisfies
+  the D8 constraint ("an equivalent rollback path is allowed") but
+  is OS-level rather than partition-level. Real A/B-slot support
+  is a future-slice item, ideally lands when an appliance OS image
+  shape is decided.
+
+- **No OS-package updates.** v1 supports only the recorder Go
+  binary swap. `.deb` / `.rpm` / `.msi` installers per D1's
+  appliance-software scope are deferred. OQ2 leaves packaging
+  format implementation-specific; v1 picks raw binary.
+
+- **Auto-apply is opt-in.** Per D5, manual approval is the
+  default. v1 ships the schema for auto-apply policy
+  (`auto_apply_security`, `auto_apply_stable`) but no
+  auto-apply scheduler — operators still drive approve and apply
+  from the MS UI. The auto-apply scheduler is a future-slice item;
+  the persistence shape is in place so the eventual scheduler
+  doesn't need a migration.
+
+- **Restart relies on a process supervisor.** When the recorder
+  applies an update, it sends `SIGTERM` to itself and exits. The
+  relaunch is the host's responsibility: production deployments
+  use systemd / launchd / Docker `restart: always` / etc. Bare
+  `./recorder` invocations without a supervisor will simply exit
+  and not relaunch — documented limitation, applies only to
+  developer setups.
+
+- **Recorder SPA does not self-poll for updates.** The MS pushes
+  apply requests; the recorder is the apply mechanism, not the
+  approval surface (D6). The recorder Settings page surfaces the
+  current version + a hint pointing operators at the MS UI rather
+  than offering a "Check for Updates" button on the recorder
+  itself.
+
+- **Health check is per-deployment.** OQ3 leaves the post-update
+  health check shape implementation-specific. v1 ships the seam
+  (`Applier.HealthCheck` callback), but does not yet supply a
+  built-in default — the Core wiring leaves it nil today, which
+  means the post-restart rollback flow only fires when a
+  deployment-supplied check is wired in. A built-in
+  `/v1/health`-pings-OK + `no-panic-in-last-5min` default is a
+  future slice (deliberate to keep v1 conservative — false
+  positives in the rollback path are worse than no rollback).

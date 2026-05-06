@@ -302,6 +302,16 @@ type Conf struct {
 	// untouched recorders return an empty string.
 	ServerLocation string `json:"serverLocation"`
 
+	// RaikadaUpdatePublicKey is the base64-encoded ed25519 public key
+	// the recorder uses to verify update manifest signatures (per
+	// ADR 0014 D2 + D3). Empty disables the software-update apply
+	// endpoint with a stable error; the recorder still runs (and the
+	// MS still surfaces operator updates from its side), but the
+	// recorder refuses to swap bytes without a pinned key. The key
+	// is provisioned by the operator out-of-band; at first install
+	// the same value lives in the MS's conf.
+	RaikadaUpdatePublicKey string `json:"raikadaUpdatePublicKey"`
+
 	// General
 	LogLevel            LogLevel        `json:"logLevel"`
 	LogDestinations     LogDestinations `json:"logDestinations"`
