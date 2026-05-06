@@ -4545,6 +4545,106 @@ paths:
 
   # ===== Recorder-localized escape hatch =========================
 
+  /v1/recorder/login:
+    post:
+      tags: [Recorder]
+      summary: Recorder-local operator login (pre-pairing auth).
+      description: |
+        Pre-pairing operator authentication endpoint. Reachable
+        without a Bearer token (the pre-auth bypass list in
+        `middlewareAuth`). On success returns a recorder-local JWT
+        with the same `mediamtx_permissions` claim shape as MS-issued
+        JWTs so the rest of `/v1` accepts it identically.
+
+        The bootstrap admin's initial password is auto-generated on
+        first start; see startup logs or
+        `<identityDir>/initial-admin-password.txt` (mode 0600). The
+        SPA forces a password rotation on first login when the
+        response carries `must_change_password: true`.
+
+        Bad credentials return 401 with `error: "invalid credentials"`
+        — no user-vs-pass disambiguation. Repeated failures lock the
+        account for 15 minutes after 5 wrong attempts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Login succeeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expires_at, user_id, username, is_admin, must_change_password, scope]
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  user_id: { type: string }
+                  username: { type: string }
+                  is_admin: { type: boolean }
+                  must_change_password: { type: boolean }
+                  scope:
+                    type: array
+                    items: { type: string }
+        '400':
+          description: Malformed body or missing fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Invalid credentials, locked, or inactive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/local-users/me/password:
+    post:
+      tags: [Recorder]
+      summary: Rotate the calling LocalUser's password.
+      description: |
+        Recorder-local password rotation. Requires a valid recorder-
+        local JWT (the principal must have `principal_kind:
+        "local_user"`). Reachable even when the caller's JWT carries
+        `must_change_password: true` — that's the entire purpose of
+        the endpoint.
+
+        Verifies `current_password`, persists the new hash, clears
+        `must_change_password`, and re-issues a JWT in the response.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password rotated; new JWT returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Missing fields or password too short.
+        '401':
+          description: Current password is incorrect.
+        '403':
+          description: Caller is not a recorder-local user.
+
   /v1/recorder/identity:
     get:
       tags: [Recorder]

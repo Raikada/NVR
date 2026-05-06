@@ -22,8 +22,8 @@ const createPullPointFixture = `<?xml version="1.0" encoding="UTF-8"?>
       <tev:SubscriptionReference>
         <wsa:Address>http://camera.example.com/onvif/Subscription?Idx=42</wsa:Address>
       </tev:SubscriptionReference>
-      <tev:CurrentTime>2026-05-06T10:00:00Z</tev:CurrentTime>
-      <tev:TerminationTime>2026-05-06T10:05:00Z</tev:TerminationTime>
+      <tev:CurrentTime>2099-01-01T00:00:00Z</tev:CurrentTime>
+      <tev:TerminationTime>2099-01-01T00:05:00Z</tev:TerminationTime>
     </tev:CreatePullPointSubscriptionResponse>
   </env:Body>
 </env:Envelope>`
@@ -35,12 +35,12 @@ const pullMessagesMotionFixture = `<?xml version="1.0" encoding="UTF-8"?>
               xmlns:tt="http://www.onvif.org/ver10/schema">
   <env:Body>
     <tev:PullMessagesResponse>
-      <tev:CurrentTime>2026-05-06T10:00:30Z</tev:CurrentTime>
-      <tev:TerminationTime>2026-05-06T10:05:30Z</tev:TerminationTime>
+      <tev:CurrentTime>2099-01-01T00:00:30Z</tev:CurrentTime>
+      <tev:TerminationTime>2099-01-01T00:05:30Z</tev:TerminationTime>
       <wsnt:NotificationMessage>
         <wsnt:Topic Dialect="http://docs.oasis-open.org/wsn/t-1/TopicExpression/Simple">tns1:VideoSource/MotionAlarm</wsnt:Topic>
         <wsnt:Message>
-          <tt:Message UtcTime="2026-05-06T10:00:30Z" PropertyOperation="Changed">
+          <tt:Message UtcTime="2099-01-01T00:00:30Z" PropertyOperation="Changed">
             <tt:Source>
               <tt:SimpleItem Name="VideoSourceConfigurationToken" Value="VideoSource_1"/>
             </tt:Source>
@@ -59,8 +59,8 @@ const pullMessagesEmptyFixture = `<?xml version="1.0" encoding="UTF-8"?>
               xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
   <env:Body>
     <tev:PullMessagesResponse>
-      <tev:CurrentTime>2026-05-06T10:01:00Z</tev:CurrentTime>
-      <tev:TerminationTime>2026-05-06T10:06:00Z</tev:TerminationTime>
+      <tev:CurrentTime>2099-01-01T00:01:00Z</tev:CurrentTime>
+      <tev:TerminationTime>2099-01-01T00:06:00Z</tev:TerminationTime>
     </tev:PullMessagesResponse>
   </env:Body>
 </env:Envelope>`
@@ -70,8 +70,8 @@ const renewResponseFixture = `<?xml version="1.0" encoding="UTF-8"?>
               xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
   <env:Body>
     <wsnt:RenewResponse>
-      <wsnt:CurrentTime>2026-05-06T10:02:00Z</wsnt:CurrentTime>
-      <wsnt:TerminationTime>2026-05-06T10:07:00Z</wsnt:TerminationTime>
+      <wsnt:CurrentTime>2099-01-01T00:02:00Z</wsnt:CurrentTime>
+      <wsnt:TerminationTime>2099-01-01T00:07:00Z</wsnt:TerminationTime>
     </wsnt:RenewResponse>
   </env:Body>
 </env:Envelope>`

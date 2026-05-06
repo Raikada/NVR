@@ -88,6 +88,40 @@ so unchanged code yields unchanged filenames).
   index is `Cache-Control: no-cache` so a `make web` redeploy is
   picked up on the next visit.
 
+## Authentication
+
+Pre-pairing auth slice 2026-05-06 added a recorder-local LocalUser
++ JWT layer between the SPA and `/v1/*`. Today's flow:
+
+1. SPA loads. App.tsx checks `localStorage` for a recorder-local JWT.
+2. No token → render `<Login>`. The form submits to
+   `POST /v1/recorder/login` (the only `/v1` path on the pre-auth
+   bypass list inside `middlewareAuth`). On 200, the response token
+   + expires_at + username land in `localStorage` and App.tsx routes
+   forward.
+3. If the response carries `must_change_password: true` (the bootstrap
+   admin's first login), App.tsx routes to `<PasswordChange>`. The
+   form submits to `POST /v1/recorder/local-users/me/password`,
+   which re-issues a JWT and clears the flag.
+4. Normal SPA renders. Every subsequent `/v1/*` request carries
+   `Authorization: Bearer <jwt>` via the wrapper in `lib/api.ts`.
+5. A 401 from any `/v1` request clears the stored token and routes
+   back to `<Login>`. The TopBar surfaces a Sign Out button that
+   does the same locally.
+
+The bootstrap admin password is auto-generated on first start and
+printed to the recorder's startup logs (loud banner) plus written
+to `<identityDir>/initial-admin-password.txt` (mode 0600).
+Documented in `docs/canonical-divergences.md` D18.
+
+The `lib/api.ts` request wrapper exposes:
+- `getStoredToken()`, `setStoredToken(...)`, `clearStoredToken()` —
+  localStorage management.
+- `setOnUnauthorized(fn)` — App.tsx wires this so a 401 on any
+  request re-routes to Login.
+- `loginRecorder(username, password)`, `changeRecorderPassword(...)`
+  — typed wrappers.
+
 ## Data-layer status
 
 The SPA's data layer wires to real `/v1/` endpoints where the

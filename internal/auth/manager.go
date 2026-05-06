@@ -93,6 +93,18 @@ func getToken(tokenInHTTPQuery bool, req *Request) string {
 	return ""
 }
 
+// LocalJWTKeyFunc is the recorder-local JWT key resolution function.
+// Returns the public key + the expected `iss` claim value the recorder
+// uses to brand its locally-issued JWTs. nil signals "no recorder-local
+// signing key configured" (the auth manager skips the local-JWT path).
+//
+// Wired by Core at startup once the localauth.Manager has loaded /
+// generated the recorder-local signing key. The pre-pairing auth slice
+// (2026-05-06) is the only producer; future slices may carry additional
+// local issuers (e.g., a recovery-bundle-restored key) by extending
+// this hook to return a keyset.
+type LocalJWTKeyFunc func() (publicKey any, issuer, audience string, ok bool)
+
 // Manager is the authentication manager.
 type Manager struct {
 	Method             conf.AuthMethod
@@ -116,6 +128,15 @@ type Manager struct {
 	// Nil keeps the legacy fingerprint-pinning path.
 	JWTJWKSRootCAs *x509.CertPool
 	ReadTimeout    time.Duration
+
+	// LocalJWT is the recorder-local JWT validation hook (pre-pairing
+	// auth slice 2026-05-06). When set, every Authenticate call where
+	// the request carries a Bearer / token credential tries the local
+	// path before / alongside the configured Method. This lets the
+	// SPA's Login endpoint mint a JWT that the recorder accepts even
+	// when authMethod=internal in mediamtx.yml. nil keeps the legacy
+	// behavior.
+	LocalJWT LocalJWTKeyFunc
 
 	mutex           sync.RWMutex
 	jwksLastRefresh time.Time
@@ -211,10 +232,32 @@ func (m *Manager) Authenticate(req *Request) (string, *Error) {
 // HTTP the Claims is zero-valued (with Method set so callers can
 // branch). Added per ADR 0011 to let the API layer build a Principal
 // without re-parsing the JWT.
+//
+// Recorder-local JWT path (pre-pairing auth slice 2026-05-06): when
+// LocalJWT is set and the request carries a Bearer / token credential,
+// we try the recorder-local validation first. On match, we return
+// claims with Method=AuthMethodJWT (so the API layer's principal
+// builder treats it as a JWT-authed request). On miss, we fall through
+// to the configured Method path.
 func (m *Manager) AuthenticateWithClaims(req *Request) (string, Claims, *Error) {
-	var token string
-	if m.Method == conf.AuthMethodHTTP || m.Method == conf.AuthMethodJWT {
+	// Always extract the token: the recorder-local JWT path is tried
+	// regardless of m.Method, so even Method=Internal deployments
+	// surface a Bearer token on the request.
+	token := getToken(m.Method == conf.AuthMethodJWT && m.JWTInHTTPQuery != nil && *m.JWTInHTTPQuery, req)
+	if token == "" && (m.Method == conf.AuthMethodHTTP || m.Method == conf.AuthMethodJWT) {
+		// Re-extract for HTTP/JWT methods (preserves prior behavior for
+		// query-string token forms).
 		token = getToken(m.Method == conf.AuthMethodJWT && m.JWTInHTTPQuery != nil && *m.JWTInHTTPQuery, req)
+	}
+
+	// Recorder-local JWT path (additive, runs before the configured
+	// Method). Tried only when a token is present; on miss we fall
+	// through silently. On match we short-circuit with Method=JWT so
+	// the per-route requirePermission middleware sees a populated Scope.
+	if token != "" && m.LocalJWT != nil {
+		if user, claims, ok := m.tryLocalJWT(req, token); ok {
+			return user, claims, nil
+		}
 	}
 
 	var user string
@@ -241,6 +284,63 @@ func (m *Manager) AuthenticateWithClaims(req *Request) (string, Claims, *Error) 
 	}
 
 	return user, claims, nil
+}
+
+// tryLocalJWT attempts to validate the token against the recorder-local
+// signing key. Returns (user, claims, true) on success; on miss
+// (signature invalid / iss mismatch / token malformed) returns ("", _,
+// false) and the caller falls through to the configured Method.
+//
+// When the token verifies but doesn't carry the recorder-local
+// permissions for this Action, we still return false — the caller
+// checks all configured methods, and a token that has the wrong scope
+// for the request is just an authentication miss as far as the auth
+// manager is concerned. The per-route requirePermission middleware
+// (slice 4-D) reports the granular forbidden when scope is the only
+// gap, but it can only do that if a Method=JWT path that succeeded
+// reaches the API layer; here we want the "wrong-scope token from a
+// MS-issued issuer" case to fall through to MS validation rather than
+// produce a 401 from the local path.
+func (m *Manager) tryLocalJWT(req *Request, token string) (string, Claims, bool) {
+	pub, issuer, audience, ok := m.LocalJWT()
+	if !ok || pub == nil {
+		return "", Claims{}, false
+	}
+	var cc jwtClaims
+	cc.permissionsKey = m.JWTClaimKey
+	if cc.permissionsKey == "" {
+		cc.permissionsKey = "mediamtx_permissions"
+	}
+	parserOpts := []jwt.ParserOption{
+		jwt.WithIssuer(issuer),
+	}
+	if audience != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(audience))
+	}
+	_, err := jwt.ParseWithClaims(token, &cc, func(t *jwt.Token) (interface{}, error) {
+		if _, isECDSA := t.Method.(*jwt.SigningMethodECDSA); !isECDSA {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return pub, nil
+	}, parserOpts...)
+	if err != nil {
+		return "", Claims{}, false
+	}
+	if !matchesPermission(cc.permissions, req) {
+		return "", Claims{}, false
+	}
+	out := Claims{
+		Method:            conf.AuthMethodJWT,
+		Subject:           cc.Subject,
+		JTI:               cc.ID,
+		TenantID:          cc.tenantID,
+		PrincipalKind:     cc.principalKind,
+		Scope:             cc.scope,
+		ScopeKind:         cc.scopeKind,
+		ScopeTargetID:     cc.scopeTargetID,
+		ClientFingerprint: cc.clientFingerprint,
+	}
+	return cc.Subject, out, true
 }
 
 func (m *Manager) authenticateInternal(req *Request) (string, error) {

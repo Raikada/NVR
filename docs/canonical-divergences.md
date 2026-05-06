@@ -397,6 +397,77 @@ be tracked, but they will resolve together.
   motion-active days, disk-IO profile) and warrants its own
   proposal.
 
+### D18. Pre-pairing operator authentication: recorder-local LocalUser + JWT (slice 2026-05-06)
+
+- **Where.** `internal/store/`, `internal/localauth/`, `internal/auth/manager.go`
+  (LocalJWT hook), `internal/api/api_v1_recorder_login.go`, `mediamtx.yml`
+  (`authInternalUsers` block).
+- **What.** Pre-this-slice the recorder gated `/v1/*` (api/metrics/pprof
+  actions) via an `authInternalUsers` grant restricted to `127.0.0.1/32 +
+  ::1/128`. That meant: localhost browsers had unauthenticated access;
+  every LAN browser was rejected before the SPA could even render. The
+  intended integrator flow — download → install → open browser to LAN
+  IP → log in → configure → pair to MS — was therefore broken in the
+  default config.
+
+  Post-slice posture:
+  - The recorder embeds a SQLite store (`<identityDir>/recorder.db`)
+    holding `LocalUser` rows (mirrors management's pattern: argon2id
+    PHC-format hashes via `golang.org/x/crypto/argon2`, modernc.org/sqlite,
+    pressly/goose v3 migrations).
+  - On first start with an empty `local_users` table, the recorder
+    auto-generates a 24-char URL-safe random password and creates a
+    bootstrap admin user (`username: admin`, `is_admin: true`,
+    `must_change_password: true`). The password is printed to startup
+    logs as a loud banner and written to
+    `<identityDir>/initial-admin-password.txt` (mode 0600). The file
+    is removed on first successful password rotation.
+  - `POST /v1/recorder/login` returns a recorder-local JWT signed
+    with an ES256 key persisted at `<identityDir>/recorder-local-jwt.key`
+    (mode 0600). The token's claim shape mirrors what the MS produces
+    for operator JWTs (`mediamtx_permissions` action list, `principal_kind:
+    "local_user"`, `scope: [...ADR 0010 admin permissions...]`,
+    `tenant_id`, `iss: "recorder/<id>"`, `aud: "recording_server/<id>"`,
+    `exp: now + 15min`).
+  - The auth manager (`internal/auth/manager.go`) gains a `LocalJWT`
+    hook that validates locally-issued JWTs **alongside** the MS-issued
+    JWTs introduced by slice 4-D. Recorder-local + MS-issued tokens
+    are both accepted on a paired recorder; on an unpaired recorder
+    only recorder-local tokens validate.
+  - `mediamtx.yml`'s `authInternalUsers` no longer carries a
+    127.0.0.1-restricted grant for api/metrics/pprof. Internal auth
+    now covers media-pipeline access only (publish/read/playback);
+    every `/v1` caller authenticates via JWT.
+  - `POST /v1/recorder/login` and the SPA static assets are on a
+    pre-auth bypass list in `middlewareAuth` so the login screen can
+    render before the operator has a token. Every other path
+    (including pairing endpoints) goes through normal authentication.
+
+- **Why a divergence and not just a feature.** The platform's
+  `service-boundaries.md` and ADR 0010 / ADR 0011 ground the recorder
+  as a token-validator, not a token-issuer — the MS issues operator
+  JWTs in the paired profile. v1 needs a recorder-local issuance
+  path to make first-run and disconnected-MS workflows work; this is
+  authority that doesn't strictly belong to the recorder by the
+  authoritative model. Documented here so a future ADR can replace
+  the recorder-local issuer with a Cloud-tier or MS-tier flow when
+  one exists (e.g., a one-time-use pre-pairing token that the
+  recorder accepts in lieu of a bootstrap password).
+
+- **Proposed resolution.** Recorder-local issuance stays useful as a
+  break-glass path even after pairing (operator can log in directly
+  if the MS is unreachable). The forced-rotation flow + per-account
+  lockout cover the obvious risks. Future ADR may scope it more
+  narrowly (e.g., recorder-local users limited to a specific
+  permission subset) once Cloud-tier identity flows land.
+
+- **Bind-posture change.** The recorder's API listener still binds
+  `:9997` (all interfaces) and uses HTTPS by default — no change
+  there. What changed is the auth gate: pre-slice the IP restriction
+  was the gate; post-slice the JWT path is the gate. Operators that
+  want loopback-only confine the bind to `127.0.0.1:9997` in
+  `mediamtx.yml` (the same option as before).
+
 ## 4. Cosmetic / structural
 
 ### D14. `APIInfo` is the one parallel-shape suffix grandfathered in the `canonicalnames` lint baseline

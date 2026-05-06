@@ -173,6 +173,50 @@ func (a *API) EmitPairingAudit(action, outcome string, attrs map[string]string) 
 	a.emitPairingEvent(action, o, attrs)
 }
 
+// EmitLocalAuthAudit is the entry point Core wires into the
+// localauth.Manager's AuditEmitter so /v1/recorder/login attempts (and
+// the password-rotation flow) land in the recorder's per-emitter audit
+// chain per ADR 0006 D1.
+//
+// action: typically "auth.session_started".
+// outcome: "success" | "failure" | "denied".
+// actorKind / actorID: ADR 0011 D2 actor identity. The failure path
+//   produces actor_kind="unauthenticated" + actor_id="" because no
+//   user identity is established at that point (the credentials may
+//   reference a non-existent user).
+func (a *API) EmitLocalAuthAudit(action, outcome, actorKindStr, actorID string, attrs map[string]string) {
+	var o defs.AuditOutcome
+	switch outcome {
+	case "success":
+		o = defs.AuditOutcomeSuccess
+	case "denied":
+		o = defs.AuditOutcomeDenied
+	default:
+		o = defs.AuditOutcomeFailure
+	}
+	var actorKind defs.AuditActorKind
+	switch actorKindStr {
+	case "local_user":
+		actorKind = defs.AuditActorKindLocalUser
+	case "cloud_user":
+		actorKind = defs.AuditActorKindCloudUser
+	case "service_account":
+		actorKind = defs.AuditActorKindServiceAccount
+	case "system":
+		actorKind = defs.AuditActorKindSystem
+	default:
+		actorKind = defs.AuditActorKindUnauthenticated
+	}
+	a.emitAudit(defs.AuditLogEntryInput{
+		ActorKind:    actorKind,
+		ActorID:      actorID,
+		Action:       action,
+		Outcome:      o,
+		ResourceKind: "session",
+		Attributes:   attrs,
+	})
+}
+
 // emitBreakGlassActivated is the entry point for break-glass audit
 // entries. The recorder doesn't implement break-glass paths yet — the
 // trust model documents them but the implementation surface is

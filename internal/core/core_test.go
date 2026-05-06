@@ -40,6 +40,32 @@ func newInstance(conf string) (*Core, bool) {
 		conf = "apiEncryption: no\napiServerKey: server.key\napiServerCert: server.crt\n" + conf
 	}
 
+	// Pre-pairing auth slice 2026-05-06 dropped the bundled mediamtx.yml's
+	// 127.0.0.1-restricted internal-auth grant for api/metrics/pprof —
+	// production callers now authenticate via JWT (recorder-local from
+	// /v1/recorder/login or MS-issued on paired recorders). The core
+	// test suite predates that slice and reaches /v1 directly without
+	// minting a JWT first; restore the legacy localhost grant in the
+	// test conf so those tests keep passing without bulk modification.
+	// Production defaults are untouched.
+	if !strings.Contains(conf, "authInternalUsers:") {
+		conf = "authInternalUsers:\n" +
+			"- user: any\n" +
+			"  pass: \"\"\n" +
+			"  permissions:\n" +
+			"  - {action: publish}\n" +
+			"  - {action: read}\n" +
+			"  - {action: playback}\n" +
+			"- user: any\n" +
+			"  pass: \"\"\n" +
+			"  ips: [127.0.0.1/32, ::1/128]\n" +
+			"  permissions:\n" +
+			"  - {action: api}\n" +
+			"  - {action: metrics}\n" +
+			"  - {action: pprof}\n" +
+			conf
+	}
+
 	tmpf, err := test.CreateTempFile([]byte(conf))
 	if err != nil {
 		return nil, false

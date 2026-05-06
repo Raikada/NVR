@@ -16,6 +16,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/identity"
+	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	"github.com/bluenviron/mediamtx/internal/pairing"
@@ -79,6 +80,7 @@ type API struct {
 	Conf           *conf.Conf
 	AuthManager    apiAuthManager
 	Identity       *identity.Identity
+	LocalAuth      *localauth.Manager
 	Pairing        *pairing.Manager
 	MDNS           *mdns.Service
 	PathManager    defs.APIPathManager
@@ -127,6 +129,15 @@ func (a *API) Initialize() error {
 	// version + start time and is the liveness probe operator UIs use
 	// before the user authenticates. No permission gate.
 	group.GET("/info", a.onInfo)
+
+	// Recorder-local pre-pairing operator authentication (slice
+	// 2026-05-06). Login is reachable without authentication via the
+	// pre-auth bypass list in middlewareAuth above; password change
+	// requires a recorder-local JWT but is intentionally NOT gated on
+	// a specific permission so users with must_change_password=true can
+	// still rotate.
+	group.POST("/recorder/login", a.onV1RecorderLogin)
+	group.POST("/recorder/local-users/me/password", a.onV1RecorderLocalUsersMePasswordPost)
 
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
@@ -368,7 +379,53 @@ func (a *API) middlewarePreflightRequests(ctx *gin.Context) {
 	}
 }
 
+// preAuthBypassPaths lists request paths that must reach their handler
+// without going through the auth manager — pre-pairing auth slice
+// 2026-05-06.
+//
+//   - SPA static assets (`/`, `/assets/*`, `/logo.png`): the login screen
+//     itself must render before the operator has a token. The static
+//     surface carries no privileged data.
+//   - POST /v1/recorder/login: the operator can't authenticate to
+//     authenticate. Per AGENTS.md §10 ("New endpoints must default to
+//     authenticated access. Anonymous access is opt-in per path") the
+//     login endpoint is the deliberate opt-in.
+//   - GET /v1/info: already declared anonymous in the route table
+//     (operator-UI liveness probe pre-login). Listed here for clarity.
+//
+// Anything else falls through to authentication. The list is path-
+// prefix matched; route-shape changes must update this list explicitly.
+func isPreAuthBypassPath(method, path string) bool {
+	if method == http.MethodPost && path == "/v1/recorder/login" {
+		return true
+	}
+	if method != http.MethodGet {
+		return false
+	}
+	// SPA static surface.
+	if path == "/" || path == "/index.html" || path == "/logo.png" || path == "/favicon.ico" {
+		return true
+	}
+	if len(path) >= len("/assets/") && path[:len("/assets/")] == "/assets/" {
+		return true
+	}
+	// Anonymous /v1/info — the operator-UI liveness probe used pre-login.
+	if path == "/v1/info" {
+		return true
+	}
+	return false
+}
+
 func (a *API) middlewareAuth(ctx *gin.Context) {
+	if isPreAuthBypassPath(ctx.Request.Method, ctx.Request.URL.Path) {
+		// Pre-auth bypass: stash the unauthenticated principal so
+		// downstream handlers (the login endpoint) get a defined
+		// principal value rather than panicking.
+		setPrincipalOnContext(ctx, unauthenticatedPrincipal())
+		ctx.Next()
+		return
+	}
+
 	req := &auth.Request{
 		Action:      conf.AuthActionAPI,
 		Query:       ctx.Request.URL.RawQuery,

@@ -96,16 +96,16 @@ authInternalUsers:
   - action: playback
     path:
 
-  # Default administrator.
-  # This allows to use API, metrics and PPROF without authentication,
-  # if the IP is localhost.
-- user: any
-  pass:
-  ips: ['127.0.0.1', '::1']
-  permissions:
-  - action: api
-  - action: metrics
-  - action: pprof
+  # api / metrics / pprof actions are NOT granted via internal auth.
+  # The recorder gates the control surface (everything under /v1)
+  # exclusively through the JWT path: a recorder-local JWT issued by
+  # POST /v1/recorder/login on first install, or an MS-issued JWT
+  # validated against the bound MS's published JWKS once paired.
+  # Pre-pairing auth slice 2026-05-06 dropped the previous
+  # 127.0.0.1/32 + ::1/128 grant here; that grant blocked every LAN
+  # browser from reaching /v1 and was incompatible with the integrator
+  # flow (download → install → open browser to LAN IP → log in).
+  # See docs/canonical-divergences.md "pre-pairing auth" entry.
 
 # HTTP-based authentication.
 # URL called to perform authentication. Every time a user wants

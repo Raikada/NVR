@@ -163,12 +163,17 @@ func (m *Manager) RemoveSubscription(ctx context.Context, id string) error {
 	m.mu.Unlock()
 
 	runner.cancel()
+	// Wait for the run-loop to exit before reading runner.sub — the
+	// run-loop mutates runner.sub on the recreate-after-renew-failure
+	// path (manager.go ~240), and racing the read here against that
+	// write trips -race even though the resulting Unsubscribe call is
+	// best-effort.
+	<-runner.done
 	// Best-effort unsubscribe with its own deadline so a misbehaving
 	// camera doesn't block deletion.
 	uctx, ucancel := context.WithTimeout(ctx, 10*time.Second)
 	defer ucancel()
 	_ = runner.client.Unsubscribe(uctx, runner.sub)
-	<-runner.done
 	return nil
 }
 

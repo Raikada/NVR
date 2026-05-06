@@ -20,8 +20,16 @@ import { Network } from './routes/Network';
 import { Logs } from './routes/Logs';
 import { Diagnostics } from './routes/Diagnostics';
 import { Settings } from './routes/Settings';
+import { Login } from './routes/Login';
+import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
-import { fetchIdentity } from './lib/api';
+import {
+  clearStoredToken,
+  fetchIdentity,
+  getStoredToken,
+  getStoredUsername,
+  setOnUnauthorized,
+} from './lib/api';
 import type { AppState, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
 
@@ -30,9 +38,56 @@ function readHashRoute(): Route {
   return isRoute(h) ? h : 'overview';
 }
 
+// AuthState — what the App is rendering with respect to the recorder-
+// local JWT.
+//   - "loading":           initial render before localStorage was inspected.
+//   - "anonymous":         no valid token; render <Login>.
+//   - "must_change_password": token valid but the user is on the
+//                          bootstrap initial password; render <PasswordChange>.
+//   - "authenticated":     normal SPA.
+type AuthState = 'loading' | 'anonymous' | 'must_change_password' | 'authenticated';
+
 export function App() {
   const [route, setRoute] = useState<Route>(() => readHashRoute());
   const [showWizard, setShowWizard] = useState(true);
+
+  // Auth gate (pre-pairing auth slice 2026-05-06). The recorder no
+  // longer accepts anonymous /v1/* requests by default, so the SPA
+  // surfaces a login screen until a recorder-local JWT is present in
+  // localStorage. The default Login → SetupWizard → operator UI flow:
+  //   1. App mounts, finds no token → render <Login>.
+  //   2. Operator submits credentials → /v1/recorder/login returns JWT.
+  //      If must_change_password=true → render <PasswordChange>.
+  //   3. After password change → render normal SPA + first-run
+  //      SetupWizard overlay so pairing can proceed.
+  const [auth, setAuth] = useState<AuthState>(() => {
+    const t = getStoredToken();
+    return t ? 'authenticated' : 'anonymous';
+  });
+  const [authUser, setAuthUser] = useState<string>(() => getStoredUsername() ?? 'admin');
+
+  // Wire the api.ts 401 handler so an expired-token request bumps the
+  // SPA back to the Login screen instead of cascading hard errors.
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      setAuth('anonymous');
+    });
+    return () => setOnUnauthorized(null);
+  }, []);
+
+  const handleLogin = useCallback((mustChangePassword: boolean) => {
+    setAuthUser(getStoredUsername() ?? 'admin');
+    setAuth(mustChangePassword ? 'must_change_password' : 'authenticated');
+  }, []);
+
+  const handlePasswordChanged = useCallback(() => {
+    setAuth('authenticated');
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    clearStoredToken();
+    setAuth('anonymous');
+  }, []);
 
   const [state, setState] = useState<AppState>({
     hostname: 'rec-warehouse-a-01',
@@ -77,6 +132,7 @@ export function App() {
   // burning recorder CPU on a request the operator usually doesn't
   // care about.
   useEffect(() => {
+    if (auth !== 'authenticated') return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -127,7 +183,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [addToast]);
+  }, [addToast, auth]);
 
   const go = useCallback((r: Route) => {
     setRoute(r);
@@ -180,9 +236,31 @@ export function App() {
     }
   })();
 
+  // Auth gate renders the appropriate top-level screen before the
+  // operator UI mounts. SetupWizard, identity poll, and toasts all
+  // hang off the post-auth tree.
+  if (auth === 'anonymous') {
+    return <Login onLogin={handleLogin} />;
+  }
+  if (auth === 'must_change_password') {
+    return (
+      <PasswordChange
+        username={authUser}
+        onChanged={handlePasswordChanged}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
   return (
     <>
-      <TopBar server={serverHeader} paired={state.paired} now={now} />
+      <TopBar
+        server={serverHeader}
+        paired={state.paired}
+        now={now}
+        username={authUser}
+        onLogout={handleLogout}
+      />
       <div className="shell">
         <IconRail route={route} go={go} />
         {main}

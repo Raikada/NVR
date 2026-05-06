@@ -205,6 +205,25 @@ type nilLogger struct{}
 func (nilLogger) Log(_ logger.Level, _ string, _ ...any) {
 }
 
+// defaultAuthInternalUsers carries the bundled mediamtx.yml's internal-
+// auth grants. Pre-pairing auth slice 2026-05-06 dropped the previous
+// `user: any, pass: ""` grant for api/metrics/pprof IP-restricted to
+// 127.0.0.1/32 + ::1/128: that grant blocked every LAN browser from
+// reaching /v1, making the recorder unusable from the integrator
+// flow (download → install → open browser to LAN IP → log in).
+//
+// Post-slice posture:
+//   - api/metrics/pprof actions are gated exclusively by the recorder's
+//     JWT path (recorder-local JWT issued via /v1/recorder/login or, on
+//     paired recorders, MS-issued JWT validated via the pairing-aware
+//     auth wiring). The internal-auth path no longer matches them at
+//     all — any /v1 caller without a valid JWT receives 401.
+//   - publish/read/playback actions remain `user: any, pass: ""` for
+//     RTSP/HLS media compatibility (matches MediaMTX's upstream default
+//     and is the surface external cameras hit). Operators that want
+//     authenticated media protocols still set explicit users in
+//     mediamtx.yml; the bundled default is open for those because the
+//     recorder is a recording target, not a media gatekeeper.
 var defaultAuthInternalUsers = []AuthInternalUser{
 	{
 		User: "any",
@@ -218,22 +237,6 @@ var defaultAuthInternalUsers = []AuthInternalUser{
 			},
 			{
 				Action: AuthActionPlayback,
-			},
-		},
-	},
-	{
-		User: "any",
-		Pass: "",
-		IPs:  IPNetworks{mustParseCIDR("127.0.0.1/32"), mustParseCIDR("::1/128")},
-		Permissions: []AuthInternalUserPermission{
-			{
-				Action: AuthActionAPI,
-			},
-			{
-				Action: AuthActionMetrics,
-			},
-			{
-				Action: AuthActionPprof,
 			},
 		},
 	},

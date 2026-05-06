@@ -33,6 +33,16 @@ const (
 
 // DiscoveredManagement is one entry in the recorder's mDNS-listener
 // cache.
+//
+// URL is the IP-form transport URL built from the broadcast's
+// AddrIPv4 + Port — the value the recorder uses for outbound HTTPS
+// fetches (e.g., the JWKS URL). PublicURL is the MS-advertised
+// externally-visible URL — the value the recorder uses as the JWT
+// `iss` claim (which the MS itself signs against, regardless of the
+// transport URL the recorder fetches by). When the broadcast omits
+// public_url (older MS), PublicURL is empty and the recorder falls
+// back to URL — accepting the cost that JWT iss validation may fail
+// in that case.
 type DiscoveredManagement struct {
 	MSID            string    `json:"ms_id,omitempty"`
 	Hostname        string    `json:"hostname"`
@@ -40,6 +50,7 @@ type DiscoveredManagement struct {
 	Version         string    `json:"version,omitempty"`
 	TenantID        string    `json:"tenant_id,omitempty"`
 	RootFingerprint string    `json:"root_fingerprint,omitempty"`
+	PublicURL       string    `json:"public_url,omitempty"`
 	Port            int       `json:"port"`
 	URL             string    `json:"url"`
 	FirstSeenAt     time.Time `json:"first_seen_at"`
@@ -280,6 +291,7 @@ func (s *Service) handleEntry(entry *zeroconf.ServiceEntry) {
 			Version:         txt["version"],
 			TenantID:        txt["tenant_id"],
 			RootFingerprint: txt["root_fp"],
+			PublicURL:       txt["public_url"],
 			Port:            entry.Port,
 			URL:             url,
 			FirstSeenAt:     now,
@@ -293,6 +305,7 @@ func (s *Service) handleEntry(entry *zeroconf.ServiceEntry) {
 	existing.Version = txt["version"]
 	existing.TenantID = txt["tenant_id"]
 	existing.RootFingerprint = txt["root_fp"]
+	existing.PublicURL = txt["public_url"]
 	existing.Port = entry.Port
 	existing.URL = url
 	existing.LastSeenAt = now

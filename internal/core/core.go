@@ -30,12 +30,14 @@ import (
 	"github.com/bluenviron/mediamtx/internal/crl"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
+	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	"github.com/bluenviron/mediamtx/internal/motion"
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/policysync"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
+	recstore "github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -139,6 +141,8 @@ type Core struct {
 	api             *api.API
 	confWatcher     *confwatcher.ConfWatcher
 	identity        *identity.Identity
+	localAuth        *localauth.Manager
+	localAuthStore   *recstore.Store
 	pairingManager   *mspairing.Manager
 	mdnsService      *mdns.Service
 	crlPoller        *crl.Poller
@@ -402,6 +406,46 @@ func (p *Core) createResources(initial bool) error {
 			id.ID().String(), idDir, id.IsPaired())
 	}
 
+	// Recorder-local LocalUser auth (pre-pairing auth slice 2026-05-06).
+	// Stores LocalUser rows + recorder-local JWT signing key alongside
+	// the device identity. On first boot, generates a bootstrap admin
+	// password (printed to logs + written to identity/initial-admin-password.txt
+	// mode 0600).
+	if p.localAuth == nil {
+		idDir := p.conf.IdentityDir
+		if idDir == "" {
+			if p.confPath != "" {
+				idDir = filepath.Join(filepath.Dir(p.confPath), "identity")
+			} else {
+				idDir = "identity"
+			}
+		}
+		s, err := recstore.Open(filepath.Join(idDir, "recorder.db"))
+		if err != nil {
+			return fmt.Errorf("local auth store open: %w", err)
+		}
+		p.localAuthStore = s
+		signingKey, err := localauth.LoadOrCreateSigningKey(idDir)
+		if err != nil {
+			return fmt.Errorf("local auth signing key: %w", err)
+		}
+		la := localauth.New(s, signingKey, idDir, p.conf.TenantID, p.identity.ID().String())
+		// Bootstrap admin if local_users is empty. Logs the initial
+		// password as a loud banner so an integrator who runs the
+		// recorder in the foreground for the first time can copy it
+		// out without grep'ing the logs.
+		initialPW, err := la.BootstrapIfEmpty(p.ctx)
+		if err != nil {
+			return fmt.Errorf("local auth bootstrap: %w", err)
+		}
+		if initialPW != "" {
+			banner := strings.Repeat("=", 72)
+			p.Log(logger.Info, "\n%s\nRECORDER BOOTSTRAP ADMIN CREATED\n  username:        admin\n  initial password: %s\n  must_change_password: yes (forced rotation on first login)\n  also written to: %s/%s (mode 0600)\nLog in at https://<this-host>:9997/ to complete setup.\n%s",
+				banner, initialPW, idDir, "initial-admin-password.txt", banner)
+		}
+		p.localAuth = la
+	}
+
 	if p.pairingManager == nil {
 		p.pairingManager = mspairing.New(p.identity, p, string(version))
 	}
@@ -430,6 +474,7 @@ func (p *Core) createResources(initial bool) error {
 	}
 
 	if p.authManager == nil {
+		la := p.localAuth
 		p.authManager = &auth.Manager{
 			Method:             p.conf.AuthMethod,
 			InternalUsers:      p.conf.AuthInternalUsers,
@@ -444,6 +489,20 @@ func (p *Core) createResources(initial bool) error {
 			JWTIssuer:          p.conf.AuthJWTIssuer,
 			JWTAudience:        p.conf.AuthJWTAudience,
 			ReadTimeout:        time.Duration(p.conf.ReadTimeout),
+			// Recorder-local JWT validation hook. Lets the auth
+			// manager accept JWTs minted by /v1/recorder/login even
+			// when authMethod=internal in mediamtx.yml. Pre-pairing
+			// auth slice 2026-05-06.
+			LocalJWT: func() (any, string, string, bool) {
+				if la == nil {
+					return nil, "", "", false
+				}
+				sk := la.SigningKey()
+				if sk == nil {
+					return nil, "", "", false
+				}
+				return sk.PublicKey(), la.Issuer(), la.Audience(), true
+			},
 		}
 	}
 
@@ -812,6 +871,7 @@ func (p *Core) createResources(initial bool) error {
 			Conf:           p.conf,
 			AuthManager:    p.authManager,
 			Identity:       p.identity,
+			LocalAuth:      p.localAuth,
 			Pairing:        p.pairingManager,
 			MDNS:           p.mdnsService,
 			PathManager:    p.pathManager,
@@ -829,6 +889,14 @@ func (p *Core) createResources(initial bool) error {
 			return err
 		}
 		p.api = i
+
+		// Wire the localauth manager's audit callback so login /
+		// failed-login attempts land in the recorder's per-emitter
+		// audit chain (ADR 0006 D1). Done after both p.api and
+		// p.localAuth exist.
+		if p.localAuth != nil {
+			p.localAuth.SetAuditEmitter(p.api.EmitLocalAuthAudit)
+		}
 
 		// Wire the pairing manager's audit callback so
 		// device.pairing_completed lands in the recorder's
@@ -1347,6 +1415,14 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.motionController = nil
 	}
 
+	// LocalAuth store (pre-pairing auth slice 2026-05-06) — close on
+	// full shutdown so the SQLite handle releases the WAL file.
+	if newConf == nil && p.localAuthStore != nil {
+		_ = p.localAuthStore.Close()
+		p.localAuthStore = nil
+		p.localAuth = nil
+	}
+
 	if closeSRTServer && p.srtServer != nil {
 		p.srtServer.Close()
 		p.srtServer = nil
@@ -1539,24 +1615,44 @@ func (p *Core) applyPairingAwareAuth() {
 		return
 	}
 
-	// Resolve effective issuer + JWKS URL.  The pinned URL is the
+	// Resolve effective issuer + JWKS URL. The pinned URL is the
 	// fallback; a live mDNS broadcast whose advertised root_fp
 	// matches one of the pinned fingerprints supersedes it (this is
 	// the URL-drift recovery path for MS hostname renames since
 	// pairing).
+	//
+	// Two URLs come into play: the IP-form transport URL the
+	// recorder fetches the JWKS from (live.URL — host:port resolved
+	// from mDNS), and the public URL the MS uses as its JWT `iss`
+	// claim (live.PublicURL — what the MS itself signs against). The
+	// recorder validates `iss` against PublicURL but fetches the
+	// JWKS from the transport URL; chain-pinning to the root CA per
+	// ADR 0012 D5 makes this safe.
 	resolved := *pinned
 	if p.mdnsService != nil {
 		live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
 		if live != nil && live.URL != "" {
-			driftDetected := !sameMSHost(live.URL, pinned.IssuerURL)
+			issuerURL := live.PublicURL
+			if issuerURL == "" {
+				issuerURL = live.URL // older MS — fall back
+			}
+			driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
+				!sameMSHost(issuerURL, pinned.JWKSURL)
 			if driftDetected {
-				resolved.IssuerURL = live.URL
-				resolved.JWKSURL = live.URL + "/.well-known/jwks.json"
-				resolved.RootsURL = live.URL + "/.well-known/raikada-roots"
-				resolved.WebSocketURL = strings.Replace(live.URL, "https://", "wss://", 1) + "/v1/ws"
+				// Use the canonical public URL for BOTH iss-validation
+				// and JWKS fetch. Earlier shape used live.URL (IP form)
+				// for the transport, but stale mDNS-cached IPs after
+				// DHCP changes left JWKS pointing at unreachable hosts
+				// and hung middleware on validation. Hostname-form is
+				// safer: chain-pinning per ADR 0012 D5 still secures
+				// the channel; only the URL string changes.
+				resolved.IssuerURL = issuerURL
+				resolved.JWKSURL = issuerURL + "/.well-known/jwks.json"
+				resolved.RootsURL = issuerURL + "/.well-known/raikada-roots"
+				resolved.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
 				p.Log(logger.Info,
-					"[pairing-auth] live MS broadcast supersedes pinned URL: pinned=%s live=%s",
-					pinned.IssuerURL, live.URL)
+					"[pairing-auth] live MS broadcast supersedes pinned URL: pinned=%s live_issuer=%s live_transport=%s",
+					pinned.IssuerURL, issuerURL, live.URL)
 				if err := p.identity.RefreshMSMetadata(resolved); err != nil {
 					p.Log(logger.Warn, "[pairing-auth] failed to write refreshed ms-metadata: %s", err)
 				}
@@ -1640,13 +1736,19 @@ func (p *Core) reconcilePairingAuth(pinnedFPs []string) {
 	if pinned == nil {
 		return
 	}
-	// URL drift?
-	if !sameMSHost(live.URL, pinned.IssuerURL) {
+	issuerURL := live.PublicURL
+	if issuerURL == "" {
+		issuerURL = live.URL
+	}
+	// URL drift on either the issuer or the JWKS URL?
+	driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
+		!sameMSHost(issuerURL, pinned.JWKSURL)
+	if driftDetected {
 		updated := *pinned
-		updated.IssuerURL = live.URL
-		updated.JWKSURL = live.URL + "/.well-known/jwks.json"
-		updated.RootsURL = live.URL + "/.well-known/raikada-roots"
-		updated.WebSocketURL = strings.Replace(live.URL, "https://", "wss://", 1) + "/v1/ws"
+		updated.IssuerURL = issuerURL
+		updated.JWKSURL = issuerURL + "/.well-known/jwks.json"
+		updated.RootsURL = issuerURL + "/.well-known/raikada-roots"
+		updated.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
 		if err := p.identity.RefreshMSMetadata(updated); err != nil {
 			p.Log(logger.Warn, "[pairing-auth] reconciler: refresh ms-metadata: %s", err)
 			return
@@ -1667,8 +1769,8 @@ func (p *Core) reconcilePairingAuth(pinnedFPs []string) {
 			pool,
 		)
 		p.Log(logger.Info,
-			"[pairing-auth] reconciler refreshed: issuer=%s tenant=%s",
-			updated.IssuerURL, p.conf.TenantID)
+			"[pairing-auth] reconciler refreshed: issuer=%s jwks=%s tenant=%s",
+			updated.IssuerURL, updated.JWKSURL, p.conf.TenantID)
 	}
 	// Tenant-id drift?
 	if live.TenantID != "" && p.conf.TenantID != live.TenantID {

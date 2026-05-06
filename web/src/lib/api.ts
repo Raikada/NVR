@@ -24,11 +24,71 @@ export class ApiError extends Error {
 
 const BASE = '/v1';
 
+/* ---------- Auth token (recorder-local JWT) ---------- */
+
+const TOKEN_KEY = 'raikada.recorder.token';
+const TOKEN_EXP_KEY = 'raikada.recorder.token.exp';
+const TOKEN_USER_KEY = 'raikada.recorder.token.user';
+
+export function getStoredToken(): string | null {
+  try {
+    const t = localStorage.getItem(TOKEN_KEY);
+    if (!t) return null;
+    const exp = localStorage.getItem(TOKEN_EXP_KEY);
+    if (exp && new Date(exp).getTime() < Date.now()) {
+      clearStoredToken();
+      return null;
+    }
+    return t;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredToken(token: string, expiresAt: string, username: string) {
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(TOKEN_EXP_KEY, expiresAt);
+    localStorage.setItem(TOKEN_USER_KEY, username);
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+export function clearStoredToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_EXP_KEY);
+    localStorage.removeItem(TOKEN_USER_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function getStoredUsername(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_USER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** When set, called whenever a /v1 request returns 401. The App uses this to
+ *  redirect to the Login screen and clear local state. */
+let onUnauthorized: (() => void) | null = null;
+export function setOnUnauthorized(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const token = getStoredToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
   const init: RequestInit = {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   };
   const res = await fetch(BASE + path, init);
   const text = await res.text();
@@ -39,6 +99,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       parsed = text;
     }
+  }
+  if (res.status === 401 && path !== '/recorder/login') {
+    // Token expired or missing on a request that should have one.
+    // Clear local state and notify the App so it routes to Login.
+    clearStoredToken();
+    if (onUnauthorized) onUnauthorized();
   }
   if (!res.ok) {
     const detail =
@@ -823,3 +889,29 @@ export const triggerMotionTest = (cameraID: string, topic?: string) =>
     `/recorder/cameras/${cameraID}/motion-config/test`,
     topic ? { topic } : undefined,
   );
+
+
+/* ---------- /v1/recorder/login + password change (pre-pairing auth) ---------- */
+
+export interface LoginResponse {
+  token: string;
+  expires_at: string;
+  user_id: string;
+  username: string;
+  is_admin: boolean;
+  must_change_password: boolean;
+  scope: string[];
+}
+
+export const loginRecorder = (username: string, password: string) =>
+  api.post<LoginResponse>("/recorder/login", { username, password });
+
+export const changeRecorderPassword = (
+  current_password: string,
+  new_password: string,
+) =>
+  api.post<LoginResponse>("/recorder/local-users/me/password", {
+    current_password,
+    new_password,
+  });
+

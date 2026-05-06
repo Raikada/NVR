@@ -5,9 +5,14 @@ interface TopBarProps {
   server: AppState & { recordingCount: number; cameraCount: number };
   paired: boolean;
   now: Date;
+  /** Pre-pairing auth slice 2026-05-06: when set, renders a Sign Out
+   *  button that clears the recorder-local JWT and routes back to
+   *  the Login screen. */
+  username?: string | null;
+  onLogout?: () => void;
 }
 
-export function TopBar({ server, paired, now }: TopBarProps) {
+export function TopBar({ server, paired, now, username, onLogout }: TopBarProps) {
   const time = now.toLocaleTimeString('en-GB', { hour12: false });
   return (
     <header
@@ -141,6 +146,34 @@ export function TopBar({ server, paired, now }: TopBarProps) {
             {time}
           </span>
         </div>
+        {username && onLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            title={`Signed in as ${username} — click to sign out`}
+            style={{
+              marginLeft: 8,
+              paddingLeft: 10,
+              paddingRight: 8,
+              borderLeft: '1px solid var(--border)',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-secondary)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              letterSpacing: 1,
+              textTransform: 'uppercase',
+              cursor: 'pointer',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-end',
+              gap: 2,
+            }}
+          >
+            <span style={{ color: 'var(--text-muted)' }}>{username}</span>
+            <span>SIGN OUT</span>
+          </button>
+        )}
       </div>
     </header>
   );
