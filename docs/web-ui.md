@@ -189,6 +189,18 @@ Recently retired (now wired to real `/v1/`):
   LAN gateway from AppState bootstrap. Auto-runs on mount; operator
   can re-run via the button. Each probe surfaces avg ms + loss
   percentage.
+- ONVIF Discover panel → real `POST /v1/onvif/discover` (WS-Discovery
+  multicast probe, hand-rolled SOAP-over-UDP) + `POST /v1/onvif/device-info`
+  (GetDeviceInformation per discovered device). The probe phase shows
+  real ProbeMatch responses; the identify phase populates manufacturer
+  + model from each device's response. VENDOR_POOL mock seed dropped.
+- Camera drawer ONVIF Events tab → real `POST /v1/onvif/event-subscriptions`
+  (PullPoint subscription) + `GET /v1/onvif/event-subscriptions` (status
+  polled every 10s) + `DELETE` (unsubscribe). Recent events feed reads
+  from `/v1/events` filtered client-side by camera id + `camera.*` kinds.
+  ONVIF NotificationMessage topics translate to canonical Event kinds
+  (motion, tamper, signal_loss, line_crossing, ...) via a recorder-side
+  mapping table; unmapped topics fall through to `camera.onvif_event`.
 
 **Overview.**
 - `TEMP` mini-metric — no thermal sensor surface. Cross-platform
@@ -204,20 +216,20 @@ Recently retired (now wired to real `/v1/`):
   through `/v1/recorder/hls-muxers` (HLS muxer state has bytes-
   served but not source jitter / packet-loss). Wiring would need
   a recorder-side stat surface, separate swing.
-- ONVIF Discover panel — the WS-Discovery probe and identify
-  phases are entirely simulated. Real ONVIF discovery needs a
-  recorder-side subsystem (probably `internal/onvif/`) with
-  WS-Discovery + GetDeviceInformation handlers. Bounded but big.
-- Config drawer — the Recording tab now writes to canonical
-  resources (Camera FK + RecordingPolicy fields). The remaining
-  drawer tabs still collect state that has no 1:1 PATCH endpoint:
+- Config drawer — the Recording tab writes to canonical resources
+  (Camera FK + RecordingPolicy fields); the ONVIF Events tab now
+  drives a real PullPoint subscription + recent-events feed (Wave 3).
+  The remaining drawer tabs still collect state that has no 1:1
+  PATCH endpoint:
   - Motion zones, sensitivity → recorder doesn't model motion
     detection canonically yet.
-  - ONVIF events → recorder doesn't subscribe to ONVIF events.
+  - ONVIF events tab's per-event-type forwarding toggles are
+    local-only (the subscription itself is real, but selective
+    topic forwarding to the MS is a future-slice item).
   - Advanced (NTP source, OSD, audio track) → recorder-internal,
     no canonical surface.
-  These tabs collect local-only state; their values are NOT
-  round-tripped on Save Changes.
+  These tabs' local-only fields are NOT round-tripped on Save
+  Changes.
 
 **Storage.**
 - Per-content-type breakdown (Continuous / Motion events / AI
@@ -254,9 +266,11 @@ Recently retired (now wired to real `/v1/`):
 **SetupWizard step 2 (pair with MS).**
 - Same MS dependency as the Pairing route. The other wizard
   steps (Welcome / Network preflight / Add cameras / Finish)
-  are bounded; Network preflight is now wired to
-  `/v1/diagnostics/ping`. Add cameras still uses the seeded
-  ONVIF mock pending the real ONVIF subsystem.
+  are bounded; Network preflight is wired to `/v1/diagnostics/ping`.
+  Add cameras step uses the live AppState.cameras list (which the
+  Cameras route populates from `/v1/cameras`), so once the operator
+  runs Discover from the Cameras page, the wizard reflects what
+  was added.
 
 ## Mock data source
 

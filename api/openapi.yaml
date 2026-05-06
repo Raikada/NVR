@@ -186,6 +186,11 @@ info:
     | `/v1/recorder/hls-muxers`                           | GET     | `stream.list`             |
     | `/v1/recorder/hls-muxers/{id}`                      | GET     | `stream.read`             |
     | `/v1/recorder/cameras/{id}/snapshot`                | GET     | `camera.live.view`        |
+    | `/v1/onvif/discover`                                | POST    | `camera.create`           |
+    | `/v1/onvif/device-info`                             | POST    | `camera.create`           |
+    | `/v1/onvif/event-subscriptions`                     | GET     | `event.read`              |
+    | `/v1/onvif/event-subscriptions`                     | POST    | `event.read`              |
+    | `/v1/onvif/event-subscriptions/{id}`                | DELETE  | `event.read`              |
 
     **Pre-OQ10 service-account compatibility.** Deployments still
     authenticating via the internal/HTTP auth methods produce
@@ -2597,6 +2602,90 @@ components:
           format: int64
         reason:
           type: string
+
+    # ----- ONVIF subsystem wire shapes ----------------------------
+
+    OnvifDiscoveredDevice:
+      type: object
+      required: [xaddr, endpoint_reference, types, scopes]
+      properties:
+        xaddr:
+          type: string
+          description: |
+            Device service URL the recorder will POST SOAP requests to.
+        endpoint_reference:
+          type: string
+          description: |
+            WS-Addressing EndpointReference URN; stable per camera.
+            Used for dedup if a camera replies more than once.
+        types:
+          type: array
+          items: { type: string }
+          description: ONVIF device-type tags (e.g., NetworkVideoTransmitter, Device).
+        scopes:
+          type: array
+          items: { type: string }
+          description: Raw ONVIF scope URIs (manufacturer, hardware, profile, etc.).
+        manufacturer:
+          type: string
+          description: Parsed from scope `manufacturer/...`.
+        model:
+          type: string
+          description: Parsed from scope `model/...`.
+        hardware:
+          type: string
+          description: Parsed from scope `hardware/...`.
+        name:
+          type: string
+          description: Parsed from scope `name/...`.
+        country:
+          type: string
+          description: Parsed from scope `location/country/...`.
+
+    OnvifDeviceInformation:
+      type: object
+      required: [manufacturer, model, firmware_version, serial_number, hardware_id]
+      properties:
+        manufacturer:
+          type: string
+        model:
+          type: string
+        firmware_version:
+          type: string
+        serial_number:
+          type: string
+        hardware_id:
+          type: string
+
+    OnvifSubscription:
+      type: object
+      required: [id, camera_id, xaddr, created_at, state]
+      properties:
+        id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+        xaddr:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        termination_time:
+          type: string
+          format: date-time
+          description: Camera-issued subscription expiry; the recorder Renews before this.
+        state:
+          type: string
+          enum: [active, terminated, failed]
+        last_error:
+          type: string
+        last_event_at:
+          type: string
+          format: date-time
+        event_count:
+          type: integer
 
     # ----- Recorder-localized escape hatch wire shapes ------------
 
@@ -5073,6 +5162,201 @@ paths:
                 $ref: '#/components/schemas/Error'
         '500':
           description: Recorder configuration not loaded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/onvif/discover:
+    post:
+      tags: [ONVIF]
+      summary: Run a WS-Discovery probe to find ONVIF cameras on the LAN.
+      description: |
+        Sends a SOAP-over-UDP multicast probe to 239.255.255.250:3702 from
+        each non-loopback IPv4 interface and listens for ProbeMatch
+        responses for `timeout_ms` (default 3000, max 15000). Returns
+        each unique device with its xaddr, types, scopes, and the
+        well-known fields parsed out of the ONVIF scope URIs
+        (manufacturer, model, hardware, name, country).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeout_ms:
+                  type: integer
+                  minimum: 100
+                  maximum: 15000
+      responses:
+        '200':
+          description: Discovery completed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OnvifDiscoveredDevice'
+        '403':
+          description: Permission denied (camera.create required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/onvif/device-info:
+    post:
+      tags: [ONVIF]
+      summary: Fetch GetDeviceInformation from a specific ONVIF camera.
+      description: |
+        Sends a SOAP `tds:GetDeviceInformation` request to the camera's
+        device service URL. Returns the manufacturer / model / firmware
+        version / serial number / hardware id. If `username` is supplied,
+        the request carries a WS-Security UsernameToken with a
+        SHA1-based PasswordDigest. Many ONVIF cameras require credentials
+        for this call; sending anonymously and letting the camera surface
+        a SOAP fault is the typical pattern when the operator hasn't
+        entered credentials yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [xaddr]
+              properties:
+                xaddr:
+                  type: string
+                  description: Device service URL from the discovery response.
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Device info retrieved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnvifDeviceInformation'
+        '400':
+          description: |
+            Bad request, including authentication failures and SOAP faults.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission denied (camera.create required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/onvif/event-subscriptions:
+    get:
+      tags: [ONVIF]
+      summary: List active ONVIF PullPoint subscriptions.
+      description: |
+        Returns the in-memory registry of PullPoint subscriptions the
+        recorder is currently maintaining. Subscriptions do not persist
+        across recorder restart in v1.
+      responses:
+        '200':
+          description: Subscription list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OnvifSubscription'
+        '403':
+          description: Permission denied (event.read required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags: [ONVIF]
+      summary: Create an ONVIF PullPoint subscription against a camera.
+      description: |
+        Issues `tev:CreatePullPointSubscription` to the camera's event
+        service URL and starts a background goroutine that long-polls
+        for events. Notifications are translated to canonical Events
+        (camera.motion_detected, camera.tamper_detected, etc.) and
+        published into `/v1/events`. Unknown ONVIF topics fall through
+        to a generic `camera.onvif_event` Event with the raw topic in
+        attributes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [camera_id, xaddr]
+              properties:
+                camera_id:
+                  type: string
+                  format: uuid
+                xaddr:
+                  type: string
+                  description: Event service URL (typically same as device service URL).
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        '201':
+          description: Subscription created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnvifSubscription'
+        '400':
+          description: Invalid request or camera-side failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Permission denied (event.read required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/onvif/event-subscriptions/{id}:
+    delete:
+      tags: [ONVIF]
+      summary: Cancel an ONVIF PullPoint subscription.
+      description: |
+        Cancels the background goroutine and best-effort `Unsubscribe`s
+        the camera. Subsequent events from the camera (if any are
+        already in flight) are dropped.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Subscription cancelled.
+        '403':
+          description: Permission denied (event.read required).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Subscription not found.
           content:
             application/json:
               schema:

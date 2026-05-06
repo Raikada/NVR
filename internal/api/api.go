@@ -250,6 +250,16 @@ func (a *API) Initialize() error {
 		group.GET("/recorder/cameras/:id/snapshot", a.requirePermission("camera.live.view"), a.onV1RecorderCameraSnapshot)
 	}
 
+	// ONVIF subsystem (Wave 3). Discovery + device-info gate on
+	// camera.create — same gate as /v1/cameras/probe and the manual-
+	// add wizard. Event subscriptions gate on event.read since
+	// subscribing is a "read events from this camera" right.
+	group.POST("/onvif/discover", a.requirePermission("camera.create"), a.onV1OnvifDiscover)
+	group.POST("/onvif/device-info", a.requirePermission("camera.create"), a.onV1OnvifDeviceInfo)
+	group.GET("/onvif/event-subscriptions", a.requirePermission("event.read"), a.onV1OnvifEventSubscriptionsList)
+	group.POST("/onvif/event-subscriptions", a.requirePermission("event.read"), a.onV1OnvifEventSubscriptionsPost)
+	group.DELETE("/onvif/event-subscriptions/:id", a.requirePermission("event.read"), a.onV1OnvifEventSubscriptionsDelete)
+
 	// Static SPA bundle. Registered AFTER the /v1 group so the API
 	// surface takes precedence; gin's NoRoute catches every other
 	// GET and serves the SPA's index.html so hash-routed deep links

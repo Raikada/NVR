@@ -595,3 +595,73 @@ export interface StreamList extends ListEnvelope<Stream> {}
 
 export const fetchStreams = () =>
   api.get<StreamList>('/streams?items_per_page=200');
+
+/* ---------- /v1/onvif (Wave 3) ---------- */
+
+export interface OnvifDiscoveredDevice {
+  xaddr: string;
+  endpoint_reference: string;
+  types: string[];
+  scopes: string[];
+  manufacturer?: string;
+  model?: string;
+  hardware?: string;
+  name?: string;
+  country?: string;
+}
+
+export interface OnvifDiscoverResponse {
+  devices: OnvifDiscoveredDevice[];
+}
+
+export const onvifDiscover = (timeoutMs?: number) =>
+  api.post<OnvifDiscoverResponse>('/onvif/discover', timeoutMs ? { timeout_ms: timeoutMs } : {});
+
+export interface OnvifDeviceInformation {
+  manufacturer: string;
+  model: string;
+  firmware_version: string;
+  serial_number: string;
+  hardware_id: string;
+}
+
+export interface OnvifDeviceInfoBody {
+  xaddr: string;
+  username?: string;
+  password?: string;
+}
+
+export const onvifDeviceInfo = (body: OnvifDeviceInfoBody) =>
+  api.post<OnvifDeviceInformation>('/onvif/device-info', body);
+
+export interface OnvifSubscription {
+  id: string;
+  camera_id: string;
+  xaddr: string;
+  created_at: string;
+  termination_time?: string;
+  state: 'active' | 'terminated' | 'failed';
+  last_error?: string;
+  last_event_at?: string;
+  event_count: number;
+}
+
+export interface OnvifSubscriptionListResponse {
+  items: OnvifSubscription[];
+}
+
+export interface OnvifSubscribeBody {
+  camera_id: string;
+  xaddr: string;
+  username?: string;
+  password?: string;
+}
+
+export const onvifListSubscriptions = () =>
+  api.get<OnvifSubscriptionListResponse>('/onvif/event-subscriptions');
+
+export const onvifCreateSubscription = (body: OnvifSubscribeBody) =>
+  api.post<OnvifSubscription>('/onvif/event-subscriptions', body);
+
+export const onvifDeleteSubscription = (id: string) =>
+  api.delete<unknown>(`/onvif/event-subscriptions/${id}`);

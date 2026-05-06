@@ -30,6 +30,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/onvif"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/policysync"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -140,6 +141,7 @@ type Core struct {
 	crlPoller        *crl.Poller
 	cameraSyncPoller *camerasync.Poller
 	policySyncPoller *policysync.Poller
+	onvifManager     *onvif.Manager
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -919,6 +921,19 @@ func (p *Core) createResources(initial bool) error {
 		// non-write failures (network, codec) do not surface as a
 		// canonical write-failed event.
 		recorder.SetSegmentWriteFailedPublisher(api.PublishSegmentWriteFailed)
+
+		// ONVIF subscription manager (Wave 3). One process-wide
+		// manager owns active PullPoint subscriptions; the API
+		// handlers in /v1/onvif/event-subscriptions interact with
+		// it. Events from cameras flow through the manager's sink
+		// into publishOnvifEvent, which reuses the pipeline's
+		// EventStore.
+		if p.onvifManager == nil {
+			p.onvifManager = onvif.NewManager(p, func(ev onvif.EventNotification) {
+				api.PublishOnvifEvent(ev)
+			}, nil)
+			api.SetOnvifManager(p.onvifManager)
+		}
 	}
 
 	if initial && p.confPath != "" {
@@ -1226,6 +1241,14 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		} else if !calledByAPI { // avoid a loop
 			p.api.ReloadConf(newConf)
 		}
+	}
+
+	// ONVIF manager — close on full shutdown only. Subscriptions are
+	// in-memory and don't survive restart by design (documented in
+	// docs/web-ui.md as a future-slice item).
+	if newConf == nil && p.onvifManager != nil {
+		p.onvifManager.Close()
+		p.onvifManager = nil
 	}
 
 	if closeSRTServer && p.srtServer != nil {

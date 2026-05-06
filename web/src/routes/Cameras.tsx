@@ -39,7 +39,14 @@ import {
   fetchRecordingPolicies,
   fetchIdentity,
   updateRecordingPolicy,
+  onvifDiscover,
+  onvifDeviceInfo,
+  onvifListSubscriptions,
+  onvifCreateSubscription,
+  onvifDeleteSubscription,
+  fetchEvents,
 } from '../lib/api';
+import type { OnvifSubscription, OnvifDiscoveredDevice, Event as ApiEvent } from '../lib/api';
 import type {
   Camera as ApiCamera,
   CameraSourceType,
@@ -74,16 +81,14 @@ interface DiscoverHit {
   rtsp: string;
   identified: boolean;
   status: 'reachable' | 'identifying' | 'ok';
+  // Set when the hit came from a real /v1/onvif/discover response;
+  // the identify + add-camera flows POST against this URL.
+  xaddr?: string;
 }
 
-const VENDOR_POOL: Omit<DiscoverHit, 'identified' | 'status'>[] = [
-  { id: 'CAM-07', ip: '10.0.1.47', mac: 'B8:27:EB:2A:81:77', vendor: 'Hikvision', model: 'DS-2CD2143G2-IS', resolution: '2688×1520', fps: 25, onvif: true, rtsp: '/Streaming/Channels/101' },
-  { id: 'CAM-08', ip: '10.0.1.48', mac: 'B8:27:EB:2A:81:88', vendor: 'Axis', model: 'M3215-LVE', resolution: '1920×1080', fps: 30, onvif: true, rtsp: '/axis-media/media.amp' },
-  { id: 'CAM-09', ip: '10.0.1.49', mac: 'B8:27:EB:2A:81:99', vendor: 'Dahua', model: 'IPC-HFW3841T-ZAS', resolution: '3840×2160', fps: 15, onvif: true, rtsp: '/cam/realmonitor?channel=1&subtype=0' },
-  { id: 'CAM-10', ip: '10.0.1.50', mac: 'B8:27:EB:2A:81:AA', vendor: 'Reolink', model: 'RLC-823A 16x', resolution: '3840×2160', fps: 25, onvif: true, rtsp: '/h264Preview_01_main' },
-  { id: 'CAM-11', ip: '10.0.1.51', mac: 'B8:27:EB:2A:81:BB', vendor: 'Bosch', model: 'DINION 7100i IR', resolution: '3840×2160', fps: 30, onvif: true, rtsp: '/rtsp_tunnel?h26x=4&line=1' },
-  { id: 'CAM-12', ip: '10.0.1.52', mac: 'B8:27:EB:2A:81:CC', vendor: 'Unknown', model: 'Generic ONVIF', resolution: '1920×1080', fps: 20, onvif: false, rtsp: '/live' },
-];
+// VENDOR_POOL was a Wave-2 mock seed; the discovery panel now reads
+// from /v1/onvif/discover. Kept here as a comment so future adjacent
+// changes have the historical reference.
 
 interface VendorDefaults {
   user: string;
@@ -459,10 +464,10 @@ type DiscoverStage = 'probe' | 'identify' | 'done';
 function DiscoverPanel({ onClose, onAdd }: DiscoverProps) {
   const [stage, setStage] = useState<DiscoverStage>('probe');
   const [progress, setProgress] = useState(0);
-  const [subnet, setSubnet] = useState('10.0.1.0/24');
+  const [subnet, setSubnet] = useState('LAN');
   const [found, setFound] = useState<DiscoverHit[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [creds, setCreds] = useState({ user: 'admin', pass: '••••••••' });
+  const [creds, setCreds] = useState({ user: 'admin', pass: '' });
   const [credsExpanded, setCredsExpanded] = useState(false);
   const [previewing, setPreviewing] = useState<string | null>(null);
   const [logLines, setLogLines] = useState<LogLine[]>([]);
@@ -481,48 +486,131 @@ function DiscoverPanel({ onClose, onAdd }: DiscoverProps) {
     pushLog('info', `WS-Discovery probe → ${subnet}`);
   }
 
-  // Probe phase: progress ticker + streaming WS-Discovery hits.
+  // Translate one ONVIF DiscoveredDevice into the panel's DiscoverHit
+  // shape. The xaddr is the canonical pointer back to the device for
+  // the device-info phase; we surface a synthetic id so the dedup keys
+  // remain stable across phases.
+  function deviceToHit(d: OnvifDiscoveredDevice): DiscoverHit {
+    let host = '';
+    try {
+      host = new URL(d.xaddr).host;
+    } catch {
+      host = d.xaddr;
+    }
+    return {
+      id: d.endpoint_reference || d.xaddr,
+      ip: host,
+      mac: d.endpoint_reference?.slice(-12) ?? '—',
+      vendor: d.manufacturer ?? d.name ?? 'ONVIF Device',
+      model: d.model ?? d.hardware ?? '',
+      resolution: '—',
+      fps: 0,
+      onvif: true,
+      rtsp: '',
+      identified: false,
+      status: 'reachable',
+      // Stash the xaddr on the hit so the identify phase + add flow
+      // know where to call.
+      xaddr: d.xaddr,
+    };
+  }
+
+  // Probe phase: real WS-Discovery via /v1/onvif/discover. Cancellable
+  // via stage transition; we set a 4-second timeout and animate the
+  // progress bar in parallel for visual feedback.
   useEffect(() => {
     if (stage !== 'probe') return;
+    let cancelled = false;
     let p = 0;
     const tick = window.setInterval(() => {
-      p += 4 + Math.random() * 6;
-      if (p > 100) p = 100;
+      p += 3 + Math.random() * 4;
+      if (p > 95) p = 95;
       setProgress(Math.floor(p));
-      if (p >= 100) {
-        clearInterval(tick);
-        setStage('identify');
-        pushLog('ok', 'Probe complete · 254 hosts scanned');
-      }
-    }, 80);
+    }, 100);
 
-    const timers = VENDOR_POOL.map((peer, i) =>
-      window.setTimeout(() => {
-        setFound((prev) => [...prev, { ...peer, identified: false, status: 'reachable' }]);
-        pushLog('info', `Reply from ${peer.ip} · ${peer.mac}`);
-      }, 400 + i * 380),
-    );
+    pushLog('info', 'WS-Discovery multicast probe → 239.255.255.250:3702');
+    onvifDiscover(4000)
+      .then((resp) => {
+        if (cancelled) return;
+        clearInterval(tick);
+        setProgress(100);
+        const hits = resp.devices.map(deviceToHit);
+        setFound(hits);
+        pushLog('ok', `Probe complete · ${hits.length} ONVIF device${hits.length === 1 ? '' : 's'} found`);
+        for (const h of hits) {
+          pushLog('info', `Reply from ${h.ip}${h.vendor !== 'ONVIF Device' ? ' · ' + h.vendor : ''}`);
+        }
+        setStage('identify');
+      })
+      .catch((e: Error) => {
+        if (cancelled) return;
+        clearInterval(tick);
+        pushLog('err', `Probe failed: ${e.message}`);
+        setStage('done');
+      });
     return () => {
+      cancelled = true;
       clearInterval(tick);
-      timers.forEach(clearTimeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage === 'probe' ? 'go' : 'stop']);
 
-  // Identify phase: walk found list, mark identified.
+  // Identify phase: real GetDeviceInformation per device. Each call is
+  // best-effort: cameras that require credentials produce a 400 with
+  // a SOAP-fault reason; we surface that in the log line and mark the
+  // hit as identified anyway so the user can still click Add and edit
+  // credentials in the per-camera detail.
   useEffect(() => {
     if (stage !== 'identify') return;
-    found.forEach((cam, i) => {
-      window.setTimeout(() => {
-        setFound((prev) => prev.map((c) => (c.id === cam.id ? { ...c, identified: true } : c)));
-        pushLog('ok', `${cam.ip} → ${cam.vendor} ${cam.model} · ${cam.resolution}`);
-        if (i === found.length - 1) {
-          setStage('done');
-          pushLog('ok', 'Identification complete');
+    if (found.length === 0) {
+      setStage('done');
+      pushLog('ok', 'No devices to identify');
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      for (let i = 0; i < found.length; i++) {
+        if (cancelled) return;
+        const hit = found[i];
+        try {
+          const info = await onvifDeviceInfo({
+            xaddr: hit.xaddr ?? '',
+            username: creds.user || undefined,
+            password: creds.pass || undefined,
+          });
+          if (cancelled) return;
+          setFound((prev) =>
+            prev.map((c) =>
+              c.id === hit.id
+                ? {
+                    ...c,
+                    identified: true,
+                    vendor: info.manufacturer || c.vendor,
+                    model: info.model || c.model,
+                  }
+                : c,
+            ),
+          );
+          pushLog('ok', `${hit.ip} → ${info.manufacturer} ${info.model}`);
+        } catch (e) {
+          const msg = (e as Error).message || 'identify failed';
+          if (cancelled) return;
+          // Keep the device in the list but mark identified so Add
+          // affordance enables; surface the error so the operator
+          // knows credentials may be needed.
+          setFound((prev) =>
+            prev.map((c) => (c.id === hit.id ? { ...c, identified: true } : c)),
+          );
+          pushLog('err', `${hit.ip}: ${msg}`);
         }
-      }, 250 + i * 200);
-    });
-    if (found.length === 0) setStage('done');
+      }
+      if (cancelled) return;
+      setStage('done');
+      pushLog('ok', 'Identification complete');
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stage === 'identify' ? 'go' : 'stop']);
 
@@ -2790,13 +2878,95 @@ function MotionTab({ c, patch }: TabProps) {
 
 function EventsTab({ c, patch }: TabProps) {
   type EventKey = keyof CameraConfig['events'];
-  const events: { k: EventKey; l: string; d: string }[] = [
+  const eventToggles: { k: EventKey; l: string; d: string }[] = [
     { k: 'motion', l: 'Motion Detection', d: 'Standard pixel-difference motion' },
     { k: 'tampering', l: 'Tampering', d: 'Lens cover, defocus, scene change' },
     { k: 'lineCrossing', l: 'Line Crossing', d: 'Virtual tripwire (ONVIF rule)' },
     { k: 'audioDetection', l: 'Audio Detection', d: 'Loud noise / glass break' },
     { k: 'objectDetection', l: 'Object Detection', d: 'On-camera AI: person, vehicle' },
   ];
+
+  // Subscription state, polled on mount + every 10s while the drawer
+  // is open. Per ADR 0009 §D2 events are recorder-canonical, so the
+  // recent-events feed reads directly from /v1/events filtered by the
+  // open camera id.
+  const [subs, setSubs] = useState<OnvifSubscription[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [recentEvents, setRecentEvents] = useState<ApiEvent[]>([]);
+
+  const ourSub = subs.find((s) => s.camera_id === c.id);
+
+  async function refresh() {
+    try {
+      const list = await onvifListSubscriptions();
+      setSubs(list.items);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  }
+
+  async function refreshEvents() {
+    try {
+      const list = await fetchEvents({ perPage: 50 });
+      // Filter for events whose subject_id matches this camera and
+      // whose kind starts with 'camera.' (motion, tamper, signal_loss,
+      // onvif_event). The recorder doesn't yet expose a `subject_id=`
+      // filter so we filter client-side.
+      setRecentEvents(
+        list.items
+          .filter((e) => e.subject_id === c.id && e.kind.startsWith('camera.'))
+          .slice(0, 30),
+      );
+    } catch {
+      // Best-effort; leave the previous list intact.
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+    void refreshEvents();
+    const t = window.setInterval(() => {
+      void refresh();
+      void refreshEvents();
+    }, 10_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c.id]);
+
+  async function subscribe() {
+    setBusy(true);
+    setErr(null);
+    try {
+      // Default xaddr inferred from the camera ip. Most cameras
+      // expose ONVIF on /onvif/device_service over plain HTTP.
+      const host = (c.ip || '').replace(/^rtsp:\/\//, '').split('/')[0].split(':')[0];
+      const xaddr = `http://${host}/onvif/device_service`;
+      await onvifCreateSubscription({
+        camera_id: c.id,
+        xaddr,
+      });
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unsubscribe(id: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await onvifDeleteSubscription(id);
+      await refresh();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div
@@ -2819,11 +2989,148 @@ function EventsTab({ c, patch }: TabProps) {
             lineHeight: 1.6,
           }}
         >
-          ONVIF events arrive via PullPoint subscription. Events flagged here are forwarded to the management
-          server and trigger event-mode recording.
+          ONVIF events arrive via PullPoint subscription. Topics translate to
+          canonical camera events (motion, tamper, signal_loss). Unmapped topics
+          land as <code>camera.onvif_event</code> with the raw topic in attributes.
         </div>
       </div>
-      {events.map((e) => (
+
+      {/* Subscription status + controls */}
+      <div
+        style={{
+          padding: 12,
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+        }}
+      >
+        <Icon
+          name={ourSub ? 'check-circle' : 'zap'}
+          style={{
+            width: 14,
+            height: 14,
+            color: ourSub ? '#22C55E' : 'var(--text-muted)',
+          }}
+        />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 13, fontWeight: 500 }}>
+            PullPoint subscription
+          </div>
+          <div
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              color: 'var(--text-muted)',
+              marginTop: 2,
+            }}
+          >
+            {ourSub
+              ? `${ourSub.state.toUpperCase()} · ${ourSub.event_count} events received` +
+                (ourSub.last_event_at ? ` · last ${new Date(ourSub.last_event_at).toLocaleTimeString()}` : '')
+              : 'Not subscribed. Click Subscribe to start receiving events.'}
+          </div>
+          {ourSub?.last_error && (
+            <div
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: '#EF4444',
+                marginTop: 4,
+              }}
+            >
+              {ourSub.last_error}
+            </div>
+          )}
+        </div>
+        {ourSub ? (
+          <Btn kind="ghost" size="sm" disabled={busy} onClick={() => unsubscribe(ourSub.id)}>
+            Unsubscribe
+          </Btn>
+        ) : (
+          <Btn kind="primary" size="sm" disabled={busy} onClick={subscribe}>
+            Subscribe
+          </Btn>
+        )}
+      </div>
+
+      {err && (
+        <div
+          style={{
+            padding: 10,
+            background: 'rgba(239,68,68,0.07)',
+            border: '1px solid rgba(239,68,68,0.3)',
+            borderRadius: 4,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            color: '#EF4444',
+          }}
+        >
+          {err}
+        </div>
+      )}
+
+      {/* Recent events feed */}
+      {recentEvents.length > 0 && (
+        <div>
+          <SectionHeader>RECENT EVENTS</SectionHeader>
+          <div
+            style={{
+              marginTop: 10,
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              overflow: 'hidden',
+              maxHeight: 220,
+              overflowY: 'auto',
+            }}
+          >
+            {recentEvents.map((ev) => (
+              <div
+                key={ev.id}
+                style={{
+                  padding: '8px 12px',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'grid',
+                  gridTemplateColumns: '120px 1fr auto',
+                  gap: 10,
+                  alignItems: 'center',
+                  background: 'var(--bg-tertiary)',
+                }}
+              >
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+                  {new Date(ev.occurred_at).toLocaleTimeString()}
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{ev.kind}</span>
+                <span
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 9,
+                    letterSpacing: 1,
+                    color:
+                      ev.severity === 'error'
+                        ? '#EF4444'
+                        : ev.severity === 'warning'
+                          ? '#F59E0B'
+                          : '#22C55E',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {ev.severity}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Per-event-type forwarding toggles. Local-only state today —
+          a future slice will fold these into the subscription create
+          body so the recorder can selectively forward only the
+          enabled topics. */}
+      <SectionHeader>EVENT FORWARDING (LOCAL-ONLY)</SectionHeader>
+      {eventToggles.map((e) => (
         <div
           key={e.k}
           style={{
