@@ -123,6 +123,9 @@ func TestCoreHotReloading(t *testing.T) {
 
 	err := os.WriteFile(confPath, []byte(
 		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"apiEncryption: no\n"+
+			"apiServerKey: server.key\n"+
+			"apiServerCert: server.crt\n"+
 			"paths:\n"+
 			"  test1:\n"+
 			"    publishUser: myuser\n"+
@@ -144,6 +147,9 @@ func TestCoreHotReloading(t *testing.T) {
 
 	err = os.WriteFile(confPath, []byte(
 		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"apiEncryption: no\n"+
+			"apiServerKey: server.key\n"+
+			"apiServerCert: server.crt\n"+
 			"paths:\n"+
 			"  test1:\n"),
 		0o644)
@@ -167,7 +173,10 @@ func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 	// added in commit e97ba172. Without it, New() rejects the config
 	// and the test gets a (nil, false) return.
 	err := os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"),
+		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"apiEncryption: no\n"+
+			"apiServerKey: server.key\n"+
+			"apiServerCert: server.crt\n"),
 		0o644)
 	require.NoError(t, err)
 	defer os.Remove(confPath)
@@ -178,6 +187,9 @@ func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 
 	err = os.WriteFile(confPath, []byte(
 		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+			"apiEncryption: no\n"+
+			"apiServerKey: server.key\n"+
+			"apiServerCert: server.crt\n"+
 			"logDestinations: [file]\n"+
 			"logFile: /nonexisting/nonexist\n"),
 		0o644)
