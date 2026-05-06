@@ -166,13 +166,33 @@ Recently retired (now wired to real `/v1/`):
   exist on the server, and any HLS player error. The CameraList
   row's 96×56 thumbnail icon is NOT a video tile — it stays a
   status icon.
+- Camera drawer Recording tab → multi-resource save against
+  `/v1/cameras/{id}` + `/v1/recording-policies/{policy_id}`.
+  The tab now hosts inline editable controls for mode, retention,
+  container, and the policy enabled flag; advanced fields (schedule,
+  segment durations, part size, record-path template) stay behind
+  the Advanced button which opens PolicyEditorModal. Save Changes
+  fires both PATCHes best-effort and reports per-resource outcome.
+  Honors the slice 4-C `policy_canonical_source = "ms"` lockdown:
+  inline edits + Advanced + New Policy disable, banner shows; the
+  policy-selection dropdown stays mutable since the Camera FK is
+  still locally owned.
+- Storage RETENTION stat tile → max `retention_duration` across
+  enabled `/v1/recording-policies`. Polled at 30s. Disabled
+  policies excluded from the rollup.
+- Overview STORAGE stat tile → rollup of `/v1/storage-volumes`
+  (sum used / capacity, ignoring `status: missing`). Sub-line shows
+  USED %% + FREE bytes. The Storage route still lists missing
+  volumes per-row so the regression is visible to operators.
+- SetupWizard step 1 (Network preflight) → real `/v1/diagnostics/ping`
+  against Cloudflare DNS (1.1.1.1), Google DNS (8.8.8.8), and the
+  LAN gateway from AppState bootstrap. Auto-runs on mount; operator
+  can re-run via the button. Each probe surfaces avg ms + loss
+  percentage.
 
 **Overview.**
 - `TEMP` mini-metric — no thermal sensor surface. Cross-platform
   thermal reading varies wildly by OS + hardware; deferred.
-- `STORAGE` stat tile — used/total still uses a mock 256 GB / 2 TB
-  pair. The values exist live on the Storage route; plumbing the
-  rolled-up totals into the Overview tile is a small follow-up.
 - `EVENTS · 24H` stat — needs an event-count-by-window query the
   recorder doesn't surface yet.
 
@@ -188,26 +208,22 @@ Recently retired (now wired to real `/v1/`):
   phases are entirely simulated. Real ONVIF discovery needs a
   recorder-side subsystem (probably `internal/onvif/`) with
   WS-Discovery + GetDeviceInformation handlers. Bounded but big.
-- Config drawer — the drawer's Recording / Motion / ONVIF Events /
-  Advanced tabs collect state that has no 1:1 PATCH endpoint:
-  - Recording mode, retention, pre/post-buffer → maps to
-    `RecordingPolicy`, a separate resource. Drawer split or
-    multi-resource save (small).
+- Config drawer — the Recording tab now writes to canonical
+  resources (Camera FK + RecordingPolicy fields). The remaining
+  drawer tabs still collect state that has no 1:1 PATCH endpoint:
   - Motion zones, sensitivity → recorder doesn't model motion
     detection canonically yet.
   - ONVIF events → recorder doesn't subscribe to ONVIF events.
   - Advanced (NTP source, OSD, audio track) → recorder-internal,
     no canonical surface.
-  Save button currently toasts "saved locally" and closes the
-  drawer; field changes land in component state only.
+  These tabs collect local-only state; their values are NOT
+  round-tripped on Save Changes.
 
 **Storage.**
 - Per-content-type breakdown (Continuous / Motion events / AI
   detections) — recorder doesn't account by content type.
   Used-vs-free is the live data we have. Real model extension
   (`RecordingSegment.content_type`) is a recorder-side change.
-- "RETENTION" stat tile — surfaces via `RecordingPolicy.
-  RetentionDuration` once a small UI fetch wires up.
 
 **Network.**
 - NTP / VLAN mini-blocks — neither is uniformly available across
@@ -236,11 +252,11 @@ Recently retired (now wired to real `/v1/`):
   built.
 
 **SetupWizard step 2 (pair with MS).**
-- Same MS dependency as the Pairing route. The wizard's other
+- Same MS dependency as the Pairing route. The other wizard
   steps (Welcome / Network preflight / Add cameras / Finish)
-  are bounded — Network preflight could wire to
-  `/v1/recorder/network-info` + `/v1/diagnostics/ping` for real
-  checks, Add cameras to `/v1/cameras/probe` — small follow-ups.
+  are bounded; Network preflight is now wired to
+  `/v1/diagnostics/ping`. Add cameras still uses the seeded
+  ONVIF mock pending the real ONVIF subsystem.
 
 ## Mock data source
 

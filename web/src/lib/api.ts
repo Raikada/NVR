@@ -320,7 +320,15 @@ export const fetchAudit = (page = 0, perPage = 100) =>
 
 /* ---------- /v1/storage-volumes ---------- */
 
-export type StorageVolumeStatus = 'online' | 'degraded' | 'full' | 'read_only' | 'offline';
+// Mirrors defs.StorageVolumeStatus per platform/docs/domain-model.md
+// §StorageVolume. Wire shape values: "healthy" | "degraded" | "full" |
+// "missing" | "read_only".
+export type StorageVolumeStatus =
+  | 'healthy'
+  | 'degraded'
+  | 'full'
+  | 'missing'
+  | 'read_only';
 
 export interface StorageVolumeSMART {
   device?: string;

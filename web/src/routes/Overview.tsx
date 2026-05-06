@@ -51,16 +51,19 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
     : 0;
   const bw = (totalBps * 8) / 1_000_000;
   // Storage rollup from /v1/storage-volumes — sum capacity_bytes and
-  // used_bytes across volumes (matches Storage.tsx). 10s poll matches
-  // the Storage page so the two views agree. Retention is policy-
-  // driven via /v1/recording-policies (separately queued) — sub-line
-  // omits it until that wires up.
+  // used_bytes across volumes whose backing is currently mounted.
+  // Volumes with status: missing are excluded from the rollup (their
+  // bytes are no longer reachable); they remain visible on the
+  // Storage page itself so operators can see the regression. 10s poll
+  // matches the Storage page so the two views agree on the same
+  // numbers.
   const recordingCount = health.data?.cameras_recording ?? 0;
   const cameraTotal = health.data?.cameras_total ?? state.cameras.length;
   const volumes = usePoll(fetchStorageVolumes, 10_000, []);
-  const volItems = volumes.data?.items ?? [];
+  const volItems = (volumes.data?.items ?? []).filter((v) => v.status !== 'missing');
   const storageTotal = volItems.reduce((s, v) => s + v.capacity_bytes, 0);
   const storageUsed = volItems.reduce((s, v) => s + v.used_bytes, 0);
+  const storageFree = storageTotal - storageUsed;
   const storagePct = storageTotal > 0 ? (storageUsed / storageTotal) * 100 : 0;
 
   return (
@@ -326,14 +329,16 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
           <StatCard
             title="STORAGE"
             value={storageTotal > 0 ? formatBytes(storageUsed) : '—'}
-            unit=""
+            unit={storageTotal > 0 ? `of ${formatBytes(storageTotal)}` : ''}
             tone="accent"
             sub={
               storageTotal > 0
-                ? `${storagePct.toFixed(1)}% of ${formatBytes(storageTotal)}`
+                ? `${storagePct.toFixed(1)}% USED · ${formatBytes(storageFree)} FREE`
                 : volumes.status === 'loading'
                   ? 'priming…'
-                  : 'no volumes'
+                  : volumes.status === 'error'
+                    ? 'volumes unreachable'
+                    : 'no volumes'
             }
             icon="hard-drive"
             progress={storagePct / 100}

@@ -14,14 +14,16 @@ import {
 } from '../components/primitives';
 import type { StatusBadgeKind } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
-import { fetchStorageVolumes } from '../lib/api';
+import { fetchRecordingPolicies, fetchStorageVolumes } from '../lib/api';
 import type { StorageVolume } from '../lib/api';
 import { usePoll, formatBytes } from '../lib/hooks';
+import { formatDuration } from '../lib/duration';
 
 function statusBadge(s: StorageVolume['status']): StatusBadgeKind {
-  if (s === 'online') return 'online';
+  if (s === 'healthy') return 'online';
   if (s === 'degraded') return 'degraded';
   if (s === 'full' || s === 'read_only') return 'error';
+  if (s === 'missing') return 'offline';
   return 'offline';
 }
 
@@ -31,9 +33,27 @@ export function Storage() {
   // interval, so polling faster gives a more responsive (though
   // smaller-window) read.
   const volumes = usePoll(fetchStorageVolumes, 10_000, []);
-  const items: StorageVolume[] = volumes.data?.items ?? [];
+  // Volumes whose backing disappeared (status: missing) shouldn't
+  // count toward used / capacity rollups — the bytes they previously
+  // tracked are no longer reachable. Per domain-model.md §StorageVolume
+  // a missing volume is operationally equivalent to "absent for the
+  // capacity calculation"; surface them in the per-row table below
+  // (so operators can see the regression) but exclude from the totals.
+  const allItems: StorageVolume[] = volumes.data?.items ?? [];
+  const items: StorageVolume[] = allItems.filter((v) => v.status !== 'missing');
   const totalCap = items.reduce((s, v) => s + v.capacity_bytes, 0);
   const totalUsed = items.reduce((s, v) => s + v.used_bytes, 0);
+  // RETENTION stat surfaces the longest retention_duration across
+  // currently-enabled RecordingPolicies — the practical "how far back
+  // can I scrub" answer for the operator. Polling at 30s matches the
+  // Policies page cadence so the stat reacts quickly when an MS-pushed
+  // or local policy mutation lands. Disabled policies are excluded;
+  // the recorder doesn't apply them today, so their retention is
+  // irrelevant for this rollup. Empty list → '—'.
+  const policies = usePoll(fetchRecordingPolicies, 30_000, []);
+  const longestRetentionNs = (policies.data?.items ?? [])
+    .filter((p) => p.enabled)
+    .reduce((max, p) => (p.retention_duration > max ? p.retention_duration : max), 0);
   const usedPct = totalCap > 0 ? (totalUsed / totalCap) * 100 : 0;
   const free = totalCap - totalUsed;
   const totalWriteBps = items.reduce(
@@ -98,14 +118,22 @@ export function Storage() {
             sub="AGGREGATE ACROSS VOLUMES"
             icon="arrow-down"
           />
-          {/* RETENTION: surfaced via RecordingPolicy.RetentionDuration
-              once /v1/recording-policies wires up. STUB. */}
+          {/* RETENTION: max retention_duration across enabled
+              RecordingPolicies. Surfaced from /v1/recording-policies. */}
           <Stat
             label="RETENTION"
-            value="—"
+            value={longestRetentionNs > 0 ? formatDuration(longestRetentionNs) : '—'}
             unit=""
             tone="accent"
-            sub="POLICY-DRIVEN"
+            sub={
+              policies.status === 'error'
+                ? 'POLICIES UNREACHABLE'
+                : longestRetentionNs > 0
+                  ? 'LONGEST ACTIVE POLICY'
+                  : policies.status === 'loading'
+                    ? 'LOADING POLICIES…'
+                    : 'NO ACTIVE POLICY'
+            }
             icon="rotate-ccw"
           />
         </div>
@@ -135,9 +163,9 @@ export function Storage() {
         </Card>
         <Card style={{ padding: 0 }}>
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
-            <SectionHeader style={{ margin: 0 }}>VOLUMES · {items.length}</SectionHeader>
+            <SectionHeader style={{ margin: 0 }}>VOLUMES · {allItems.length}</SectionHeader>
           </div>
-          {items.length === 0 && (
+          {allItems.length === 0 && (
             <div
               style={{
                 padding: 30,
@@ -151,7 +179,7 @@ export function Storage() {
               {volumes.status === 'loading' ? 'LOADING…' : 'NO VOLUMES MOUNTED'}
             </div>
           )}
-          {items.map((v, i) => {
+          {allItems.map((v, i) => {
             // SMART block is optional: present when smartctl
             // resolved + parsed, absent on hosts without
             // smartmontools or when the mount-path doesn't resolve

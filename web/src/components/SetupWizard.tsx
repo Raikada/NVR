@@ -9,11 +9,13 @@ import { Btn, Bracket, Input, Stat, StatusBadge } from './primitives';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
 import {
+  diagPing,
   fetchDiscoveredManagement,
   fetchPairStatus,
   startPairing,
   type DiscoveredManagement,
   type PairStatus,
+  type PingResponse,
 } from '../lib/api';
 import type { AppState, ToastInput, UICamera, BadgeKind } from '../lib/types';
 
@@ -286,22 +288,122 @@ function WizWelcome() {
   );
 }
 
-function WizNetwork({ state }: { state: AppState }) {
-  type CheckOk = true | false | 'warn';
-  const checks: { k: string; v: string; ok: CheckOk }[] = [
-    { k: 'LINK', v: 'Ethernet eth0 — 1000 Mbps full duplex', ok: true },
-    { k: 'IPv4', v: `${state.ip} / 24 via ${state.gateway}`, ok: true },
-    { k: 'DNS', v: '8.8.8.8, 1.1.1.1 — 12 ms avg', ok: true },
-    { k: 'NTP', v: 'pool.ntp.org — drift 3 ms', ok: true },
-    { k: 'MTU', v: '1500 bytes — no fragmentation', ok: true },
-    { k: 'UPnP', v: 'Disabled — discovery uses LAN broadcast', ok: 'warn' },
-  ];
+type WizNetworkProbeStatus = 'idle' | 'running' | 'ok' | 'fail';
 
-  function badge(ok: CheckOk): { kind: BadgeKind; label: string } {
-    if (ok === true) return { kind: 'online', label: 'OK' };
-    if (ok === 'warn') return { kind: 'degraded', label: 'WARN' };
-    return { kind: 'error', label: 'FAIL' };
+interface WizNetworkProbe {
+  key: string;
+  label: string;
+  target: string;
+  description: string; // e.g. "Cloudflare DNS"
+  status: WizNetworkProbeStatus;
+  result?: PingResponse;
+  error?: string;
+}
+
+function WizNetwork({ state }: { state: AppState }) {
+  // Real /v1/diagnostics/ping preflight. The recorder's ping handler
+  // is a TCP-handshake probe (port 443 by default) — works on every
+  // OS without raw sockets. Two anycast DNS targets cover the
+  // "internet egress" question; the LAN gateway covers the "local
+  // routing" question. The recorder doesn't surface a default-route
+  // query yet, so the gateway target falls back to state.gateway
+  // (App's bootstrap default) when network-info doesn't resolve a
+  // candidate. Each probe runs once on mount and again whenever the
+  // operator clicks RE-RUN.
+  const initialProbes: WizNetworkProbe[] = [
+    {
+      key: 'cloudflare',
+      label: 'CLOUDFLARE',
+      target: '1.1.1.1',
+      description: '1.1.1.1 — TCP/443 handshake',
+      status: 'idle',
+    },
+    {
+      key: 'google',
+      label: 'GOOGLE DNS',
+      target: '8.8.8.8',
+      description: '8.8.8.8 — TCP/443 handshake',
+      status: 'idle',
+    },
+    {
+      key: 'gateway',
+      label: 'LAN GATEWAY',
+      target: state.gateway,
+      description: `${state.gateway} — TCP/443 handshake`,
+      status: 'idle',
+    },
+  ];
+  const [probes, setProbes] = useState<WizNetworkProbe[]>(initialProbes);
+  const [running, setRunning] = useState(false);
+
+  async function runOne(idx: number) {
+    setProbes((ps) =>
+      ps.map((p, i) => (i === idx ? { ...p, status: 'running', error: undefined, result: undefined } : p)),
+    );
+    try {
+      const r = await diagPing(probes[idx].target, 4);
+      const ok = r.loss_pct < 100;
+      setProbes((ps) =>
+        ps.map((p, i) =>
+          i === idx ? { ...p, status: ok ? 'ok' : 'fail', result: r } : p,
+        ),
+      );
+    } catch (e) {
+      setProbes((ps) =>
+        ps.map((p, i) =>
+          i === idx
+            ? { ...p, status: 'fail', error: (e as Error).message }
+            : p,
+        ),
+      );
+    }
   }
+
+  async function runAll() {
+    if (running) return;
+    setRunning(true);
+    // Sequential so the recorder's ping handler doesn't fan out four
+    // concurrent dial attempts (each 4 samples × 200ms inter-probe);
+    // total wall time ≈ 4 × ~3s = 12s. Acceptable for a one-shot
+    // preflight that runs once on wizard step entry.
+    try {
+      for (let i = 0; i < probes.length; i++) {
+        await runOne(i);
+      }
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  // Auto-run once on mount. The operator can re-run via the button.
+  useEffect(() => {
+    void runAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function badge(s: WizNetworkProbeStatus): { kind: BadgeKind; label: string } {
+    if (s === 'ok') return { kind: 'online', label: 'OK' };
+    if (s === 'fail') return { kind: 'error', label: 'FAIL' };
+    if (s === 'running') return { kind: 'degraded', label: 'TESTING' };
+    return { kind: 'offline', label: 'IDLE' };
+  }
+
+  function detailLine(p: WizNetworkProbe): string {
+    if (p.status === 'idle') return p.description;
+    if (p.status === 'running') return `${p.description} · running…`;
+    if (p.error) return `${p.description} · ${p.error}`;
+    if (p.result) {
+      const loss = p.result.loss_pct;
+      const avg = p.result.avg_ms;
+      if (loss === 0) return `${p.description} · ${avg.toFixed(1)} ms avg, no loss`;
+      if (loss === 100) return `${p.description} · all 4 samples timed out`;
+      return `${p.description} · ${avg.toFixed(1)} ms avg, ${loss.toFixed(0)}% loss`;
+    }
+    return p.description;
+  }
+
+  const allOk = probes.every((p) => p.status === 'ok');
+  const anyFail = probes.some((p) => p.status === 'fail');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -324,14 +426,14 @@ function WizNetwork({ state }: { state: AppState }) {
           overflow: 'hidden',
         }}
       >
-        {checks.map((c, i) => {
-          const b = badge(c.ok);
+        {probes.map((p, i) => {
+          const b = badge(p.status);
           return (
             <div
-              key={c.k}
+              key={p.key}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '80px 1fr auto',
+                gridTemplateColumns: '120px 1fr auto',
                 gap: 12,
                 alignItems: 'center',
                 padding: '10px 14px',
@@ -347,15 +449,41 @@ function WizNetwork({ state }: { state: AppState }) {
                   textTransform: 'uppercase',
                 }}
               >
-                {c.k}
+                {p.label}
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)' }}>
-                {c.v}
+                {detailLine(p)}
               </span>
               <StatusBadge kind={b.kind} label={b.label} />
             </div>
           );
         })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            letterSpacing: 0.5,
+            color: allOk
+              ? 'var(--accent-success, #4ade80)'
+              : anyFail
+                ? '#EF4444'
+                : 'var(--text-muted)',
+            textTransform: 'uppercase',
+          }}
+        >
+          {running
+            ? 'PROBES RUNNING…'
+            : allOk
+              ? 'ALL PROBES PASSED'
+              : anyFail
+                ? 'ONE OR MORE PROBES FAILED — CONTINUE IF EXPECTED'
+                : '—'}
+        </span>
+        <Btn kind="secondary" size="sm" icon="refresh-cw" onClick={runAll} disabled={running}>
+          {running ? 'Running…' : 'Re-run'}
+        </Btn>
       </div>
     </div>
   );
