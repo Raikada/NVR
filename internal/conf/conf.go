@@ -623,8 +623,9 @@ func (conf *Conf) setDefaults() {
 	// mediamtx.yml.
 	conf.API = true
 	conf.APIAddress = ":9997"
-	conf.APIServerKey = "server.key"
-	conf.APIServerCert = "server.crt"
+	conf.APIEncryption = true
+	conf.APIServerKey = "identity/recorder.key"
+	conf.APIServerCert = "identity/api-server.crt"
 	conf.APIAllowOrigins = []string{"*"}
 
 	// Metrics
