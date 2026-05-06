@@ -115,6 +115,97 @@ info:
     `../../platform/docs/domain-model.md` are tracked separately in
     `../docs/canonical-divergences.md`.
 
+    **Per-endpoint permissions (ADR 0010 / slice 4-D).** Every `/v1`
+    endpoint enforces an ADR 0010 D2 permission against the caller's
+    JWT `scope` claim. Operations that don't appear in the table below
+    require the listed permission to succeed; absence yields HTTP 403
+    with `auth.permission_denied` audit emit per ADR 0006 D7. The
+    table is the source of truth for client SDK code generation; each
+    operation also carries an `x-required-permission` extension when
+    rendered into the operation block.
+
+    | Endpoint                                            | Method  | Required permission       |
+    | --------------------------------------------------- | ------- | ------------------------- |
+    | `/v1/info`                                          | GET     | (anonymous)               |
+    | `/v1/auth/refresh-issuer-material`                  | POST    | (system)                  |
+    | `/v1/health`                                        | GET     | (anonymous)               |
+    | `/v1/cameras`                                       | GET     | `camera.list`             |
+    | `/v1/cameras`                                       | POST    | `camera.create`           |
+    | `/v1/cameras/{id}`                                  | GET     | `camera.read`             |
+    | `/v1/cameras/{id}`                                  | PATCH   | `camera.update`           |
+    | `/v1/cameras/{id}`                                  | PUT     | `camera.update`           |
+    | `/v1/cameras/{id}`                                  | DELETE  | `camera.delete`           |
+    | `/v1/cameras/probe`                                 | POST    | `camera.create`           |
+    | `/v1/recording-policies`                            | GET     | `policy.list`             |
+    | `/v1/recording-policies`                            | POST    | `policy.create`           |
+    | `/v1/recording-policies/{id}`                       | GET     | `policy.read`             |
+    | `/v1/recording-policies/{id}`                       | PATCH   | `policy.update`           |
+    | `/v1/recording-policies/{id}`                       | DELETE  | `policy.delete`           |
+    | `/v1/streams`                                       | GET     | `stream.list`             |
+    | `/v1/streams/{id}`                                  | GET     | `stream.read`             |
+    | `/v1/streams/{id}`                                  | DELETE  | `stream.kick`             |
+    | `/v1/recordings`                                    | GET     | `recording.list`          |
+    | `/v1/recordings/{id}`                               | GET     | `recording.read`          |
+    | `/v1/recordings/{id}/playback`                      | GET     | `recording.playback`      |
+    | `/v1/recordings/{id}`                               | DELETE  | `recording.delete`        |
+    | `/v1/recording-segments`                            | GET     | `recording_segment.list`  |
+    | `/v1/recording-segments/{id}`                       | GET     | `recording_segment.read`  |
+    | `/v1/recording-segments/{id}`                       | DELETE  | `recording_segment.delete`|
+    | `/v1/events`                                        | GET     | `event.list`              |
+    | `/v1/events/{id}`                                   | GET     | `event.read`              |
+    | `/v1/audit`                                         | GET     | `audit.read`              |
+    | `/v1/clips`                                         | GET     | `clip.list`               |
+    | `/v1/clips`                                         | POST    | `clip.create`             |
+    | `/v1/clips/{id}`                                    | GET     | `clip.read`               |
+    | `/v1/clips/{id}`                                    | DELETE  | `clip.delete`             |
+    | `/v1/clips/{id}/download`                           | GET     | `clip.download`           |
+    | `/v1/storage-volumes`                               | GET     | `storage.list`            |
+    | `/v1/storage-volumes/{id}`                          | GET     | `storage.read`            |
+    | `/v1/recorder/config`                               | GET     | `recorder_config.read`    |
+    | `/v1/recorder/config`                               | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/identity`                             | GET     | `recorder_config.read`    |
+    | `/v1/recorder/identity`                             | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/reboot`                               | POST    | `recorder_config.manage`  |
+    | `/v1/recorder/config-backup`                        | GET     | `recorder_config.manage`  |
+    | `/v1/recorder/config-restore`                       | POST    | `recorder_config.manage`  |
+    | `/v1/recorder/network-info`                         | GET     | `health.read`             |
+    | `/v1/recorder/pair`                                 | POST    | `device_lifecycle.manage` |
+    | `/v1/recorder/pair/status`                          | GET     | `device_lifecycle.manage` |
+    | `/v1/recorder/pair/reset`                           | POST    | `device_lifecycle.manage` |
+    | `/v1/recorder/unpair`                               | POST    | `device_lifecycle.manage` |
+    | `/v1/recorder/discovered-management`                | GET     | `device_lifecycle.manage` |
+    | `/v1/recorder/camera-defaults`                      | GET     | `recorder_config.read`    |
+    | `/v1/recorder/camera-defaults`                      | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/cameras/{id}/source-config`           | GET     | `recorder_config.read`    |
+    | `/v1/recorder/cameras/{id}/source-config`           | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/cameras/{id}/hooks`                   | GET     | `recorder_config.read`    |
+    | `/v1/recorder/cameras/{id}/hooks`                   | PATCH   | `recorder_config.manage`  |
+    | `/v1/diagnostics/ping`                              | POST    | `recorder_config.manage`  |
+    | `/v1/diagnostics/ntp`                               | POST    | `recorder_config.manage`  |
+    | `/v1/diagnostics/rtsp-probe`                        | POST    | `camera.create`           |
+    | `/v1/recorder/hls-muxers`                           | GET     | `stream.list`             |
+    | `/v1/recorder/hls-muxers/{id}`                      | GET     | `stream.read`             |
+    | `/v1/recorder/cameras/{id}/snapshot`                | GET     | `camera.live.view`        |
+
+    **Pre-OQ10 service-account compatibility.** Deployments still
+    authenticating via the internal/HTTP auth methods produce
+    service-account principals with empty scope. The
+    `globalRBACEnforce` bootstrap config flag (default `false`)
+    controls whether those principals bypass the per-endpoint
+    permission check. With the default, legacy admin UIs continue to
+    work during the migration window. Operators flip this to `true`
+    once the MS issues JWT-with-scope to every caller; JWT-authed
+    requests always enforce scope regardless of the flag.
+
+    **`scope_kind` validation (ADR 0010 D6 amendment).** When the
+    JWT presents a `scope_kind` + `scope_target_id`, the recorder
+    validates against its own tier identity:
+    `tenant` matches `Conf.TenantID`; `recording_server` matches the
+    recorder's own UUIDv7; `site` accepts with a soft warning until
+    the recorder's site_id awareness lands; `organization` is not
+    enforced at the recorder. Mismatch returns 403 with
+    `auth.permission_denied` audit emit.
+
 servers:
   - url: http://localhost:9997
     description: Default LAN-side listener.

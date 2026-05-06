@@ -153,6 +153,102 @@ func unauthenticatedPrincipal() *Principal {
 // Closes recorder canonical-divergence D5.
 const PermSessionPIIRead = "session.pii.read"
 
+// scope_kind enum values per ADR 0011 D2's `AuthSession.scope_kind`.
+// These mirror the role-assignment scope hierarchy described in ADR
+// 0010 D6 amendment (2026-05-06): tenant ⊃ organization ⊃ site ⊃
+// recording_server. The recorder validates scope_kind against its own
+// tier identity per ADR 0010 D6.
+const (
+	scopeKindTenant          = "tenant"
+	scopeKindOrganization    = "organization"
+	scopeKindSite            = "site"
+	scopeKindRecordingServer = "recording_server"
+)
+
+// validateScopeKindResult captures whether a JWT's scope_kind +
+// scope_target_id passed recorder-side validation per ADR 0010 D6.
+//
+// outcome:
+//   - "" (empty): no scope_kind claim present (additive ADR 0011
+//     rollout; pre-OQ10 issuers haven't been updated). Accept.
+//   - "ok": scope_kind/scope_target_id matched the recorder's tier
+//     identity. Accept.
+//   - "mismatch": scope_kind claim is recognized but scope_target_id
+//     did not match (e.g., tenant scope but wrong tenant). Reject.
+//   - "unknown_kind": scope_kind value isn't in the ADR 0011 D2 enum.
+//     Reject.
+//   - "site_unknown_accepted": scope_kind=site but the recorder's
+//     site_id isn't yet known (pairing-aware site_id is a future
+//     slice). Accept with a warning per the slice 4-D plan.
+type scopeKindOutcome string
+
+const (
+	scopeKindOutcomeAbsent              scopeKindOutcome = ""
+	scopeKindOutcomeOK                  scopeKindOutcome = "ok"
+	scopeKindOutcomeMismatch            scopeKindOutcome = "mismatch"
+	scopeKindOutcomeUnknownKind         scopeKindOutcome = "unknown_kind"
+	scopeKindOutcomeSiteUnknownAccepted scopeKindOutcome = "site_unknown_accepted"
+)
+
+// validateScopeKind compares a Principal's ScopeKind / ScopeTargetID
+// against the recorder's tier identity per ADR 0010 D6:
+//
+//   - tenant: scope_target_id must equal the recorder's bound tenant_id.
+//   - site: scope_target_id should equal the recorder's bound site_id;
+//     if site_id is unknown (pairing-aware site_id is a future slice),
+//     accept with a soft warning rather than rejecting.
+//   - recording_server: scope_target_id must equal the recorder's own
+//     UUIDv7 from internal/identity.
+//   - organization: not enforced at the recorder per ADR 0010 D6 (the
+//     tenant boundary already covers the relevant blast-radius);
+//     equivalent to scope_kind absent at this tier.
+//
+// Returns the outcome plus a human-readable diagnostic suitable for
+// the audit-attribute map. Caller decides how to act on the outcome
+// (typically: accept on outcomeAbsent / outcomeOK /
+// outcomeSiteUnknownAccepted; reject on outcomeMismatch /
+// outcomeUnknownKind).
+func validateScopeKind(scopeKind, scopeTargetID, tenantID, siteID, recordingServerID string) (scopeKindOutcome, string) {
+	if scopeKind == "" {
+		return scopeKindOutcomeAbsent, ""
+	}
+	switch scopeKind {
+	case scopeKindTenant:
+		if tenantID == "" || scopeTargetID != tenantID {
+			return scopeKindOutcomeMismatch,
+				"scope_kind=tenant scope_target_id does not match recorder's bound tenant_id"
+		}
+		return scopeKindOutcomeOK, ""
+	case scopeKindSite:
+		if siteID == "" {
+			// Recorder has no bound site_id yet (pairing-aware site_id
+			// is a future slice; recorder doesn't persist a site_id
+			// today). Accept with a note for the audit/log so the
+			// gap is visible. Per the slice-4-D rollout plan: log
+			// + accept; tighten when site_id awareness lands.
+			return scopeKindOutcomeSiteUnknownAccepted,
+				"scope_kind=site accepted; recorder site_id not yet known"
+		}
+		if scopeTargetID != siteID {
+			return scopeKindOutcomeMismatch,
+				"scope_kind=site scope_target_id does not match recorder's bound site_id"
+		}
+		return scopeKindOutcomeOK, ""
+	case scopeKindRecordingServer:
+		if recordingServerID == "" || scopeTargetID != recordingServerID {
+			return scopeKindOutcomeMismatch,
+				"scope_kind=recording_server scope_target_id does not match recorder's id"
+		}
+		return scopeKindOutcomeOK, ""
+	case scopeKindOrganization:
+		// Not enforced at the recorder per ADR 0010 D6 amendment.
+		return scopeKindOutcomeOK, ""
+	default:
+		return scopeKindOutcomeUnknownKind,
+			"scope_kind value is not in the ADR 0011 D2 enum"
+	}
+}
+
 // principalFromAuthClaims builds a Principal from the auth manager's
 // parsed Claims. The Internal and HTTP auth paths produce a zero-value
 // Claims with Method set; those map to a service-account principal

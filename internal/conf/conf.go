@@ -354,6 +354,25 @@ type Conf struct {
 	// claim and this flag is ignored on that path.
 	GlobalPIIReadGrant bool `json:"globalPIIReadGrant"`
 
+	// GlobalRBACEnforce, when true, forces ADR 0010 permission gating to
+	// apply to every Principal — including the service-account Principal
+	// produced by the pre-OQ10 internal/HTTP authentication paths (which
+	// carry no per-user scope claim). This is the operator switch for
+	// deployments that have completed the migration to JWT-with-scope and
+	// want to fail-closed for any caller that still arrives via the
+	// legacy auth methods.
+	//
+	// Default false: pre-OQ10 service-account Principals are treated as
+	// having every permission so legacy admin UIs continue to work
+	// during the migration window. JWT-authed requests always enforce
+	// scope regardless of the flag (their `scope` claim is the source
+	// of truth).
+	//
+	// Closes the slice 4-D rollout window: operators flip this on once
+	// the MS is issuing JWT-with-scope to every caller and the recorder
+	// can fail-closed without breaking real workflows.
+	GlobalRBACEnforce bool `json:"globalRBACEnforce"`
+
 	// Control API
 	API               bool       `json:"api"`
 	APIAddress        string     `json:"apiAddress"`

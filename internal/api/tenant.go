@@ -45,6 +45,54 @@ func (a *API) globalPIIReadGrant() bool {
 	return a.Conf.GlobalPIIReadGrant
 }
 
+// globalRBACEnforce returns the operator switch from the bootstrap
+// config that controls whether ADR 0010 permission gating applies to
+// Principals produced by the pre-OQ10 internal/HTTP authentication
+// paths (which carry no per-user scope claim). When false (default),
+// service-account Principals from those paths bypass requirePermission
+// gating — legacy admin UIs continue to work. When true, every
+// principal gates on scope regardless of how it was authenticated.
+//
+// JWT-authed requests are unaffected: they always enforce scope
+// against their `scope` claim per ADR 0011 D2.
+//
+// See conf.Conf.GlobalRBACEnforce.
+func (a *API) globalRBACEnforce() bool {
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
+	if a.Conf == nil {
+		return false
+	}
+	return a.Conf.GlobalRBACEnforce
+}
+
+// recorderID returns the recorder's UUIDv7 string per ADR 0002 D3
+// when the identity package is wired (production), or the empty string
+// for tests that don't set a.Identity. Used by the scope_kind
+// validation in middlewareAuth to compare against the JWT's
+// scope_target_id when scope_kind=recording_server.
+func (a *API) recorderID() string {
+	if a == nil || a.Identity == nil {
+		return ""
+	}
+	return a.Identity.ID().String()
+}
+
+// recorderSiteID returns the recorder's bound site_id when known.
+// The recorder does not persist a site_id today (pairing-aware
+// site_id is a future slice); this helper returns the empty string,
+// signalling to validateScopeKind that scope_kind=site requests
+// should be accepted with a soft warning per the slice 4-D rollout
+// plan rather than rejected. Tightens to a real lookup when site_id
+// awareness lands.
+func (a *API) recorderSiteID() string {
+	// Forward-looking accessor: the recorder will eventually persist
+	// a site_id (likely on identity, alongside the canonical-source
+	// flags). Until then this returns "" so the validator falls into
+	// the scopeKindOutcomeSiteUnknownAccepted branch.
+	return ""
+}
+
 // readTenantScopedBody reads the request body up to maxInboundConfigSize
 // and validates that any tenantId field included in the JSON matches the
 // recorder's bound tenant. On mismatch, it writes a 403 and returns

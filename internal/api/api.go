@@ -118,6 +118,9 @@ func (a *API) Initialize() error {
 	// is not aliased; there is no deprecation window.
 	group := router.Group("/v1")
 
+	// /v1/info is anonymous: it surfaces the recorder's tenant_id +
+	// version + start time and is the liveness probe operator UIs use
+	// before the user authenticates. No permission gate.
 	group.GET("/info", a.onInfo)
 
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
@@ -126,101 +129,125 @@ func (a *API) Initialize() error {
 	// was kept anyway because the endpoint signals "refresh your
 	// cached issuer material now" — the JWKS endpoint URL today, but
 	// extensible to additional issuer-material kinds (e.g., the trust
-	// roots for mTLS validation) without a rename.
+	// roots for mTLS validation) without a rename. System-level
+	// operation; no permission gate (the auth manager itself is the
+	// caller).
 	group.POST("/auth/refresh-issuer-material", a.onV1AuthRefreshIssuerMaterial)
 
+	// Per-route ADR 0010 permission gating per slice 4-D. Each
+	// /v1 endpoint names its required permission; the requirePermission
+	// middleware short-circuits on denial with auth.permission_denied
+	// + 403. guardAdminAction (ADR 0006 D6 buffer-degraded gate) is
+	// orthogonal and applied inside the handler bodies for write paths.
+
 	// Cameras (ADR 0009 §D5 Cameras).
-	group.GET("/cameras", a.onV1CamerasList)
-	group.GET("/cameras/:id", a.onV1CamerasGet)
-	group.POST("/cameras", a.onV1CamerasPost)
-	group.PATCH("/cameras/:id", a.onV1CamerasPatch)
-	group.PUT("/cameras/:id", a.onV1CamerasPut)
-	group.DELETE("/cameras/:id", a.onV1CamerasDelete)
-	// Pre-flight reachability probe for the manual-add UI.
-	group.POST("/cameras/probe", a.onV1CamerasProbe)
+	group.GET("/cameras", a.requirePermission("camera.list"), a.onV1CamerasList)
+	group.GET("/cameras/:id", a.requirePermission("camera.read"), a.onV1CamerasGet)
+	group.POST("/cameras", a.requirePermission("camera.create"), a.onV1CamerasPost)
+	group.PATCH("/cameras/:id", a.requirePermission("camera.update"), a.onV1CamerasPatch)
+	group.PUT("/cameras/:id", a.requirePermission("camera.update"), a.onV1CamerasPut)
+	group.DELETE("/cameras/:id", a.requirePermission("camera.delete"), a.onV1CamerasDelete)
+	// Pre-flight reachability probe for the manual-add UI; treated as
+	// part of the create flow.
+	group.POST("/cameras/probe", a.requirePermission("camera.create"), a.onV1CamerasProbe)
 
 	// Recording policies (ADR 0009 §D5 Recording policies).
-	group.GET("/recording-policies", a.onV1RecordingPoliciesList)
-	group.GET("/recording-policies/:id", a.onV1RecordingPoliciesGet)
-	group.POST("/recording-policies", a.onV1RecordingPoliciesPost)
-	group.PATCH("/recording-policies/:id", a.onV1RecordingPoliciesPatch)
-	group.DELETE("/recording-policies/:id", a.onV1RecordingPoliciesDelete)
+	group.GET("/recording-policies", a.requirePermission("policy.list"), a.onV1RecordingPoliciesList)
+	group.GET("/recording-policies/:id", a.requirePermission("policy.read"), a.onV1RecordingPoliciesGet)
+	group.POST("/recording-policies", a.requirePermission("policy.create"), a.onV1RecordingPoliciesPost)
+	group.PATCH("/recording-policies/:id", a.requirePermission("policy.update"), a.onV1RecordingPoliciesPatch)
+	group.DELETE("/recording-policies/:id", a.requirePermission("policy.delete"), a.onV1RecordingPoliciesDelete)
 
 	// Streams (ADR 0009 §D5 Streams) — unified runtime-session surface
 	// folding 25 protocol-specific endpoints into 3.
-	group.GET("/streams", a.onV1StreamsList)
-	group.GET("/streams/:id", a.onV1StreamsGet)
-	group.DELETE("/streams/:id", a.onV1StreamsDelete)
+	group.GET("/streams", a.requirePermission("stream.list"), a.onV1StreamsList)
+	group.GET("/streams/:id", a.requirePermission("stream.read"), a.onV1StreamsGet)
+	group.DELETE("/streams/:id", a.requirePermission("stream.kick"), a.onV1StreamsDelete)
 
 	// Recordings (ADR 0009 §D5 Recordings).
-	group.GET("/recordings", a.onV1RecordingsList)
-	group.GET("/recordings/:id", a.onV1RecordingsGet)
-	group.GET("/recordings/:id/playback", a.onV1RecordingsPlayback)
-	group.DELETE("/recordings/:id", a.onV1RecordingsDelete)
+	group.GET("/recordings", a.requirePermission("recording.list"), a.onV1RecordingsList)
+	group.GET("/recordings/:id", a.requirePermission("recording.read"), a.onV1RecordingsGet)
+	group.GET("/recordings/:id/playback", a.requirePermission("recording.playback"), a.onV1RecordingsPlayback)
+	group.DELETE("/recordings/:id", a.requirePermission("recording.delete"), a.onV1RecordingsDelete)
 
 	// Recording segments (ADR 0009 §D5 Recording segments).
-	group.GET("/recording-segments", a.onV1RecordingSegmentsList)
-	group.GET("/recording-segments/:id", a.onV1RecordingSegmentsGet)
-	group.DELETE("/recording-segments/:id", a.onV1RecordingSegmentsDelete)
+	group.GET("/recording-segments", a.requirePermission("recording_segment.list"), a.onV1RecordingSegmentsList)
+	group.GET("/recording-segments/:id", a.requirePermission("recording_segment.read"), a.onV1RecordingSegmentsGet)
+	group.DELETE("/recording-segments/:id", a.requirePermission("recording_segment.delete"), a.onV1RecordingSegmentsDelete)
 
 	// Events (ADR 0009 §D5 Events).
-	group.GET("/events", a.onV1EventsList)
-	group.GET("/events/:id", a.onV1EventsGet)
+	group.GET("/events", a.requirePermission("event.list"), a.onV1EventsList)
+	group.GET("/events/:id", a.requirePermission("event.read"), a.onV1EventsGet)
 
 	// Audit log (ADR 0006). GET-only — the chain is append-only.
-	group.GET("/audit", a.onV1AuditList)
+	// Pre-slice-4-D this endpoint was ungated — closing that hole
+	// per ADR 0010 D2's audit.read permission.
+	group.GET("/audit", a.requirePermission("audit.read"), a.onV1AuditList)
 
 	// Clips (ADR 0009 §D5 follow-up; recorder-authoritative for
 	// preparation per ARCHITECTURE.md §5 item 6).
-	group.POST("/clips", a.onV1ClipsPost)
-	group.GET("/clips", a.onV1ClipsList)
-	group.GET("/clips/:id", a.onV1ClipsGet)
-	group.DELETE("/clips/:id", a.onV1ClipsDelete)
-	group.GET("/clips/:id/download", a.onV1ClipsDownload)
+	group.POST("/clips", a.requirePermission("clip.create"), a.onV1ClipsPost)
+	group.GET("/clips", a.requirePermission("clip.list"), a.onV1ClipsList)
+	group.GET("/clips/:id", a.requirePermission("clip.read"), a.onV1ClipsGet)
+	group.DELETE("/clips/:id", a.requirePermission("clip.delete"), a.onV1ClipsDelete)
+	group.GET("/clips/:id/download", a.requirePermission("clip.download"), a.onV1ClipsDownload)
 
-	// Health (ADR 0009 §D5 Health).
+	// Health (ADR 0009 §D5 Health). ADR 0011 D7 documents this as an
+	// explicitly-anonymous path when configured open via
+	// globalAuthOpenURLs; the recorder treats it as authenticated
+	// today via middlewareAuth, but we don't gate further on a
+	// permission since /v1/health is the standard liveness/readiness
+	// probe.
 	group.GET("/health", a.onV1HealthGet)
 
 	// Storage volumes (ADR 0009 §D5 Storage volumes).
-	group.GET("/storage-volumes", a.onV1StorageVolumesList)
-	group.GET("/storage-volumes/:id", a.onV1StorageVolumesGet)
+	group.GET("/storage-volumes", a.requirePermission("storage.list"), a.onV1StorageVolumesList)
+	group.GET("/storage-volumes/:id", a.requirePermission("storage.read"), a.onV1StorageVolumesGet)
 
 	// Recorder-localized escape hatch (ADR 0009 §D6).
-	group.GET("/recorder/config", a.onV1RecorderConfigGet)
-	group.PATCH("/recorder/config", a.onV1RecorderConfigPatch)
+	group.GET("/recorder/config", a.requirePermission("recorder_config.read"), a.onV1RecorderConfigGet)
+	group.PATCH("/recorder/config", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigPatch)
 	// Identity card (UI-driven; small additive surface that pairs the
 	// hostname/timezone read-only signals with the operator-set
 	// location field on conf.ServerLocation).
-	group.GET("/recorder/identity", a.onV1RecorderIdentityGet)
-	group.PATCH("/recorder/identity", a.onV1RecorderIdentityPatch)
+	group.GET("/recorder/identity", a.requirePermission("recorder_config.read"), a.onV1RecorderIdentityGet)
+	group.PATCH("/recorder/identity", a.requirePermission("recorder_config.manage"), a.onV1RecorderIdentityPatch)
 	// System actions for the Settings page. Admin-gated + audited.
 	// config-restore is intentionally absent (see api_v1_recorder_system.go).
-	group.POST("/recorder/reboot", a.onV1RecorderRebootPost)
-	group.GET("/recorder/config-backup", a.onV1RecorderConfigBackup)
-	group.POST("/recorder/config-restore", a.onV1RecorderConfigRestore)
-	group.GET("/recorder/network-info", a.onV1RecorderNetworkInfo)
+	group.POST("/recorder/reboot", a.requirePermission("recorder_config.manage"), a.onV1RecorderRebootPost)
+	group.GET("/recorder/config-backup", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigBackup)
+	group.POST("/recorder/config-restore", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigRestore)
+	group.GET("/recorder/network-info", a.requirePermission("health.read"), a.onV1RecorderNetworkInfo)
 	// Pairing — recorder-side trigger + status for the MS pairing
-	// flow. Operator drives this from the Setup Wizard.
-	group.POST("/recorder/pair", a.onV1RecorderPairPost)
-	group.GET("/recorder/pair/status", a.onV1RecorderPairStatusGet)
-	group.POST("/recorder/pair/reset", a.onV1RecorderPairResetPost)
-	group.POST("/recorder/unpair", a.onV1RecorderUnpairPost)
-	group.GET("/recorder/discovered-management", a.onV1RecorderDiscoveredManagementGet)
-	// Diagnostics suite (cross-platform; no shell-outs).
-	group.POST("/diagnostics/ping", a.onV1DiagnosticsPing)
-	group.POST("/diagnostics/ntp", a.onV1DiagnosticsNTP)
-	group.POST("/diagnostics/rtsp-probe", a.onV1DiagnosticsRTSPProbe)
-	group.GET("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsGet)
-	group.PATCH("/recorder/camera-defaults", a.onV1RecorderCameraDefaultsPatch)
-	group.GET("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigGet)
-	group.PATCH("/recorder/cameras/:id/source-config", a.onV1RecorderCameraSourceConfigPatch)
-	group.GET("/recorder/cameras/:id/hooks", a.onV1RecorderCameraHooksGet)
-	group.PATCH("/recorder/cameras/:id/hooks", a.onV1RecorderCameraHooksPatch)
+	// flow. Operator drives this from the Setup Wizard. ADR 0015
+	// device_lifecycle.manage covers pair/unpair/discover.
+	group.POST("/recorder/pair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairPost)
+	group.GET("/recorder/pair/status", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairStatusGet)
+	group.POST("/recorder/pair/reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairResetPost)
+	group.POST("/recorder/unpair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderUnpairPost)
+	group.GET("/recorder/discovered-management", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderDiscoveredManagementGet)
+	// Diagnostics suite (cross-platform; no shell-outs). ping + ntp
+	// are recorder-config-manage; rtsp-probe targets a camera and
+	// is gated on camera.create (the typical caller is the manual-add
+	// wizard reaching for a still-being-defined camera).
+	group.POST("/diagnostics/ping", a.requirePermission("recorder_config.manage"), a.onV1DiagnosticsPing)
+	group.POST("/diagnostics/ntp", a.requirePermission("recorder_config.manage"), a.onV1DiagnosticsNTP)
+	group.POST("/diagnostics/rtsp-probe", a.requirePermission("camera.create"), a.onV1DiagnosticsRTSPProbe)
+	group.GET("/recorder/camera-defaults", a.requirePermission("recorder_config.read"), a.onV1RecorderCameraDefaultsGet)
+	group.PATCH("/recorder/camera-defaults", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraDefaultsPatch)
+	group.GET("/recorder/cameras/:id/source-config", a.requirePermission("recorder_config.read"), a.onV1RecorderCameraSourceConfigGet)
+	group.PATCH("/recorder/cameras/:id/source-config", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraSourceConfigPatch)
+	group.GET("/recorder/cameras/:id/hooks", a.requirePermission("recorder_config.read"), a.onV1RecorderCameraHooksGet)
+	group.PATCH("/recorder/cameras/:id/hooks", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraHooksPatch)
 
 	if !interfaceIsEmpty(a.HLSServer) {
-		group.GET("/recorder/hls-muxers", a.onV1RecorderHLSMuxersList)
-		group.GET("/recorder/hls-muxers/:id", a.onV1RecorderHLSMuxersGet)
-		group.GET("/recorder/cameras/:id/snapshot", a.onV1RecorderCameraSnapshot)
+		// HLS muxer state mirrors the canonical Stream surface; gate
+		// on stream.list / stream.read to keep it consistent with
+		// /v1/streams (HLS muxers are one stream-runtime detail).
+		group.GET("/recorder/hls-muxers", a.requirePermission("stream.list"), a.onV1RecorderHLSMuxersList)
+		group.GET("/recorder/hls-muxers/:id", a.requirePermission("stream.read"), a.onV1RecorderHLSMuxersGet)
+		// Live snapshot is a live-view operation per ADR 0010 D2.
+		group.GET("/recorder/cameras/:id/snapshot", a.requirePermission("camera.live.view"), a.onV1RecorderCameraSnapshot)
 	}
 
 	// Static SPA bundle. Registered AFTER the /v1 group so the API
@@ -372,6 +399,49 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	// Method set) which maps to a service-account principal with
 	// empty Scope; the JWT path produces a real ADR 0011 D2 principal.
 	principal := principalFromAuthClaims(claims, a.globalPIIReadGrant())
+
+	// ADR 0010 D6 amendment scope_kind validation: when the JWT
+	// presents a scope_kind + scope_target_id, validate against the
+	// recorder's tier identity. tenant must match Conf.TenantID;
+	// recording_server must match the recorder's own UUIDv7;
+	// site logs+accepts pre-pairing-aware site_id (recorder doesn't
+	// persist a site_id today); organization is not enforced at the
+	// recorder. On mismatch / unknown kind: replace the principal with
+	// the unauthenticated principal, emit an auth.permission_denied
+	// audit, and return 401.
+	if principal.ScopeKind != "" {
+		outcome, diag := validateScopeKind(
+			principal.ScopeKind,
+			principal.ScopeTargetID,
+			a.tenantID(),
+			a.recorderSiteID(),
+			a.recorderID(),
+		)
+		switch outcome {
+		case scopeKindOutcomeMismatch, scopeKindOutcomeUnknownKind:
+			a.Log(logger.Info, "scope_kind validation failed: %s", diag)
+			a.emitAudit(defs.AuditLogEntryInput{
+				ActorKind:    principal.PrincipalKind,
+				ActorID:      principal.Sub,
+				Action:       "auth.permission_denied",
+				Outcome:      defs.AuditOutcomeDenied,
+				ResourceKind: "session",
+				Attributes: map[string]string{
+					"reason":          string(outcome),
+					"diagnostic":      diag,
+					"scope_kind":      principal.ScopeKind,
+					"scope_target_id": principal.ScopeTargetID,
+					"severity":        string(defs.EventSeverityInfo),
+				},
+			})
+			a.writeErrorNoLog(ctx, http.StatusForbidden,
+				fmt.Errorf("scope_kind validation failed"))
+			return
+		case scopeKindOutcomeSiteUnknownAccepted:
+			a.Log(logger.Warn, "scope_kind=site accepted with unknown recorder site_id; tighten when site_id awareness lands")
+		}
+	}
+
 	setPrincipalOnContext(ctx, principal)
 
 	// Successful authentication: emit an audit entry per ADR 0006 D1.
