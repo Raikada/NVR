@@ -29,6 +29,17 @@ func newInstance(conf string) (*Core, bool) {
 		conf = "tenantId: 00000000-0000-0000-0000-000000000000\n" + conf
 	}
 
+	// Disable API encryption + use the legacy server.key/server.crt paths
+	// for tests that don't explicitly set them. The production default
+	// (per the bundled mediamtx.yml) is `apiEncryption: yes` with
+	// identity/recorder.key paths that the identity package generates at
+	// first run; tests don't run that bootstrap and don't need TLS on
+	// the API. Tests that DO want encrypted API can set the fields
+	// themselves and skip this block.
+	if !strings.Contains(conf, "apiEncryption:") {
+		conf = "apiEncryption: no\napiServerKey: server.key\napiServerCert: server.crt\n" + conf
+	}
+
 	tmpf, err := test.CreateTempFile([]byte(conf))
 	if err != nil {
 		return nil, false
