@@ -360,6 +360,51 @@ export interface StorageVolumeList extends ListEnvelope<StorageVolume> {}
 export const fetchStorageVolumes = () =>
   api.get<StorageVolumeList>('/storage-volumes?items_per_page=100');
 
+/* ---------- /v1/storage-volumes/breakdown ---------- */
+// Wave 5 — per-content-type rollup landed alongside the
+// RecordingSegment.content_type amendment (2026-05-06). Mirrors the
+// RecordingPolicy.mode enum (with `schedule` → `scheduled` per the
+// platform amendment).
+
+export type RecordingSegmentContentType =
+  | 'continuous'
+  | 'motion'
+  | 'scheduled'
+  | 'event_triggered'
+  | 'off';
+
+export interface StorageBreakdownEntry {
+  content_type: RecordingSegmentContentType;
+  byte_size: number;
+  segment_count: number;
+}
+
+export interface StorageBreakdownByCamera {
+  camera_id: string;
+  by_content_type: StorageBreakdownEntry[];
+  byte_size: number;
+  segment_count: number;
+}
+
+export interface StorageBreakdownByVolume {
+  volume_id: string;
+  mount_path: string;
+  by_content_type: StorageBreakdownEntry[];
+  byte_size: number;
+  segment_count: number;
+}
+
+export interface StorageBreakdownResponse {
+  by_content_type: StorageBreakdownEntry[];
+  by_camera: StorageBreakdownByCamera[];
+  by_volume: StorageBreakdownByVolume[];
+  total_bytes: number;
+  segment_count: number;
+}
+
+export const fetchStorageBreakdown = () =>
+  api.get<StorageBreakdownResponse>('/storage-volumes/breakdown');
+
 /* ---------- /v1/recorder/config ---------- */
 //
 // The recorder's GlobalConf shape is large (~50 fields) and uses

@@ -202,6 +202,11 @@ func (a *API) Initialize() error {
 
 	// Storage volumes (ADR 0009 §D5 Storage volumes).
 	group.GET("/storage-volumes", a.requirePermission("storage.list"), a.onV1StorageVolumesList)
+	// Per-content-type rollup landed Wave 5 (2026-05-06 amendment;
+	// see RecordingSegment.content_type). Registered before the
+	// `:id` variant so the literal path doesn't collide with UUID
+	// parsing in onV1StorageVolumesGet.
+	group.GET("/storage-volumes/breakdown", a.requirePermission("storage.read"), a.onV1StorageVolumesBreakdown)
 	group.GET("/storage-volumes/:id", a.requirePermission("storage.read"), a.onV1StorageVolumesGet)
 
 	// Recorder-localized escape hatch (ADR 0009 §D6).

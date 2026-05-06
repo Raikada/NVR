@@ -24,6 +24,26 @@ const (
 	RecordingSegmentStateDeleted   RecordingSegmentState = "deleted"
 )
 
+// RecordingSegmentContentType classifies a sealed segment by the
+// recording mode in effect when it was being written.
+//
+// Mirrors RecordingPolicyMode verbatim per the 2026-05-06 domain-model
+// amendment. The recorder stamps it at seal time from the policy
+// governing the camera at that moment; pre-amendment segments default
+// to continuous on first read (the zero value of the underlying string
+// is "" and the synthesizer interprets that as continuous).
+type RecordingSegmentContentType string
+
+// RecordingSegment content-type values per domain-model.md (2026-05-06
+// amendment). Values mirror RecordingPolicyMode 1:1.
+const (
+	RecordingSegmentContentTypeContinuous     RecordingSegmentContentType = "continuous"
+	RecordingSegmentContentTypeMotion         RecordingSegmentContentType = "motion"
+	RecordingSegmentContentTypeScheduled      RecordingSegmentContentType = "scheduled"
+	RecordingSegmentContentTypeEventTriggered RecordingSegmentContentType = "event_triggered"
+	RecordingSegmentContentTypeOff            RecordingSegmentContentType = "off"
+)
+
 // RecordingSegmentTrack describes one track on a RecordingSegment.
 type RecordingSegmentTrack struct {
 	Kind  StreamTrackKind `json:"kind"`
@@ -57,6 +77,13 @@ type RecordingSegment struct {
 	SizeBytes int64                     `json:"size_bytes"`
 
 	Tracks []RecordingSegmentTrack `json:"tracks,omitempty"`
+
+	// ContentType was added by the 2026-05-06 domain-model amendment.
+	// Mirrors RecordingPolicy.mode; the recorder stamps it at seal time
+	// from the governing policy. Pre-amendment segments lack it on disk
+	// and the synthesizer surfaces them as continuous per the platform
+	// amendment language.
+	ContentType RecordingSegmentContentType `json:"content_type"`
 
 	Checksum *string `json:"checksum,omitempty"`
 

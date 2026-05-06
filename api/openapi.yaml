@@ -160,6 +160,7 @@ info:
     | `/v1/clips/{id}`                                    | DELETE  | `clip.delete`             |
     | `/v1/clips/{id}/download`                           | GET     | `clip.download`           |
     | `/v1/storage-volumes`                               | GET     | `storage.list`            |
+    | `/v1/storage-volumes/breakdown`                     | GET     | `storage.read`            |
     | `/v1/storage-volumes/{id}`                          | GET     | `storage.read`            |
     | `/v1/recorder/config`                               | GET     | `recorder_config.read`    |
     | `/v1/recorder/config`                               | PATCH   | `recorder_config.manage`  |
@@ -582,6 +583,20 @@ components:
         - sealed
         - archived
         - deleted
+
+    RecordingSegmentContentType:
+      type: string
+      description: |
+        Mirrors `RecordingPolicy.mode` per the 2026-05-06 domain-model
+        amendment. The recorder stamps this at seal time from the
+        policy in effect when the segment was being written.
+        Pre-amendment segments default to `continuous` on read.
+      enum:
+        - continuous
+        - motion
+        - scheduled
+        - event_triggered
+        - off
 
     EventSeverity:
       type: string
@@ -1437,10 +1452,11 @@ components:
     RecordingSegment:
       type: object
       description: |
-        Canonical 17-field RecordingSegment entity. Adds
-        `recording_id` per ADR 0009. The recorder-local on-disk
-        `path` field documented in `domain-model.md` is excluded
-        from API responses by classification rule. Closes
+        Canonical RecordingSegment entity. Adds `recording_id` per
+        ADR 0009 and `content_type` per the 2026-05-06 domain-model
+        amendment (mirrors `RecordingPolicy.mode`). The recorder-local
+        on-disk `path` field documented in `domain-model.md` is
+        excluded from API responses by classification rule. Closes
         canonical-divergence D8.
       required:
         - id
@@ -1456,6 +1472,7 @@ components:
         - duration
         - container
         - size_bytes
+        - content_type
         - state
         - created_at
       properties:
@@ -1500,6 +1517,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RecordingSegmentTrack'
+        content_type:
+          $ref: '#/components/schemas/RecordingSegmentContentType'
         checksum:
           type: string
         state:
@@ -1517,6 +1536,111 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/RecordingSegment'
+
+    StorageBreakdownEntry:
+      type: object
+      description: |
+        One (content_type, byte_size, segment_count) triple in a
+        storage breakdown rollup. Wave 5; per the 2026-05-06
+        RecordingSegment.content_type amendment.
+      required:
+        - content_type
+        - byte_size
+        - segment_count
+      properties:
+        content_type:
+          $ref: '#/components/schemas/RecordingSegmentContentType'
+        byte_size:
+          type: integer
+          format: int64
+        segment_count:
+          type: integer
+
+    StorageBreakdownByCamera:
+      type: object
+      description: |
+        Per-camera storage rollup. `by_content_type` lists each
+        content type that has at least one segment for the given
+        camera; `byte_size` and `segment_count` are the camera-level
+        totals.
+      required:
+        - camera_id
+        - by_content_type
+        - byte_size
+        - segment_count
+      properties:
+        camera_id:
+          type: string
+          format: uuid
+        by_content_type:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageBreakdownEntry'
+        byte_size:
+          type: integer
+          format: int64
+        segment_count:
+          type: integer
+
+    StorageBreakdownByVolume:
+      type: object
+      description: |
+        Per-volume storage rollup. `mount_path` is recorder-local
+        but exposed here as a convenience for the operator UI;
+        empty when the recorder hasn't yet stamped `volume_id` on
+        synthesized segments (D8 follow-up).
+      required:
+        - volume_id
+        - mount_path
+        - by_content_type
+        - byte_size
+        - segment_count
+      properties:
+        volume_id:
+          type: string
+        mount_path:
+          type: string
+        by_content_type:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageBreakdownEntry'
+        byte_size:
+          type: integer
+          format: int64
+        segment_count:
+          type: integer
+
+    StorageBreakdownResponse:
+      type: object
+      description: |
+        Per-content-type storage rollup across the recorder's
+        segment population. Wave 5 v1 minimum: groups overall, by
+        camera, and by volume. Each grouping carries
+        (byte_size, segment_count) per content type.
+      required:
+        - by_content_type
+        - by_camera
+        - by_volume
+        - total_bytes
+        - segment_count
+      properties:
+        by_content_type:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageBreakdownEntry'
+        by_camera:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageBreakdownByCamera'
+        by_volume:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageBreakdownByVolume'
+        total_bytes:
+          type: integer
+          format: int64
+        segment_count:
+          type: integer
 
     Recording:
       type: object
@@ -4363,6 +4487,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StorageVolumeList'
+
+  /v1/storage-volumes/breakdown:
+    get:
+      tags: [StorageVolumes]
+      summary: Per-content-type storage rollup.
+      description: |
+        Returns total `byte_size` and `segment_count` grouped by
+        `content_type`, also sliced per-camera and per-volume.
+        Wave 5 / 2026-05-06 — see `RecordingSegment.content_type`
+        amendment in `domain-model.md`. Permission: `storage.read`.
+
+        The recorder synthesizes RecordingSegment metadata by
+        walking on-disk files; this endpoint walks the same
+        synthesized population and rolls up. Cost is bounded by
+        segment count, not by an extra disk pass — the underlying
+        synthesis cache is shared with `/v1/recordings` and
+        `/v1/recording-segments`.
+      responses:
+        '200':
+          description: Breakdown rollup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StorageBreakdownResponse'
 
   /v1/storage-volumes/{id}:
     parameters:

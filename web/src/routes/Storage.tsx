@@ -1,10 +1,11 @@
 // Storage route — disk overview, breakdown bar, RAID disk list.
 // Wired to /v1/storage-volumes for capacity / used / status / mount
-// path. Drive vendor-model strings, SMART hours, and the per-
-// content-type breakdown (continuous / motion / AI) stay STUB —
-// the recorder doesn't expose drive vendor metadata or per-content
-// breakdown today; both would need a recorder-side API extension.
+// path; per-content-type breakdown (Wave 5, 2026-05-06 amendment)
+// renders /v1/storage-volumes/breakdown bytes-per-content-type and
+// per-camera drilldown. Drive vendor-model strings + SMART hours are
+// surfaced live when the host has smartmontools installed.
 
+import { useState } from 'react';
 import {
   Card,
   Progress,
@@ -14,10 +15,39 @@ import {
 } from '../components/primitives';
 import type { StatusBadgeKind } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
-import { fetchRecordingPolicies, fetchStorageVolumes } from '../lib/api';
-import type { StorageVolume } from '../lib/api';
+import {
+  fetchCameras,
+  fetchRecordingPolicies,
+  fetchStorageBreakdown,
+  fetchStorageVolumes,
+} from '../lib/api';
+import type {
+  RecordingSegmentContentType,
+  StorageBreakdownByCamera,
+  StorageBreakdownEntry,
+  StorageVolume,
+} from '../lib/api';
 import { usePoll, formatBytes } from '../lib/hooks';
 import { formatDuration } from '../lib/duration';
+
+// Visual identity per content-type: chosen to match the existing
+// orange/teal/blue palette already used elsewhere in the SPA. The
+// recorder doesn't enforce a brand; these are the defaults.
+const CONTENT_TYPE_COLORS: Record<RecordingSegmentContentType, string> = {
+  continuous: '#F97316',
+  motion: '#0EA5E9',
+  scheduled: '#A78BFA',
+  event_triggered: '#34D399',
+  off: '#64748B',
+};
+
+const CONTENT_TYPE_LABELS: Record<RecordingSegmentContentType, string> = {
+  continuous: 'Continuous',
+  motion: 'Motion',
+  scheduled: 'Scheduled',
+  event_triggered: 'Event-triggered',
+  off: 'Off',
+};
 
 function statusBadge(s: StorageVolume['status']): StatusBadgeKind {
   if (s === 'healthy') return 'online';
@@ -33,6 +63,15 @@ export function Storage() {
   // interval, so polling faster gives a more responsive (though
   // smaller-window) read.
   const volumes = usePoll(fetchStorageVolumes, 10_000, []);
+  // Wave 5: per-content-type rollup. 30s cadence — the underlying
+  // population (synthesized RecordingSegment metadata) only changes
+  // as new segments are sealed; the recorder caches synthesis between
+  // reloads and fast polling here would just rebuild the same map.
+  const breakdown = usePoll(fetchStorageBreakdown, 30_000, []);
+  // Camera list for the per-camera drilldown — gives us the
+  // human-readable camera_name to display next to camera_id.
+  const cameras = usePoll(() => fetchCameras(0, 100), 30_000, []);
+  const [drilldownOpen, setDrilldownOpen] = useState(false);
   // Volumes whose backing disappeared (status: missing) shouldn't
   // count toward used / capacity rollups — the bytes they previously
   // tracked are no longer reachable. Per domain-model.md §StorageVolume
@@ -139,10 +178,7 @@ export function Storage() {
         </div>
         <Card>
           <SectionHeader>STORAGE BREAKDOWN</SectionHeader>
-          {/* STUB: per-content-type breakdown (continuous / motion /
-              AI) requires recorder-side accounting that doesn't
-              exist yet. Two-segment used-vs-free is the live data
-              we have today. */}
+          {/* Used-vs-free breakdown bar — high-level state of capacity. */}
           <div
             style={{
               height: 16,
@@ -160,6 +196,33 @@ export function Storage() {
             <LegendItem color="#F97316" label="Used" value={formatBytes(totalUsed)} />
             <LegendItem color="var(--text-muted)" label="Free" value={formatBytes(free)} />
           </div>
+        </Card>
+        {/* Wave 5: Content Type Breakdown. Live /v1/storage-volumes/breakdown
+            rollup by content_type (continuous / motion / scheduled /
+            event-triggered / off), plus optional per-camera drilldown. */}
+        <Card>
+          <SectionHeader>CONTENT TYPE BREAKDOWN</SectionHeader>
+          {breakdown.status === 'error' && (
+            <div
+              style={{
+                padding: 16,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                letterSpacing: 0.5,
+              }}
+            >
+              BREAKDOWN UNREACHABLE — {breakdown.error.message}
+            </div>
+          )}
+          {breakdown.status !== 'error' && (
+            <ContentTypeBreakdownBody
+              data={breakdown.data}
+              cameras={cameras.data?.items ?? []}
+              drilldownOpen={drilldownOpen}
+              onToggleDrilldown={() => setDrilldownOpen((v) => !v)}
+            />
+          )}
         </Card>
         <Card style={{ padding: 0 }}>
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
@@ -292,6 +355,292 @@ function LegendItem({ color, label, value }: { color: string; label: string; val
           {value}
         </div>
       </div>
+    </div>
+  );
+}
+
+interface ContentTypeBreakdownBodyProps {
+  data: import('../lib/api').StorageBreakdownResponse | undefined;
+  cameras: import('../lib/api').Camera[];
+  drilldownOpen: boolean;
+  onToggleDrilldown: () => void;
+}
+
+// ContentTypeBreakdownBody renders the stacked-bar visual + detail
+// table for /v1/storage-volumes/breakdown. Per Wave 5 we ship the
+// minimum: a horizontal stacked bar by content_type, a row per
+// content_type with size / segments / share-of-total, and a
+// collapsed-by-default per-camera drilldown.
+function ContentTypeBreakdownBody({
+  data,
+  cameras,
+  drilldownOpen,
+  onToggleDrilldown,
+}: ContentTypeBreakdownBodyProps) {
+  if (!data || data.segment_count === 0) {
+    return (
+      <div
+        style={{
+          padding: 14,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: 'var(--text-muted)',
+          letterSpacing: 0.5,
+        }}
+      >
+        NO RECORDED FOOTAGE YET — content type breakdown will populate as
+        segments seal.
+      </div>
+    );
+  }
+
+  const total = data.total_bytes;
+  // Stable order: content_type alphabetically, matching the recorder's
+  // wire order. Keeps colors stable across renders.
+  const entries = data.by_content_type;
+
+  return (
+    <>
+      {/* Stacked bar — width proportional to byte_size per content_type. */}
+      <div
+        style={{
+          height: 16,
+          display: 'flex',
+          borderRadius: 4,
+          overflow: 'hidden',
+          border: '1px solid var(--border)',
+          marginTop: 8,
+        }}
+      >
+        {entries.map((e) => (
+          <div
+            key={e.content_type}
+            title={`${CONTENT_TYPE_LABELS[e.content_type] ?? e.content_type}: ${formatBytes(e.byte_size)}`}
+            style={{
+              flex: e.byte_size || 1,
+              background: CONTENT_TYPE_COLORS[e.content_type] ?? '#94A3B8',
+            }}
+          />
+        ))}
+      </div>
+      {/* Per-content-type rows with size + segments + share-of-total. */}
+      <div
+        style={{
+          marginTop: 12,
+          display: 'grid',
+          gridTemplateColumns: '20px 1fr 110px 110px 80px',
+          gap: 8,
+          fontSize: 11,
+          fontFamily: 'var(--font-mono)',
+        }}
+      >
+        <div />
+        <div style={{ color: 'var(--text-muted)', letterSpacing: 1 }}>CONTENT TYPE</div>
+        <div style={{ color: 'var(--text-muted)', letterSpacing: 1, textAlign: 'right' }}>SIZE</div>
+        <div style={{ color: 'var(--text-muted)', letterSpacing: 1, textAlign: 'right' }}>SEGMENTS</div>
+        <div style={{ color: 'var(--text-muted)', letterSpacing: 1, textAlign: 'right' }}>SHARE</div>
+        {entries.map((e) => {
+          const pct = total > 0 ? (e.byte_size / total) * 100 : 0;
+          return (
+            <ContentTypeRow
+              key={e.content_type}
+              entry={e}
+              pct={pct}
+            />
+          );
+        })}
+      </div>
+      <div
+        style={{
+          marginTop: 16,
+          paddingTop: 12,
+          borderTop: '1px solid var(--border)',
+        }}
+      >
+        <button
+          type="button"
+          onClick={onToggleDrilldown}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            padding: 0,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: 'var(--text-primary)',
+            letterSpacing: 1,
+            textTransform: 'uppercase',
+          }}
+        >
+          {drilldownOpen ? 'HIDE' : 'SHOW'} PER-CAMERA DRILLDOWN ({data.by_camera.length})
+        </button>
+        {drilldownOpen && (
+          <PerCameraDrilldown by_camera={data.by_camera} cameras={cameras} />
+        )}
+      </div>
+    </>
+  );
+}
+
+function ContentTypeRow({
+  entry,
+  pct,
+}: {
+  entry: StorageBreakdownEntry;
+  pct: number;
+}) {
+  const color = CONTENT_TYPE_COLORS[entry.content_type] ?? '#94A3B8';
+  const label = CONTENT_TYPE_LABELS[entry.content_type] ?? entry.content_type;
+  return (
+    <>
+      <span
+        style={{
+          width: 10,
+          height: 10,
+          borderRadius: 2,
+          background: color,
+          alignSelf: 'center',
+        }}
+      />
+      <div style={{ color: 'var(--text-primary)' }}>{label}</div>
+      <div style={{ color: 'var(--text-primary)', textAlign: 'right' }}>
+        {formatBytes(entry.byte_size)}
+      </div>
+      <div style={{ color: 'var(--text-muted)', textAlign: 'right' }}>
+        {entry.segment_count.toLocaleString()}
+      </div>
+      <div style={{ color: 'var(--text-muted)', textAlign: 'right' }}>
+        {pct.toFixed(1)}%
+      </div>
+    </>
+  );
+}
+
+function PerCameraDrilldown({
+  by_camera,
+  cameras,
+}: {
+  by_camera: StorageBreakdownByCamera[];
+  cameras: import('../lib/api').Camera[];
+}) {
+  // Resolve camera_id → name for the drilldown header. Drop unmatched
+  // entries gracefully — the recorder may have orphan footage from a
+  // camera that's been removed but whose segments haven't been pruned.
+  const nameByID = new Map<string, string>();
+  for (const c of cameras) nameByID.set(c.id, c.name);
+
+  if (by_camera.length === 0) {
+    return (
+      <div
+        style={{
+          marginTop: 10,
+          padding: 14,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: 'var(--text-muted)',
+          letterSpacing: 0.5,
+        }}
+      >
+        NO PER-CAMERA FOOTAGE.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {by_camera.map((cam) => {
+        const camName = nameByID.get(cam.camera_id) ?? cam.camera_id;
+        return (
+          <div
+            key={cam.camera_id}
+            style={{
+              padding: 12,
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              background: 'var(--bg-secondary)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 8,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 12,
+                  color: '#F97316',
+                }}
+              >
+                {camName}
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--text-muted)',
+                  letterSpacing: 0.5,
+                }}
+              >
+                {formatBytes(cam.byte_size)} · {cam.segment_count.toLocaleString()} SEG
+              </div>
+            </div>
+            <div
+              style={{
+                height: 8,
+                display: 'flex',
+                borderRadius: 2,
+                overflow: 'hidden',
+                border: '1px solid var(--border)',
+              }}
+            >
+              {cam.by_content_type.map((e) => (
+                <div
+                  key={e.content_type}
+                  title={`${CONTENT_TYPE_LABELS[e.content_type] ?? e.content_type}: ${formatBytes(e.byte_size)}`}
+                  style={{
+                    flex: e.byte_size || 1,
+                    background: CONTENT_TYPE_COLORS[e.content_type] ?? '#94A3B8',
+                  }}
+                />
+              ))}
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 10,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                letterSpacing: 0.5,
+              }}
+            >
+              {cam.by_content_type.map((e) => (
+                <span
+                  key={e.content_type}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 2,
+                      background: CONTENT_TYPE_COLORS[e.content_type] ?? '#94A3B8',
+                    }}
+                  />
+                  {(CONTENT_TYPE_LABELS[e.content_type] ?? e.content_type).toUpperCase()}{' '}
+                  {formatBytes(e.byte_size)} · {e.segment_count.toLocaleString()}
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

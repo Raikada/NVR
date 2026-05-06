@@ -107,9 +107,12 @@ Wired today:
 - **Logs** — `/v1/events` (1.1s while tailing, 60s while paused).
   Level/source filters map onto canonical Event severity +
   subject_kind. Search hits message / kind / subject_kind.
-- **Storage** — `/v1/storage-volumes` (30s). Per-volume rows show
+- **Storage** — `/v1/storage-volumes` (10s). Per-volume rows show
   mount path / kind / priority / used / capacity / status. Total
-  used vs free roll up into the breakdown bar and stat tiles.
+  used vs free roll up into the storage-breakdown bar and stat
+  tiles. `/v1/storage-volumes/breakdown` (30s) drives the
+  CONTENT TYPE BREAKDOWN section: stacked bar by content_type +
+  per-content-type table + per-camera drilldown.
 - **Network** — `/v1/health.network` (5s) drives reachability
   block. `/v1/recorder/config` (one-shot) drives port enable/
   disable badges (api / rtsp / rtmp / hls / webrtc / srt).
@@ -123,6 +126,12 @@ labelled in source so future agents can find them with
 `grep -n 'STUB' web/src/`.
 
 Recently retired (now wired to real `/v1/`):
+- Storage CONTENT TYPE BREAKDOWN (Wave 5, 2026-05-06) →
+  `/v1/storage-volumes/breakdown`. Stacked-bar by content_type +
+  per-content-type SIZE/SEGMENTS/SHARE table + per-camera
+  drilldown. Backed by the new `RecordingSegment.content_type`
+  field per the platform amendment Change-Id
+  `2026-05-06-recording-segment-content-type`.
 - Overview BANDWIDTH knob → `/v1/health.bandwidth` (rx_bps + tx_bps)
 - Network bandwidth row NOW + PEAK/24H + AVG/24H →
   `/v1/health.bandwidth` (now) + `/v1/recorder/network-info.bandwidth`
@@ -254,10 +263,10 @@ Recently retired (now wired to real `/v1/`):
   Changes.
 
 **Storage.**
-- Per-content-type breakdown (Continuous / Motion events / AI
-  detections) — recorder doesn't account by content type.
-  Used-vs-free is the live data we have. Real model extension
-  (`RecordingSegment.content_type`) is a recorder-side change.
+- _(none — Wave 5, 2026-05-06: per-content-type breakdown wired to
+  `/v1/storage-volumes/breakdown`. RecordingSegment.content_type
+  amendment landed; Storage page renders stacked-bar +
+  per-content-type table + per-camera drilldown.)_
 
 **Network.**
 - NTP / VLAN mini-blocks — neither is uniformly available across

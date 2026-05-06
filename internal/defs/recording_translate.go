@@ -126,6 +126,13 @@ type RecordstoreSegmentInput struct {
 // EndedAt = next segment's StartedAt by convention). This translator
 // is intentionally conservative; do not modify the recordstore subsystem
 // from this layer per AGENTS.md rule 6.
+//
+// `contentType` carries the value the API-layer classifier resolved for
+// this segment (per the 2026-05-06 domain-model amendment): the
+// `RecordingPolicy.mode` of the camera's governing policy, mapped to the
+// matching `RecordingSegmentContentType` value. An empty string here is
+// surfaced as `continuous` so pre-amendment segments and any policy-
+// resolution miss default sanely per the platform amendment language.
 func SegmentFromRecordstoreFile(
 	in RecordstoreSegmentInput,
 	segmentID string,
@@ -136,6 +143,7 @@ func SegmentFromRecordstoreFile(
 	volumeID string,
 	policyID string,
 	recordingID string,
+	contentType RecordingSegmentContentType,
 ) RecordingSegment {
 	container := in.Container
 	if container == "" {
@@ -144,6 +152,11 @@ func SegmentFromRecordstoreFile(
 	state := in.State
 	if state == "" {
 		state = RecordingSegmentStateSealed
+	}
+	if contentType == "" {
+		// Pre-amendment / unknown policy → default to continuous per
+		// the 2026-05-06 domain-model amendment.
+		contentType = RecordingSegmentContentTypeContinuous
 	}
 	var duration time.Duration
 	if !in.EndedAt.IsZero() && !in.StartedAt.IsZero() {
@@ -166,8 +179,32 @@ func SegmentFromRecordstoreFile(
 		Path:              in.Path,
 		SizeBytes:         in.SizeBytes,
 		Tracks:            in.Tracks,
+		ContentType:       contentType,
 		Checksum:          in.Checksum,
 		State:             state,
 		CreatedAt:         now,
+	}
+}
+
+// ContentTypeFromPolicyMode translates a RecordingPolicyMode to the
+// matching RecordingSegmentContentType. Pure mapping, no allocation;
+// values mirror 1:1 per the 2026-05-06 domain-model amendment. Empty
+// or unknown input maps to continuous so callers (notably the
+// API-layer classifier) get a safe default in degenerate cases —
+// missing policy, unset mode on a malformed policy doc, etc.
+func ContentTypeFromPolicyMode(mode RecordingPolicyMode) RecordingSegmentContentType {
+	switch mode {
+	case RecordingPolicyModeContinuous:
+		return RecordingSegmentContentTypeContinuous
+	case RecordingPolicyModeMotion:
+		return RecordingSegmentContentTypeMotion
+	case RecordingPolicyModeSchedule:
+		return RecordingSegmentContentTypeScheduled
+	case RecordingPolicyModeEventTriggered:
+		return RecordingSegmentContentTypeEventTriggered
+	case RecordingPolicyModeOff:
+		return RecordingSegmentContentTypeOff
+	default:
+		return RecordingSegmentContentTypeContinuous
 	}
 }

@@ -164,6 +164,20 @@ func (a *API) synthesize() (
 		tenantID = c.TenantID
 	}
 
+	// Resolve the camera-id → content-type map once for this synthesis
+	// pass. Per the 2026-05-06 domain-model amendment the recorder
+	// stamps `content_type` at seal time from the `RecordingPolicy.mode`
+	// in effect when the segment was being written. The recorder
+	// pre-MS doesn't persist per-segment historical policy state
+	// (synthesis is in-memory and re-derives on every restart, see
+	// recordingRegistry above), so for *all* on-disk segments we use
+	// the *current* policy mode as the best available approximation.
+	// That means a mid-policy-change reclassification will surface
+	// retroactively until the segment is sealed; that's acceptable for
+	// the v1 storage-breakdown rollup which is an operational signal,
+	// not an audit fact.
+	contentTypeByCamera := a.resolveContentTypeByCamera(c)
+
 	pathNames := recordstore.FindAllPathsWithSegments(c.Paths)
 	for _, pathName := range pathNames {
 		pathConf, _, err := conf.FindPathConf(c.Paths, pathName)
@@ -180,6 +194,10 @@ func (a *API) synthesize() (
 
 		// recordstore.FindSegments returns segments time-sorted ascending
 		// (see segment.go::FindSegments).
+
+		// Resolve content_type once per camera; SegmentFromRecordstoreFile
+		// surfaces "" as continuous so unmapped cameras default sanely.
+		contentType := contentTypeByCamera[cameraID]
 
 		canonical := make([]defs.RecordingSegment, 0, len(rsSegs))
 		for i, rs := range rsSegs {
@@ -209,6 +227,7 @@ func (a *API) synthesize() (
 				"", // volume_id — D8: storage volumes Phase 2D
 				"", // policy_id — D8: policies Phase 2A
 				"", // recording_id — backfilled below once we group
+				contentType,
 			)
 			canonical = append(canonical, seg)
 		}
@@ -270,6 +289,50 @@ func (a *API) synthesize() (
 	reg.pathNameByCameraID = pathByCam
 	reg.synthAt = time.Now().UTC()
 	return recs, segs
+}
+
+// resolveContentTypeByCamera builds a snapshot of camera-id →
+// RecordingSegmentContentType for every camera in c.Paths that has a
+// resolvable RecordingPolicy. Caller must already hold the lock that
+// makes c.Paths and c.RecordingPolicies safe to read; synthesize() does
+// this by capturing c under a.mutex.RLock and operating on the captured
+// pointer for the rest of the synthesis pass.
+//
+// Lookup order per Camera:
+//
+//  1. The conf.Path's RecordingPolicyID, if set, is used as the policy
+//     handle.
+//  2. Otherwise, the seeded conf.DefaultRecordingPolicyID is used.
+//
+// Cameras whose policy can't be resolved (missing default, malformed
+// config) are omitted from the map so SegmentFromRecordstoreFile sees
+// "" and surfaces the segment as continuous per the platform amendment
+// default.
+func (a *API) resolveContentTypeByCamera(c *conf.Conf) map[string]defs.RecordingSegmentContentType {
+	out := make(map[string]defs.RecordingSegmentContentType)
+	if c == nil || c.Paths == nil {
+		return out
+	}
+	policies := c.RecordingPolicies
+	for name, pathConf := range c.Paths {
+		if pathConf == nil {
+			continue
+		}
+		policyID := pathConf.RecordingPolicyID
+		if policyID == "" {
+			policyID = conf.DefaultRecordingPolicyID
+		}
+		if policies == nil {
+			continue
+		}
+		policy, ok := policies[policyID]
+		if !ok || policy == nil {
+			continue
+		}
+		mode := defs.RecordingPolicyMode(policy.Mode)
+		out[cameraIDFromPathName(name)] = defs.ContentTypeFromPolicyMode(mode)
+	}
+	return out
 }
 
 // groupSegmentsByGap splits a time-sorted slice of canonical segments
