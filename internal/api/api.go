@@ -239,6 +239,11 @@ func (a *API) Initialize() error {
 	group.PATCH("/recorder/cameras/:id/source-config", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraSourceConfigPatch)
 	group.GET("/recorder/cameras/:id/hooks", a.requirePermission("recorder_config.read"), a.onV1RecorderCameraHooksGet)
 	group.PATCH("/recorder/cameras/:id/hooks", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraHooksPatch)
+	// Per-camera motion-detection config (Wave 4). Recorder-local
+	// escape hatch — see canonical-divergences.md "motion_config" entry.
+	group.GET("/recorder/cameras/:id/motion-config", a.requirePermission("recorder_config.read"), a.onV1RecorderCameraMotionConfigGet)
+	group.PATCH("/recorder/cameras/:id/motion-config", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraMotionConfigPatch)
+	group.POST("/recorder/cameras/:id/motion-config/test", a.requirePermission("recorder_config.manage"), a.onV1RecorderCameraMotionConfigTest)
 
 	if !interfaceIsEmpty(a.HLSServer) {
 		// HLS muxer state mirrors the canonical Stream surface; gate

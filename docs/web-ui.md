@@ -201,6 +201,17 @@ Recently retired (now wired to real `/v1/`):
   ONVIF NotificationMessage topics translate to canonical Event kinds
   (motion, tamper, signal_loss, line_crossing, ...) via a recorder-side
   mapping table; unmapped topics fall through to `camera.onvif_event`.
+- Camera drawer Motion tab → real `GET/PATCH
+  /v1/recorder/cameras/{id}/motion-config` (Wave 4) backing the full
+  configuration form (enabled toggle, source dropdown, sensitivity
+  slider, ROI editor, schedule editor, cooldown_ms input). Recent
+  motion events list pulls `/v1/events` filtered by camera id +
+  `camera.motion_detected` / `recording.motion_started` /
+  `recording.motion_ended` kinds. "Test Motion" button fires a
+  synthetic event via `POST .../motion-config/test` for end-to-end
+  controller verification. Motion-detection subsystem lives in
+  `internal/motion/`; see `docs/canonical-divergences.md` for the
+  recorder-local-in-v1 caveat.
 
 **Overview.**
 - `TEMP` mini-metric — no thermal sensor surface. Cross-platform
@@ -218,16 +229,27 @@ Recently retired (now wired to real `/v1/`):
   a recorder-side stat surface, separate swing.
 - Config drawer — the Recording tab writes to canonical resources
   (Camera FK + RecordingPolicy fields); the ONVIF Events tab now
-  drives a real PullPoint subscription + recent-events feed (Wave 3).
-  The remaining drawer tabs still collect state that has no 1:1
-  PATCH endpoint:
-  - Motion zones, sensitivity → recorder doesn't model motion
-    detection canonically yet.
+  drives a real PullPoint subscription + recent-events feed (Wave 3);
+  the Motion tab now drives the recorder-local
+  `/v1/recorder/cameras/{id}/motion-config` (Wave 4). The remaining
+  drawer tabs still collect state that has no 1:1 PATCH endpoint:
   - ONVIF events tab's per-event-type forwarding toggles are
     local-only (the subscription itself is real, but selective
     topic forwarding to the MS is a future-slice item).
   - Advanced (NTP source, OSD, audio track) → recorder-internal,
     no canonical surface.
+  - Local CV-based motion detection
+    (`motion_config.source = local_future`) → scaffold only in
+    `internal/motion/local_detector.go`; ONVIF remains the v1
+    motion source. Selecting `local_future` in the Motion tab
+    logs a warning recorder-side and continues to consume ONVIF
+    events as fallback.
+  - Motion-mode recording-pipeline start/stop is "always on with
+    motion-event annotations" in v1 — recording.motion_started /
+    motion_ended events fire correctly, but the underlying
+    recording pipeline does not gate disk writes on motion. True
+    on-demand pipeline start/stop is a separate engineering swing
+    (touches the load-bearing media pipeline; AGENTS.md §7).
   These tabs' local-only fields are NOT round-tripped on Save
   Changes.
 

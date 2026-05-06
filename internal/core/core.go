@@ -30,6 +30,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/motion"
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/policysync"
@@ -142,6 +143,7 @@ type Core struct {
 	cameraSyncPoller *camerasync.Poller
 	policySyncPoller *policysync.Poller
 	onvifManager     *onvif.Manager
+	motionController *motion.Controller
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -934,6 +936,21 @@ func (p *Core) createResources(initial bool) error {
 			}, nil)
 			api.SetOnvifManager(p.onvifManager)
 		}
+
+		// Motion controller (Wave 4). Subscribes to the EventStore
+		// for camera.motion_detected events; emits
+		// recording.motion_started / motion_ended back into the
+		// same store. Construction is idempotent — wiring on every
+		// createResources call replaces the previous controller and
+		// re-registers a subscriber. We accept the duplicate
+		// subscriber on conf reload as the cost of avoiding a
+		// finer-grained "swap subscriber" API; the duplicate fan-out
+		// is harmless because the controller dedupes via its
+		// per-camera active map.
+		if p.motionController != nil {
+			p.motionController.Close()
+		}
+		p.motionController = api.WireMotionControllerForAPI(p.api, p)
 	}
 
 	if initial && p.confPath != "" {
@@ -1249,6 +1266,15 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 	if newConf == nil && p.onvifManager != nil {
 		p.onvifManager.Close()
 		p.onvifManager = nil
+	}
+
+	// Motion controller (Wave 4) — close on full shutdown only.
+	// Per-camera cooldown timers are best-effort cancelled; in-flight
+	// motion windows do not emit a synthetic motion_ended on
+	// shutdown to avoid burying the operator in stop-time noise.
+	if newConf == nil && p.motionController != nil {
+		p.motionController.Close()
+		p.motionController = nil
 	}
 
 	if closeSRTServer && p.srtServer != nil {

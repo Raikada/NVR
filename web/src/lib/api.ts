@@ -665,3 +665,64 @@ export const onvifCreateSubscription = (body: OnvifSubscribeBody) =>
 
 export const onvifDeleteSubscription = (id: string) =>
   api.delete<unknown>(`/onvif/event-subscriptions/${id}`);
+
+/* ---------- /v1/recorder/cameras/{id}/motion-config (Wave 4) ---------- */
+
+// Motion-detection configuration is recorder-local in v1 — see
+// docs/canonical-divergences.md "motion_config" entry for the
+// migration path to canonical Camera.motion_config.
+
+export type MotionSource = 'onvif' | 'local_future';
+
+export interface MotionROI {
+  x: number; // 0.0 – 1.0 normalized
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface MotionScheduleWindow {
+  days: string[]; // lower-case English weekdays
+  start: string; // HH:MM
+  end: string;
+}
+
+export interface MotionSchedule {
+  timezone: string;
+  windows: MotionScheduleWindow[];
+}
+
+export interface MotionConfig {
+  enabled: boolean;
+  source: MotionSource;
+  sensitivity: number;
+  roi?: MotionROI | null;
+  schedule?: MotionSchedule | null;
+  cooldown_ms: number;
+  // Stamped on responses; not accepted on PATCH.
+  tenant_id?: string;
+  camera_id?: string;
+}
+
+export interface MotionConfigPatchBody {
+  enabled?: boolean;
+  source?: MotionSource;
+  sensitivity?: number;
+  roi?: MotionROI;
+  unset_roi?: boolean;
+  schedule?: MotionSchedule;
+  unset_schedule?: boolean;
+  cooldown_ms?: number;
+}
+
+export const fetchMotionConfig = (cameraID: string) =>
+  api.get<MotionConfig>(`/recorder/cameras/${cameraID}/motion-config`);
+
+export const patchMotionConfig = (cameraID: string, body: MotionConfigPatchBody) =>
+  api.patch<{ status: string }>(`/recorder/cameras/${cameraID}/motion-config`, body);
+
+export const triggerMotionTest = (cameraID: string, topic?: string) =>
+  api.post<{ status: string }>(
+    `/recorder/cameras/${cameraID}/motion-config/test`,
+    topic ? { topic } : undefined,
+  );

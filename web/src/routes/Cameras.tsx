@@ -14,7 +14,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Btn,
-  Brackets,
   Card,
   Input,
   KV,
@@ -45,8 +44,17 @@ import {
   onvifCreateSubscription,
   onvifDeleteSubscription,
   fetchEvents,
+  fetchMotionConfig,
+  patchMotionConfig,
+  triggerMotionTest,
 } from '../lib/api';
-import type { OnvifSubscription, OnvifDiscoveredDevice, Event as ApiEvent } from '../lib/api';
+import type {
+  OnvifSubscription,
+  OnvifDiscoveredDevice,
+  Event as ApiEvent,
+  MotionConfig as MotionConfigShape,
+  MotionConfigPatchBody,
+} from '../lib/api';
 import type {
   Camera as ApiCamera,
   CameraSourceType,
@@ -2686,9 +2694,165 @@ function RecordingTab({ c, patch, addToast, policyEdit, patchPolicy }: Recording
   );
 }
 
-function MotionTab({ c, patch }: TabProps) {
+// MotionTab — Wave 4. Real persistence against
+// /v1/recorder/cameras/{id}/motion-config + recent motion events from
+// /v1/events filtered to camera.motion_detected /
+// recording.motion_started / recording.motion_ended for this camera.
+//
+// motion_config is recorder-local in v1 (see canonical-divergences
+// motion_config entry); the full motion subsystem on the recorder
+// side lives in internal/motion/.
+//
+// The legacy local-only motionEnabled / motionSensitivity / motionZones
+// fields are intentionally retained on CameraConfig because the
+// drawer's other tabs and the wider state still reference them; only
+// the Motion tab's source-of-truth is the canonical motion_config.
+//
+// `patch` from the parent isn't used here — the tab persists directly
+// against the canonical surface, so changes survive drawer close
+// without a separate Save Changes click. Acknowledged via lint-disable
+// because TabProps is a shared contract across drawer tabs.
+function MotionTab({ c, patch: _patch }: TabProps) {
+  const [config, setConfig] = useState<MotionConfigShape | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [events, setEvents] = useState<ApiEvent[]>([]);
+  const [testBusy, setTestBusy] = useState(false);
+
+  async function loadConfig() {
+    try {
+      const cfg = await fetchMotionConfig(c.id);
+      setConfig(cfg);
+      setErr(null);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadEvents() {
+    try {
+      const list = await fetchEvents({
+        cameraId: c.id,
+        kind: ['camera.motion_detected', 'recording.motion_started', 'recording.motion_ended'],
+        perPage: 50,
+      });
+      setEvents(list.items.slice(0, 20));
+    } catch {
+      // best-effort
+    }
+  }
+
+  useEffect(() => {
+    void loadConfig();
+    void loadEvents();
+    const t = window.setInterval(() => {
+      void loadEvents();
+    }, 5_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c.id]);
+
+  async function applyPatch(body: MotionConfigPatchBody) {
+    setSaving(true);
+    setErr(null);
+    try {
+      await patchMotionConfig(c.id, body);
+      await loadConfig();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTestBusy(true);
+    try {
+      await triggerMotionTest(c.id);
+      // Give the controller a beat to dispatch and the EventStore a
+      // beat to expose the synthetic event.
+      window.setTimeout(() => {
+        void loadEvents();
+      }, 400);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
+  if (loading || !config) {
+    return (
+      <div
+        style={{
+          padding: 24,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          color: 'var(--text-muted)',
+        }}
+      >
+        Loading motion configuration…
+        {err && (
+          <div style={{ marginTop: 12, color: '#ef4444' }}>{err}</div>
+        )}
+      </div>
+    );
+  }
+
+  const sensitivity = config.sensitivity;
+  const cooldownSec = Math.round((config.cooldown_ms || 0) / 100) / 10;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* Recorder-local advisory — motion_config is not yet canonical */}
+      <div
+        style={{
+          padding: 12,
+          background: 'rgba(249,115,22,0.05)',
+          border: '1px solid rgba(249,115,22,0.27)',
+          borderRadius: 4,
+          display: 'flex',
+          gap: 10,
+          alignItems: 'flex-start',
+        }}
+      >
+        <Icon name="info" style={{ width: 14, height: 14, color: '#F97316', marginTop: 2 }} />
+        <div
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            color: 'var(--text-secondary)',
+            lineHeight: 1.6,
+          }}
+        >
+          Motion-mode recording fires when the recorder receives a
+          camera.motion_detected event (Wave 3 ONVIF subscription) and
+          this camera's RecordingPolicy.mode is set to <code>motion</code>.
+          Recording-pipeline start/stop is "always on with motion-event
+          annotations" in v1; see{' '}
+          <code>docs/canonical-divergences.md</code>.
+        </div>
+      </div>
+
+      {err && (
+        <div
+          style={{
+            padding: 10,
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.4)',
+            borderRadius: 3,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: '#fca5a5',
+          }}
+        >
+          {err}
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <SectionHeader>MOTION DETECTION</SectionHeader>
@@ -2701,175 +2865,625 @@ function MotionTab({ c, patch }: TabProps) {
               letterSpacing: 0.5,
             }}
           >
-            Server-side analysis on substream
+            ONVIF event-driven · cooldown {cooldownSec}s
           </div>
         </div>
-        <Toggle on={c.motionEnabled} onChange={(v) => patch({ motionEnabled: v })} />
+        <Toggle
+          on={config.enabled}
+          onChange={(v) => void applyPatch({ enabled: v })}
+        />
       </div>
 
-      {c.motionEnabled && (
+      {config.enabled && (
         <>
+          {/* Source */}
           <div>
-            <SectionHeader>SENSITIVITY</SectionHeader>
-            <div style={{ marginTop: 10 }}>
-              <SliderField
-                label={`${c.motionSensitivity}% · ${c.motionSensitivity > 75 ? 'AGGRESSIVE' : c.motionSensitivity > 40 ? 'BALANCED' : 'LOW'}`}
-                value={c.motionSensitivity}
-                min={0}
-                max={100}
-                onChange={(v) => patch({ motionSensitivity: v })}
-              />
-            </div>
-          </div>
-
-          <div>
-            <SectionHeader>DETECTION ZONES · {c.motionZones.length}</SectionHeader>
+            <SectionHeader>SOURCE</SectionHeader>
             <div
               style={{
                 marginTop: 10,
-                position: 'relative',
-                aspectRatio: '16/9',
-                background: 'linear-gradient(135deg, #1a1410, #0d0c0a)',
-                overflow: 'hidden',
+                display: 'flex',
+                gap: 8,
               }}
             >
-              <Brackets />
+              {(['onvif', 'local_future'] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => void applyPatch({ source: s })}
+                  disabled={saving}
+                  style={{
+                    flex: 1,
+                    padding: '10px 12px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    color:
+                      config.source === s
+                        ? 'var(--text-primary)'
+                        : 'var(--text-muted)',
+                    background:
+                      config.source === s
+                        ? 'rgba(249,115,22,0.15)'
+                        : 'var(--bg-tertiary)',
+                    border:
+                      config.source === s
+                        ? '1px solid #F97316'
+                        : '1px solid var(--border)',
+                    borderRadius: 3,
+                    cursor: saving ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {s === 'onvif' ? 'ONVIF EVENTS' : 'LOCAL CV (PENDING)'}
+                </button>
+              ))}
+            </div>
+            {config.source === 'local_future' && (
               <div
                 style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Icon name="video" style={{ width: 32, height: 32, color: 'rgba(249,115,22,0.25)' }} />
-              </div>
-              <svg viewBox="0 0 100 56" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}>
-                <defs>
-                  <pattern id="zonegrid" width="5" height="5" patternUnits="userSpaceOnUse">
-                    <path
-                      d="M 5 0 L 0 0 0 5"
-                      fill="none"
-                      stroke="rgba(249,115,22,0.08)"
-                      strokeWidth="0.2"
-                    />
-                  </pattern>
-                </defs>
-                <rect width="100" height="56" fill="url(#zonegrid)" />
-                {c.motionZones.map(
-                  (z) =>
-                    z.enabled && (
-                      <g key={z.id}>
-                        <rect
-                          x={z.x}
-                          y={z.y * 0.56}
-                          width={z.w}
-                          height={z.h * 0.56}
-                          fill="rgba(249,115,22,0.18)"
-                          stroke="#F97316"
-                          strokeWidth="0.4"
-                          strokeDasharray="0.6 0.6"
-                        />
-                        <text
-                          x={z.x + 1}
-                          y={z.y * 0.56 + 2.5}
-                          fill="#F97316"
-                          fontSize="2"
-                          fontFamily="var(--font-mono)"
-                          letterSpacing="0.1"
-                        >
-                          {z.name.toUpperCase()}
-                        </text>
-                      </g>
-                    ),
-                )}
-              </svg>
-              <div
-                style={{
-                  position: 'absolute',
-                  bottom: 6,
-                  right: 8,
+                  marginTop: 8,
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 9,
-                  color: 'rgba(255,255,255,0.6)',
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
                 }}
               >
-                CLICK + DRAG TO DRAW · NOT IN PROTOTYPE
+                Local CV-based motion detection is not implemented in
+                v1. The recorder logs a warning and continues to consume
+                ONVIF events as a fallback.
+              </div>
+            )}
+          </div>
+
+          {/* Sensitivity */}
+          <div>
+            <SectionHeader>SENSITIVITY · {sensitivity}%</SectionHeader>
+            <div style={{ marginTop: 10 }}>
+              <SliderField
+                label={
+                  sensitivity > 75
+                    ? 'AGGRESSIVE'
+                    : sensitivity > 40
+                    ? 'BALANCED'
+                    : 'LOW'
+                }
+                value={sensitivity}
+                min={0}
+                max={100}
+                onChange={(v) => {
+                  // Slider fires on every drag tick; debounce by only
+                  // updating local state during drag, then PATCH on
+                  // mouseup. Implementing that mode change would need
+                  // a richer Slider primitive; for now we patch on
+                  // each tick — the recorder's PATCH is a config-set
+                  // round-trip that's well below what an interactive
+                  // drag can flood.
+                  void applyPatch({ sensitivity: v });
+                }}
+              />
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 9,
+                color: 'var(--text-muted)',
+              }}
+            >
+              Sensitivity is advisory in v1 — vendor ONVIF rule
+              sensitivity is configured on the camera itself. The value
+              persists for cross-tier surfaces (MS / Cloud) that
+              correlate detection rates.
+            </div>
+          </div>
+
+          {/* Cooldown */}
+          <div>
+            <SectionHeader>COOLDOWN (MS)</SectionHeader>
+            <div style={{ marginTop: 10 }}>
+              <input
+                type="number"
+                min={0}
+                max={120000}
+                step={500}
+                value={config.cooldown_ms}
+                onChange={(e) => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!Number.isNaN(v) && v >= 0) {
+                    void applyPatch({ cooldown_ms: v });
+                  }
+                }}
+                style={{
+                  padding: '8px 10px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 12,
+                  color: 'var(--text-primary)',
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 3,
+                  width: 120,
+                }}
+              />
+              <span
+                style={{
+                  marginLeft: 10,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Time after last motion event before recording.motion_ended fires.
+              </span>
+            </div>
+          </div>
+
+          {/* ROI */}
+          <div>
+            <SectionHeader>REGION OF INTEREST</SectionHeader>
+            <div
+              style={{
+                marginTop: 10,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                marginBottom: 8,
+              }}
+            >
+              Normalized rectangle (0–1). Advisory for ONVIF source;
+              consumed by future local CV detector.
+            </div>
+            <ROIEditor
+              value={config.roi || null}
+              onChange={(roi) => {
+                if (roi == null) {
+                  void applyPatch({ unset_roi: true });
+                } else {
+                  void applyPatch({ roi });
+                }
+              }}
+            />
+          </div>
+
+          {/* Schedule */}
+          <div>
+            <SectionHeader>ACTIVE SCHEDULE</SectionHeader>
+            <div
+              style={{
+                marginTop: 10,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                marginBottom: 8,
+              }}
+            >
+              When set, motion is only armed inside listed windows.
+              Empty list = always armed.
+            </div>
+            <ScheduleEditor
+              value={config.schedule || null}
+              onChange={(schedule) => {
+                if (schedule == null) {
+                  void applyPatch({ unset_schedule: true });
+                } else {
+                  void applyPatch({ schedule });
+                }
+              }}
+            />
+          </div>
+
+          {/* Test motion */}
+          <div
+            style={{
+              padding: 12,
+              background: 'var(--bg-tertiary)',
+              border: '1px solid var(--border)',
+              borderRadius: 3,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--text-primary)',
+                  letterSpacing: 0.5,
+                }}
+              >
+                TEST MOTION
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  marginTop: 2,
+                }}
+              >
+                Emit a synthetic motion event to verify controller wiring.
               </div>
             </div>
-            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {c.motionZones.map((z) => (
-                <div
-                  key={z.id}
+            <Btn kind="secondary" size="sm" disabled={testBusy} onClick={handleTest}>
+              Fire test event
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {/* Recent motion events */}
+      <div>
+        <SectionHeader>RECENT MOTION EVENTS · {events.length}</SectionHeader>
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {events.length === 0 && (
+            <div
+              style={{
+                padding: 12,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                textAlign: 'center',
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border)',
+                borderRadius: 3,
+              }}
+            >
+              No motion events yet. Subscribe via the ONVIF EVENTS tab,
+              or fire a synthetic event with TEST MOTION above.
+            </div>
+          )}
+          {events.map((e) => (
+            <MotionEventRow key={e.id} event={e} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MotionEventRow({ event }: { event: ApiEvent }) {
+  const isStarted = event.kind === 'recording.motion_started';
+  const isEnded = event.kind === 'recording.motion_ended';
+  const isDetected = event.kind === 'camera.motion_detected';
+  const color = isStarted
+    ? '#22c55e'
+    : isEnded
+    ? '#94a3b8'
+    : isDetected
+    ? '#F97316'
+    : 'var(--text-muted)';
+  const label = isStarted
+    ? 'STARTED'
+    : isEnded
+    ? 'ENDED'
+    : isDetected
+    ? 'DETECTED'
+    : event.kind;
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: 8,
+        background: 'var(--bg-tertiary)',
+        border: '1px solid var(--border)',
+        borderRadius: 3,
+      }}
+    >
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          background: color,
+          borderRadius: 1,
+        }}
+      />
+      <span
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          color,
+          letterSpacing: 0.5,
+          width: 80,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 10,
+          color: 'var(--text-muted)',
+          flex: 1,
+        }}
+      >
+        {new Date(event.occurred_at).toLocaleString()}
+      </span>
+      {event.attributes?.synthetic === 'true' && (
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 9,
+            color: '#F97316',
+            padding: '2px 6px',
+            border: '1px solid rgba(249,115,22,0.4)',
+            borderRadius: 2,
+          }}
+        >
+          SYNTHETIC
+        </span>
+      )}
+      {event.attributes?.onvif_topic && !event.attributes?.synthetic && (
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 9,
+            color: 'var(--text-muted)',
+            maxWidth: 200,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={event.attributes.onvif_topic}
+        >
+          {event.attributes.onvif_topic}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ROIEditor({
+  value,
+  onChange,
+}: {
+  value: { x: number; y: number; w: number; h: number } | null;
+  onChange: (roi: { x: number; y: number; w: number; h: number } | null) => void;
+}) {
+  const set = value || { x: 0, y: 0, w: 1, h: 1 };
+  const enabled = value !== null;
+  const inputStyle: React.CSSProperties = {
+    padding: '6px 8px',
+    fontFamily: 'var(--font-mono)',
+    fontSize: 11,
+    color: 'var(--text-primary)',
+    background: 'var(--bg-tertiary)',
+    border: '1px solid var(--border)',
+    borderRadius: 3,
+    width: 80,
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Toggle
+          on={enabled}
+          onChange={(v) => {
+            if (v) onChange({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
+            else onChange(null);
+          }}
+        />
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: enabled ? 'var(--text-primary)' : 'var(--text-muted)',
+          }}
+        >
+          {enabled ? 'ENABLED' : 'WHOLE FRAME'}
+        </span>
+      </div>
+      {enabled && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {(['x', 'y', 'w', 'h'] as const).map((k) => (
+            <label
+              key={k}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 9,
+                color: 'var(--text-muted)',
+              }}
+            >
+              <span>{k.toUpperCase()}</span>
+              <input
+                type="number"
+                step={0.05}
+                min={0}
+                max={1}
+                value={set[k]}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!Number.isNaN(v)) {
+                    const next = { ...set, [k]: Math.min(1, Math.max(0, v)) };
+                    onChange(next);
+                  }
+                }}
+                style={inputStyle}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScheduleEditor({
+  value,
+  onChange,
+}: {
+  value: { timezone: string; windows: { days: string[]; start: string; end: string }[] } | null;
+  onChange: (
+    schedule: {
+      timezone: string;
+      windows: { days: string[]; start: string; end: string }[];
+    } | null,
+  ) => void;
+}) {
+  const enabled = value !== null;
+  const sched = value || { timezone: 'UTC', windows: [] };
+  const allDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+  function addWindow() {
+    onChange({
+      ...sched,
+      windows: [...sched.windows, { days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'], start: '08:00', end: '17:00' }],
+    });
+  }
+
+  function setWindow(i: number, w: { days: string[]; start: string; end: string }) {
+    onChange({
+      ...sched,
+      windows: sched.windows.map((cur, idx) => (idx === i ? w : cur)),
+    });
+  }
+
+  function removeWindow(i: number) {
+    onChange({
+      ...sched,
+      windows: sched.windows.filter((_, idx) => idx !== i),
+    });
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <Toggle
+          on={enabled}
+          onChange={(v) => {
+            if (v) onChange({ timezone: 'UTC', windows: [] });
+            else onChange(null);
+          }}
+        />
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            color: enabled ? 'var(--text-primary)' : 'var(--text-muted)',
+          }}
+        >
+          {enabled ? 'SCHEDULE ACTIVE' : 'ALWAYS ARMED'}
+        </span>
+      </div>
+
+      {enabled && (
+        <>
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              fontFamily: 'var(--font-mono)',
+              fontSize: 9,
+              color: 'var(--text-muted)',
+            }}
+          >
+            <span>TIMEZONE (IANA)</span>
+            <input
+              type="text"
+              value={sched.timezone}
+              onChange={(e) => onChange({ ...sched, timezone: e.target.value })}
+              placeholder="UTC"
+              style={{
+                padding: '6px 8px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                color: 'var(--text-primary)',
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border)',
+                borderRadius: 3,
+                width: 240,
+              }}
+            />
+          </label>
+
+          {sched.windows.map((w, i) => (
+            <div
+              key={i}
+              style={{
+                padding: 10,
+                background: 'var(--bg-tertiary)',
+                border: '1px solid var(--border)',
+                borderRadius: 3,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {allDays.map((d) => {
+                  const on = w.days.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        const next = on
+                          ? w.days.filter((x) => x !== d)
+                          : [...w.days, d];
+                        setWindow(i, { ...w, days: next });
+                      }}
+                      style={{
+                        padding: '4px 8px',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 9,
+                        letterSpacing: 1,
+                        color: on ? 'var(--text-primary)' : 'var(--text-muted)',
+                        background: on ? 'rgba(249,115,22,0.15)' : 'var(--bg-secondary)',
+                        border: on ? '1px solid #F97316' : '1px solid var(--border)',
+                        borderRadius: 2,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {d.slice(0, 3).toUpperCase()}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="time"
+                  value={w.start}
+                  onChange={(e) => setWindow(i, { ...w, start: e.target.value })}
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    padding: 8,
-                    background: 'var(--bg-tertiary)',
+                    padding: '6px 8px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-secondary)',
                     border: '1px solid var(--border)',
                     borderRadius: 3,
                   }}
-                >
-                  <span
-                    style={{
-                      width: 10,
-                      height: 10,
-                      background: z.enabled ? '#F97316' : 'var(--text-muted)',
-                      borderRadius: 1,
-                    }}
-                  />
-                  <span
-                    style={{
-                      flex: 1,
-                      fontFamily: 'var(--font-sans)',
-                      fontSize: 12,
-                      color: 'var(--text-primary)',
-                    }}
-                  >
-                    {z.name}
-                  </span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
-                    {z.w}×{z.h}%
-                  </span>
-                  <Toggle
-                    on={z.enabled}
-                    onChange={(v) =>
-                      patch({
-                        motionZones: c.motionZones.map((x) =>
-                          x.id === z.id ? { ...x, enabled: v } : x,
-                        ),
-                      })
-                    }
-                  />
-                </div>
-              ))}
-              <Btn
-                kind="ghost"
-                icon="plus"
-                size="sm"
-                onClick={() =>
-                  patch({
-                    motionZones: [
-                      ...c.motionZones,
-                      {
-                        id: Date.now(),
-                        name: `Zone ${c.motionZones.length + 1}`,
-                        x: 30,
-                        y: 30,
-                        w: 30,
-                        h: 30,
-                        enabled: true,
-                      },
-                    ],
-                  })
-                }
-              >
-                Add zone
-              </Btn>
+                />
+                <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>→</span>
+                <input
+                  type="time"
+                  value={w.end}
+                  onChange={(e) => setWindow(i, { ...w, end: e.target.value })}
+                  style={{
+                    padding: '6px 8px',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 3,
+                  }}
+                />
+                <Btn kind="ghost" size="sm" onClick={() => removeWindow(i)}>
+                  Remove
+                </Btn>
+              </div>
             </div>
-          </div>
+          ))}
+
+          <Btn kind="ghost" icon="plus" size="sm" onClick={addWindow}>
+            Add window
+          </Btn>
         </>
       )}
     </div>

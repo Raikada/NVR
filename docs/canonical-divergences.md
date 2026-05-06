@@ -324,6 +324,79 @@ be tracked, but they will resolve together.
 - **Proposed resolution.** Bundle the upgrade rule and its storage
   / transmission constraints into ADR 0009.
 
+### D16. `motion_config` is recorder-local in v1; not on canonical Camera
+
+> **Status: open. Lives at `/v1/recorder/cameras/{id}/motion-config`
+> (Wave 4 escape hatch); future slice elevates to canonical
+> `Camera.motion_config` when MS canonical Camera (slice 4-B) gains
+> support.**
+
+- **Where.** New endpoint tree
+  `/v1/recorder/cameras/{id}/motion-config` (`GET` / `PATCH`) plus the
+  synthetic-event helper `POST .../motion-config/test`. New conf-package
+  shape `MotionConfigConfig`; persisted in `mediamtx.yml` under a
+  top-level `motionConfigs:` map keyed by canonical Camera UUID.
+- **What.** Motion detection is a per-camera concern that, in the
+  fullness of the canonical model, would live as
+  `Camera.motion_config` (sensitivity, ROI, schedule, source). v1
+  ships it as a recorder-local escape hatch because:
+  1. The MS canonical Camera shape is itself in motion (slice 4-B
+     just landed; further fields are additive future work).
+  2. ONVIF source-dispatch + the recorder-side controller are
+     recorder-local concerns by nature; the operator's "configure
+     motion" experience is the recorder UI for now.
+  3. Persisting on `Camera` would force every recorder to honor an
+     MS-issued motion_config even when the recorder has no source for
+     it (e.g., RPi-camera publisher with no analytics subsystem).
+- **Spec today.** `MotionConfig` schema scoped under `/v1/recorder/...`,
+  not surfaced on `Camera`.
+- **Canonical (proposed future slice).** `Camera.motion_config` of the
+  same shape, with the recorder importing once at first start
+  (mirroring slice 4-B's auto-import for Camera state) and treating
+  MS-side updates as authoritative thereafter.
+- **Proposed resolution.** Lift the field to canonical `Camera` when
+  the MS Camera surface is comfortable carrying additive fields. The
+  existing recorder-local persistence becomes a write-through cache;
+  the canonical-source flag (slice 4-B's `canonical_source`) gates
+  whether the recorder accepts local PATCH or only mirrors MS
+  pushes.
+
+### D17. Motion-mode recording is "always-on + annotations"; not true on-demand pipeline start/stop
+
+> **Status: open. Wave 4 ships motion-event lifecycle
+> (`recording.motion_started` / `recording.motion_ended` emissions);
+> recording-pipeline start/stop on motion is deferred to a future
+> engineering swing.**
+
+- **Where.** `internal/motion/controller.go`; the v1 `RecordingPolicy.mode = motion`
+  behavior on `recording_policy_translate.ApplyPolicyToPath` (sets
+  `Record=true` whenever `mode != off`).
+- **What.** The canonical RecordingPolicy `mode` enum includes
+  `motion` per `domain-model.md`, with the implication that the
+  recorder writes segments only while motion is active. The v1
+  recorder treats `motion` mode the same as `continuous` for the
+  pipeline: segments record continuously. The motion controller
+  emits `recording.motion_started` and `recording.motion_ended` into
+  the canonical Event stream so downstream consumers (clip
+  extraction, MS rollups, UI timelines) can identify motion-active
+  intervals.
+- **Why deferred.** Driving recording pipeline start/stop on a per-
+  camera basis touches the load-bearing media pipeline (`recorder` /
+  `recordstore` / `stream` packages), which AGENTS.md §7 forbids
+  without an explicit request. The "always on + annotations" model is
+  the conservative path: motion observers (clip extraction,
+  retention-aware deletion, rollups) get the lifecycle markers they
+  need; the disk-cost regression is the same as `continuous` mode,
+  not worse.
+- **Proposed resolution.** A future engineering swing: introduce a
+  per-camera "armed/idle" gate in the recorder pipeline that the
+  motion controller flips via callback. Pre-event buffer continues
+  via a circular frame buffer; post-event buffer overlaps with the
+  controller's cooldown_ms. The change crosses a clear ADR threshold
+  (segment-write-on-demand semantics, retention behavior on partial
+  motion-active days, disk-IO profile) and warrants its own
+  proposal.
+
 ## 4. Cosmetic / structural
 
 ### D14. `APIInfo` is the one parallel-shape suffix grandfathered in the `canonicalnames` lint baseline

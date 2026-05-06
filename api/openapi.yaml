@@ -180,6 +180,9 @@ info:
     | `/v1/recorder/cameras/{id}/source-config`           | PATCH   | `recorder_config.manage`  |
     | `/v1/recorder/cameras/{id}/hooks`                   | GET     | `recorder_config.read`    |
     | `/v1/recorder/cameras/{id}/hooks`                   | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/cameras/{id}/motion-config`           | GET     | `recorder_config.read`    |
+    | `/v1/recorder/cameras/{id}/motion-config`           | PATCH   | `recorder_config.manage`  |
+    | `/v1/recorder/cameras/{id}/motion-config/test`      | POST    | `recorder_config.manage`  |
     | `/v1/diagnostics/ping`                              | POST    | `recorder_config.manage`  |
     | `/v1/diagnostics/ntp`                               | POST    | `recorder_config.manage`  |
     | `/v1/diagnostics/rtsp-probe`                        | POST    | `camera.create`           |
@@ -2930,6 +2933,125 @@ components:
         runOnRecordSegmentComplete:
           type: string
 
+    MotionConfig:
+      type: object
+      description: |
+        Per-camera motion-detection configuration (Wave 4). Recorder-
+        local in v1 per `docs/canonical-divergences.md` D16. The
+        `source` field selects which signal feeds the motion
+        controller: `onvif` (v1) consumes camera.motion_detected
+        events translated from ONVIF PullPoint subscriptions;
+        `local_future` is a documented stub — the local CV-based
+        detector is not implemented in v1 and the controller logs a
+        warning + falls back to ONVIF when set. Sensitivity is a
+        0–100 hint surfaced for cross-tier UIs; the actual ONVIF
+        rule sensitivity is configured on the camera. ROI is a
+        normalized rectangle (0–1 each); a nil ROI means the whole
+        frame. Schedule restricts arming to listed weekday + clock
+        windows (timezone IANA name); a nil schedule means always
+        armed. cooldown_ms is the controller's debounce window
+        between the last motion event and the
+        `recording.motion_ended` emission.
+      properties:
+        enabled:
+          type: boolean
+        source:
+          type: string
+          enum: [onvif, local_future]
+        sensitivity:
+          type: integer
+          minimum: 0
+          maximum: 100
+        roi:
+          $ref: '#/components/schemas/MotionROI'
+        schedule:
+          $ref: '#/components/schemas/MotionSchedule'
+        cooldown_ms:
+          type: integer
+          minimum: 0
+        tenant_id:
+          type: string
+          format: uuid
+        camera_id:
+          type: string
+          format: uuid
+
+    MotionConfigPatch:
+      type: object
+      description: |
+        Patch shape for motion-config PATCH. All fields optional.
+        Use `unset_roi: true` / `unset_schedule: true` to clear
+        the corresponding nullable field — sending `roi: null` is
+        ambiguous in JSON-merge semantics so we use an explicit
+        boolean.
+      properties:
+        enabled:
+          type: boolean
+        source:
+          type: string
+          enum: [onvif, local_future]
+        sensitivity:
+          type: integer
+          minimum: 0
+          maximum: 100
+        roi:
+          $ref: '#/components/schemas/MotionROI'
+        unset_roi:
+          type: boolean
+        schedule:
+          $ref: '#/components/schemas/MotionSchedule'
+        unset_schedule:
+          type: boolean
+        cooldown_ms:
+          type: integer
+          minimum: 0
+
+    MotionROI:
+      type: object
+      description: |
+        Normalized region-of-interest rectangle. All values in
+        [0.0, 1.0]; (x, y) is top-left, (w, h) is width / height,
+        and x+w / y+h must not exceed 1.
+      properties:
+        x:
+          type: number
+          format: double
+        y:
+          type: number
+          format: double
+        w:
+          type: number
+          format: double
+        h:
+          type: number
+          format: double
+
+    MotionSchedule:
+      type: object
+      properties:
+        timezone:
+          type: string
+          description: IANA timezone name.
+        windows:
+          type: array
+          items:
+            $ref: '#/components/schemas/MotionScheduleWindow'
+
+    MotionScheduleWindow:
+      type: object
+      properties:
+        days:
+          type: array
+          items:
+            type: string
+            enum: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        start:
+          type: string
+          description: "HH:MM (24-hour)"
+        end:
+          type: string
+          description: "HH:MM (24-hour)"
+
 paths:
 
   # ===== Info =====================================================
@@ -4823,6 +4945,121 @@ paths:
                 $ref: '#/components/schemas/Error'
         '403':
           description: Tenant mismatch.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/cameras/{id}/motion-config:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [Recorder]
+      summary: Per-camera motion-detection config (Wave 4).
+      description: |
+        Recorder-local motion-detection configuration. v1 keeps this
+        outside canonical Camera per
+        `docs/canonical-divergences.md` D16; the canonical Camera
+        gains motion_config in a future slice. Configures
+        sensitivity, ROI, schedule, source (ONVIF or local-future),
+        and the cooldown_ms debounce window.
+      responses:
+        '200':
+          description: Motion config.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MotionConfig'
+        '400':
+          description: Invalid camera id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags: [Recorder]
+      summary: Patch per-camera motion-detection config.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MotionConfigPatch'
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Camera not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /v1/recorder/cameras/{id}/motion-config/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Recorder]
+      summary: Emit a synthetic motion event for testing.
+      description: |
+        Operator-triggered synthetic camera.motion_detected event.
+        Useful for verifying the motion-controller pipeline without
+        physically moving in front of the camera. Synthetic events
+        carry an `attributes.synthetic: "true"` marker so consumers
+        can distinguish them from real ONVIF-sourced events.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topic:
+                  type: string
+                  description: |
+                    Attribute value forwarded as `onvif_topic`.
+                    Defaults to `tns1:Test/Synthetic`.
+      responses:
+        '200':
+          description: Synthetic event published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OK'
+        '400':
+          description: Invalid camera id.
           content:
             application/json:
               schema:

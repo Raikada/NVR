@@ -555,6 +555,16 @@ type Conf struct {
 	// mount-path-sort index in collectStorageVolumes (preserving prior
 	// behavior for unconfigured deployments).
 	RecordingVolumes map[string]*RecordingVolumeConfig `json:"recordingVolumes"`
+
+	// MotionConfigs is the per-camera motion-detection configuration
+	// map (Wave 4). Persists to mediamtx.yml as a top-level
+	// motionConfigs: key, keyed by canonical Camera UUID. Recorder-
+	// local in v1 per the Wave 4 canonical-divergences entry; the
+	// canonical Camera entity gains motion_config in a future slice
+	// when the MS canonical Camera surface (slice 4-B) is extended.
+	// Absent entries fall back to motion.DefaultMotionConfig() at
+	// the /v1/recorder/cameras/{id}/motion-config GET handler.
+	MotionConfigs map[string]*MotionConfigConfig `json:"motionConfigs"`
 }
 
 func (conf *Conf) setDefaults() {
@@ -1319,6 +1329,26 @@ func (conf *Conf) Validate(l logger.Writer) error {
 			return fmt.Errorf("recording volume '%s' is nil", mp)
 		}
 		if err := rv.validate(mp); err != nil {
+			return err
+		}
+	}
+
+	// Validate per-camera motion configs (Wave 4). Keys are canonical
+	// Camera UUIDs; values are MotionConfigConfig. The map is optional;
+	// absent entries fall back to motion.DefaultMotionConfig() at
+	// API-handler read time. Shape validation here catches cheap
+	// errors; deeper invariants live in motion.MotionConfig.Validate().
+	motionKeys := make([]string, 0, len(conf.MotionConfigs))
+	for k := range conf.MotionConfigs {
+		motionKeys = append(motionKeys, k)
+	}
+	sort.Strings(motionKeys)
+	for _, cameraID := range motionKeys {
+		mc := conf.MotionConfigs[cameraID]
+		if mc == nil {
+			return fmt.Errorf("motion config '%s' is nil", cameraID)
+		}
+		if err := mc.validate(cameraID); err != nil {
 			return err
 		}
 	}

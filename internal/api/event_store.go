@@ -37,6 +37,13 @@ const defaultEventStoreCapacity = 1024
 // entries on overflow.
 //
 // All exported methods are safe for concurrent use.
+//
+// A subscriber slice (see Subscribe) lets in-process consumers like
+// the motion controller observe every Publish synchronously. The
+// motion controller (Wave 4) consumes camera.motion_detected events
+// to drive recording.motion_started / motion_ended emission. New
+// subscribers should keep their work small (cheap dispatch then
+// hand off to a goroutine) — Publish blocks on subscriber callbacks.
 type EventStore struct {
 	mu       sync.RWMutex
 	capacity int
@@ -44,7 +51,19 @@ type EventStore struct {
 	// a 1024-entry ring; if we grow the capacity past a few thousand a
 	// secondary id index becomes worth it.
 	items []defs.Event
+
+	// subscribers is the in-process fan-out for newly-published
+	// events. Slice is rarely mutated (subscriptions are wired at
+	// startup) so a copy-on-Publish would over-engineer; we hold a
+	// read lock during dispatch.
+	subscribers []EventSubscriber
 }
+
+// EventSubscriber is the in-process fan-out callback shape. Each
+// subscriber sees every event after it lands in the ring buffer.
+// Subscribers must not call back into EventStore.Publish from inside
+// the callback (would deadlock on s.mu).
+type EventSubscriber func(ev defs.Event)
 
 // NewEventStore builds an EventStore with the given capacity. Capacity
 // <= 0 falls back to defaultEventStoreCapacity.
@@ -61,9 +80,14 @@ func NewEventStore(capacity int) *EventStore {
 // Publish appends an event to the buffer, evicting the oldest entry
 // when at capacity. Mirrors the contract a future producer-side wiring
 // will call (see Phase-2-followup notes in event_store.go header).
+//
+// Subscribers (see Subscribe) are dispatched synchronously after the
+// event lands in the ring buffer. The store's lock is released
+// before dispatching so subscribers may issue their own EventStore
+// operations (Snapshot, GetByID) without deadlocking; subscribers
+// must NOT call Publish recursively from their callback.
 func (s *EventStore) Publish(in defs.EventInput, recordingServerID, tenantID, siteID string) defs.Event {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	id := uuid.New().String()
 	e := defs.BuildEvent(in, id, recordingServerID, tenantID, siteID)
 	if len(s.items) >= s.capacity {
@@ -73,7 +97,28 @@ func (s *EventStore) Publish(in defs.EventInput, recordingServerID, tenantID, si
 		s.items = s.items[:len(s.items)-1]
 	}
 	s.items = append(s.items, e)
+	subs := make([]EventSubscriber, len(s.subscribers))
+	copy(subs, s.subscribers)
+	s.mu.Unlock()
+	for _, fn := range subs {
+		if fn != nil {
+			fn(e)
+		}
+	}
 	return e
+}
+
+// Subscribe registers an in-process callback for every newly-
+// published event. There is no unsubscribe — subscribers are wired
+// once at startup and live for the process lifetime. Pass nil to
+// no-op; passing a real fn appends.
+func (s *EventStore) Subscribe(fn EventSubscriber) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subscribers = append(s.subscribers, fn)
 }
 
 // Snapshot returns a copy of the buffer's current contents in oldest-
