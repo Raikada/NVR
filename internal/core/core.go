@@ -3,6 +3,7 @@ package core
 
 import (
 	"context"
+	"crypto/x509"
 	_ "embed"
 	"fmt"
 	"net"
@@ -444,6 +445,24 @@ func (p *Core) createResources(initial bool) error {
 			JWTAudience:        p.conf.AuthJWTAudience,
 			ReadTimeout:        time.Duration(p.conf.ReadTimeout),
 		}
+	}
+
+	// Pairing-aware auth wiring per pairing-flows §4: when the
+	// recorder boots paired, override the auth method to JWT using
+	// the bound MS's published JWKS / issuer / audience and chain-
+	// pin the JWKS fetch against the recorder's pinned MS root CA
+	// per ADR 0012 D5. The override is in-process only; mediamtx.yml
+	// stays unchanged, so unpairing reverts to the static config on
+	// next restart.
+	//
+	// URL drift (e.g. MS hostname changed since pairing) is recovered
+	// at runtime by consulting the live mDNS broadcast whose
+	// advertised root_fp matches the pinned root — that broadcast's
+	// URL supersedes the pinned URL and is written back to
+	// ms-metadata.json so subsequent restarts use the fresh URL even
+	// if mDNS isn't immediately available.
+	if p.identity.IsPaired() {
+		p.applyPairingAwareAuth()
 	}
 
 	if p.conf.Metrics &&
@@ -1476,6 +1495,208 @@ func (p *Core) handleCRLRevocation(reason string) error {
 	p.Log(logger.Warn, "[crl] recorder cert revoked by MS (%s) — local DeviceIdentity wiped",
 		reason)
 	return nil
+}
+
+// applyPairingAwareAuth re-points the recorder's auth manager at the
+// bound MS's published JWKS at startup, so MS-issued operator JWTs
+// (e.g. from the slice-4-A read+write proxy) authenticate against
+// /v1/* even when mediamtx.yml says authMethod: internal. Per the
+// pairing-aware auth wiring brief: read pinned ms-metadata.json
+// (issuer + JWKS URL), check mDNS for a live broadcast whose
+// advertised root_fp matches the pinned root (URL-drift recovery),
+// build a chain-pinning x509.CertPool from the pinned roots, and
+// call auth.Manager.ApplyPairingOverride.
+//
+// Inert for unpaired recorders. Logs the resolved URLs at INFO so
+// operators can diagnose mismatches.
+func (p *Core) applyPairingAwareAuth() {
+	if p.identity == nil || !p.identity.IsPaired() {
+		return
+	}
+	pinned := p.identity.MSMetadata()
+	if pinned == nil {
+		p.Log(logger.Warn, "[pairing-auth] paired recorder lacks ms-metadata.json; auth override skipped")
+		return
+	}
+
+	// Build the trusted-root pool from the pinned roots.
+	pinnedRoots := p.identity.PinnedRoots()
+	if len(pinnedRoots) == 0 {
+		p.Log(logger.Warn, "[pairing-auth] paired recorder has no pinned roots; auth override skipped")
+		return
+	}
+	pool := x509.NewCertPool()
+	pinnedFPs := make([]string, 0, len(pinnedRoots))
+	for _, r := range pinnedRoots {
+		if !pool.AppendCertsFromPEM([]byte(r.CertPEM)) {
+			p.Log(logger.Warn, "[pairing-auth] failed to parse pinned root cert (fp=%s)", r.FingerprintSHA256)
+			continue
+		}
+		pinnedFPs = append(pinnedFPs, r.FingerprintSHA256)
+	}
+	if len(pinnedFPs) == 0 {
+		p.Log(logger.Warn, "[pairing-auth] no usable pinned roots after PEM parsing; auth override skipped")
+		return
+	}
+
+	// Resolve effective issuer + JWKS URL.  The pinned URL is the
+	// fallback; a live mDNS broadcast whose advertised root_fp
+	// matches one of the pinned fingerprints supersedes it (this is
+	// the URL-drift recovery path for MS hostname renames since
+	// pairing).
+	resolved := *pinned
+	if p.mdnsService != nil {
+		live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
+		if live != nil && live.URL != "" {
+			driftDetected := !sameMSHost(live.URL, pinned.IssuerURL)
+			if driftDetected {
+				resolved.IssuerURL = live.URL
+				resolved.JWKSURL = live.URL + "/.well-known/jwks.json"
+				resolved.RootsURL = live.URL + "/.well-known/raikada-roots"
+				resolved.WebSocketURL = strings.Replace(live.URL, "https://", "wss://", 1) + "/v1/ws"
+				p.Log(logger.Info,
+					"[pairing-auth] live MS broadcast supersedes pinned URL: pinned=%s live=%s",
+					pinned.IssuerURL, live.URL)
+				if err := p.identity.RefreshMSMetadata(resolved); err != nil {
+					p.Log(logger.Warn, "[pairing-auth] failed to write refreshed ms-metadata: %s", err)
+				}
+			}
+		}
+	}
+
+	audience := "recording_server/" + p.identity.ID().String()
+	p.authManager.ApplyPairingOverride(
+		conf.AuthMethodJWT,
+		resolved.JWKSURL,
+		"", // no leaf-fingerprint pinning — chain-pin via rootCAs
+		resolved.IssuerURL,
+		audience,
+		pool,
+	)
+
+	// The recorder's bootstrap tenantId in mediamtx.yml is a placeholder
+	// for unpaired operation. Once paired, the effective tenant_id is
+	// the MS's tenant_id (per ADR 0011 D2). We can't read it from the
+	// pinned ms-metadata (the tenant_id wasn't recorded there in slice
+	// 3 phase D.2), so derive it from the live mDNS broadcast TXT
+	// field. Fall back to the bootstrap value if mDNS hasn't surfaced
+	// the broadcast yet — the polling goroutine below recovers it.
+	if p.mdnsService != nil {
+		if live := p.mdnsService.LiveMSBroadcast(pinnedFPs); live != nil && live.TenantID != "" {
+			if p.conf.TenantID != live.TenantID {
+				p.Log(logger.Info,
+					"[pairing-auth] effective tenant_id from MS broadcast: %s (was %s)",
+					live.TenantID, p.conf.TenantID)
+				p.conf.TenantID = live.TenantID
+			}
+		}
+	}
+
+	p.Log(logger.Info,
+		"[pairing-auth] paired recorder using JWT auth: issuer=%s jwks=%s aud=%s tenant=%s",
+		resolved.IssuerURL, resolved.JWKSURL, audience, p.conf.TenantID)
+
+	// Background reconciler: mDNS browse is async; the live broadcast
+	// may not be in the cache at startup. Poll for up to a minute so
+	// the recorder can recover URL drift even if it boots before the
+	// MS has been seen on the LAN. Also picks up tenant_id if it
+	// wasn't yet present.
+	go p.pairingAuthReconciler(pinnedFPs)
+}
+
+// pairingAuthReconciler is the background goroutine started by
+// applyPairingAwareAuth. It polls mDNS for the bound MS and re-applies
+// the override whenever it detects URL drift or a tenant_id change.
+// Runs for the lifetime of the process; cheap (one mDNS-cache lookup
+// every 30s).
+func (p *Core) pairingAuthReconciler(pinnedFPs []string) {
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	// Quick first poll so a freshly-discovered MS surfaces within
+	// seconds rather than waiting for the 30s tick.
+	first := time.NewTimer(5 * time.Second)
+	defer first.Stop()
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-first.C:
+			p.reconcilePairingAuth(pinnedFPs)
+		case <-tick.C:
+			p.reconcilePairingAuth(pinnedFPs)
+		}
+	}
+}
+
+func (p *Core) reconcilePairingAuth(pinnedFPs []string) {
+	if p.mdnsService == nil || p.identity == nil || !p.identity.IsPaired() {
+		return
+	}
+	live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
+	if live == nil || live.URL == "" {
+		return
+	}
+	pinned := p.identity.MSMetadata()
+	if pinned == nil {
+		return
+	}
+	// URL drift?
+	if !sameMSHost(live.URL, pinned.IssuerURL) {
+		updated := *pinned
+		updated.IssuerURL = live.URL
+		updated.JWKSURL = live.URL + "/.well-known/jwks.json"
+		updated.RootsURL = live.URL + "/.well-known/raikada-roots"
+		updated.WebSocketURL = strings.Replace(live.URL, "https://", "wss://", 1) + "/v1/ws"
+		if err := p.identity.RefreshMSMetadata(updated); err != nil {
+			p.Log(logger.Warn, "[pairing-auth] reconciler: refresh ms-metadata: %s", err)
+			return
+		}
+		// Build a fresh root pool — pinned roots haven't changed but
+		// ApplyPairingOverride needs one.
+		pool := x509.NewCertPool()
+		for _, r := range p.identity.PinnedRoots() {
+			pool.AppendCertsFromPEM([]byte(r.CertPEM))
+		}
+		audience := "recording_server/" + p.identity.ID().String()
+		p.authManager.ApplyPairingOverride(
+			conf.AuthMethodJWT,
+			updated.JWKSURL,
+			"",
+			updated.IssuerURL,
+			audience,
+			pool,
+		)
+		p.Log(logger.Info,
+			"[pairing-auth] reconciler refreshed: issuer=%s tenant=%s",
+			updated.IssuerURL, p.conf.TenantID)
+	}
+	// Tenant-id drift?
+	if live.TenantID != "" && p.conf.TenantID != live.TenantID {
+		p.Log(logger.Info,
+			"[pairing-auth] reconciler tenant_id update: %s -> %s",
+			p.conf.TenantID, live.TenantID)
+		p.conf.TenantID = live.TenantID
+	}
+}
+
+// sameMSHost compares two MS URLs by scheme + host (port included),
+// ignoring path. Returns true when they refer to the same MS endpoint.
+func sameMSHost(a, b string) bool {
+	if a == b {
+		return true
+	}
+	// Strip trailing slashes / paths.
+	for _, ch := range []string{"/v1", "/.well-known"} {
+		if i := strings.Index(a, ch); i > 0 {
+			a = a[:i]
+		}
+		if i := strings.Index(b, ch); i > 0 {
+			b = b[:i]
+		}
+	}
+	a = strings.TrimSuffix(a, "/")
+	b = strings.TrimSuffix(b, "/")
+	return strings.EqualFold(a, b)
 }
 
 // parseAPIPort extracts the port number from an APIAddress like

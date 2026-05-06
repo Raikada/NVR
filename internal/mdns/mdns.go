@@ -34,15 +34,16 @@ const (
 // DiscoveredManagement is one entry in the recorder's mDNS-listener
 // cache.
 type DiscoveredManagement struct {
-	MSID         string    `json:"ms_id,omitempty"`
-	Hostname     string    `json:"hostname"`
-	Addresses    []string  `json:"addresses"`
-	Version      string    `json:"version,omitempty"`
-	TenantID     string    `json:"tenant_id,omitempty"`
-	Port         int       `json:"port"`
-	URL          string    `json:"url"`
-	FirstSeenAt  time.Time `json:"first_seen_at"`
-	LastSeenAt   time.Time `json:"last_seen_at"`
+	MSID            string    `json:"ms_id,omitempty"`
+	Hostname        string    `json:"hostname"`
+	Addresses       []string  `json:"addresses"`
+	Version         string    `json:"version,omitempty"`
+	TenantID        string    `json:"tenant_id,omitempty"`
+	RootFingerprint string    `json:"root_fingerprint,omitempty"`
+	Port            int       `json:"port"`
+	URL             string    `json:"url"`
+	FirstSeenAt     time.Time `json:"first_seen_at"`
+	LastSeenAt      time.Time `json:"last_seen_at"`
 }
 
 // Service runs the recorder's mDNS broadcaster + listener. One
@@ -273,15 +274,16 @@ func (s *Service) handleEntry(entry *zeroconf.ServiceEntry) {
 	existing, ok := s.cache[key]
 	if !ok {
 		s.cache[key] = &DiscoveredManagement{
-			MSID:         txt["ms_id"],
-			Hostname:     entry.HostName,
-			Addresses:    addrs,
-			Version:      txt["version"],
-			TenantID:     txt["tenant_id"],
-			Port:         entry.Port,
-			URL:          url,
-			FirstSeenAt:  now,
-			LastSeenAt:   now,
+			MSID:            txt["ms_id"],
+			Hostname:        entry.HostName,
+			Addresses:       addrs,
+			Version:         txt["version"],
+			TenantID:        txt["tenant_id"],
+			RootFingerprint: txt["root_fp"],
+			Port:            entry.Port,
+			URL:             url,
+			FirstSeenAt:     now,
+			LastSeenAt:      now,
 		}
 		return
 	}
@@ -290,9 +292,55 @@ func (s *Service) handleEntry(entry *zeroconf.ServiceEntry) {
 	existing.Addresses = addrs
 	existing.Version = txt["version"]
 	existing.TenantID = txt["tenant_id"]
+	existing.RootFingerprint = txt["root_fp"]
 	existing.Port = entry.Port
 	existing.URL = url
 	existing.LastSeenAt = now
+}
+
+// LiveMSBroadcast returns the most recent cached MS broadcast whose
+// advertised root_fp TXT field matches one of the supplied trusted
+// fingerprints (case-insensitive hex). Returns nil when no cached
+// entry matches — the caller falls back to pinned ms-metadata.json.
+//
+// The fingerprint match is the recorder's defense against accepting a
+// hostile mDNS broadcast: an attacker on the LAN can advertise
+// _raikada-management._tcp.local with a different root_fp, but only
+// the legitimate MS holds a matching root CA per ADR 0012 D5.
+//
+// If multiple cached entries match (unusual — implies multiple MS
+// instances share a root, e.g., during root rotation), the one with
+// the most recent LastSeenAt wins.
+func (s *Service) LiveMSBroadcast(trustedFingerprints []string) *DiscoveredManagement {
+	if len(trustedFingerprints) == 0 {
+		return nil
+	}
+	trusted := make(map[string]struct{}, len(trustedFingerprints))
+	for _, fp := range trustedFingerprints {
+		if fp == "" {
+			continue
+		}
+		trusted[strings.ToLower(fp)] = struct{}{}
+	}
+	if len(trusted) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best *DiscoveredManagement
+	for _, d := range s.cache {
+		if d.RootFingerprint == "" {
+			continue
+		}
+		if _, ok := trusted[strings.ToLower(d.RootFingerprint)]; !ok {
+			continue
+		}
+		if best == nil || d.LastSeenAt.After(best.LastSeenAt) {
+			tmp := *d
+			best = &tmp
+		}
+	}
+	return best
 }
 
 func (s *Service) runSweeper(ctx context.Context) {

@@ -3,6 +3,8 @@ package auth
 
 import (
 	"bytes"
+	gocrypto "crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -105,7 +107,15 @@ type Manager struct {
 	JWTInHTTPQuery     *bool
 	JWTIssuer          string
 	JWTAudience        string
-	ReadTimeout        time.Duration
+	// JWTJWKSRootCAs, when non-nil, overrides JWTJWKSFingerprint for
+	// the JWKS HTTPS pull and validates the server cert by chain
+	// against this pool. Set by Core's pairing-aware auth wiring at
+	// startup (the pinned MS root CA per ADR 0012 D5) so recorders
+	// can talk to a paired MS whose service cert rotates every 30
+	// days per ADR 0011 D4 without re-pinning by leaf each rotation.
+	// Nil keeps the legacy fingerprint-pinning path.
+	JWTJWKSRootCAs *x509.CertPool
+	ReadTimeout    time.Duration
 
 	mutex           sync.RWMutex
 	jwksLastRefresh time.Time
@@ -117,6 +127,47 @@ func (m *Manager) ReloadInternalUsers(u []conf.AuthInternalUser) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.InternalUsers = u
+}
+
+// ApplyPairingOverride re-points the auth manager at JWT auth using
+// the bound MS's published JWKS / issuer / audience. Used by Core at
+// startup when the recorder is paired (per pairing-flows §4) so the
+// recorder accepts MS-issued operator JWTs even though mediamtx.yml
+// continues to say `authMethod: internal`. The on-disk config is
+// unchanged; the override is in-process only.
+//
+// rootCAs is the recorder's pinned MS root pool per ADR 0012 D5.
+// When non-nil it supersedes any prior fingerprint pinning for the
+// JWKS HTTPS pull (the MS service cert rotates every 30 days per ADR
+// 0011 D4; chain-pinning to the operator-pinned root tolerates that
+// rotation without re-pairing).
+//
+// Idempotent: calling with the same JWKS URL is a no-op for the
+// cache; calling with a new URL forces the next request to re-pull.
+// Safe to call concurrently with Authenticate — the mutex guards the
+// field swap and the JWKS pull holds the same mutex.
+func (m *Manager) ApplyPairingOverride(method conf.AuthMethod, jwks, jwksFingerprint, issuer, audience string, rootCAs *x509.CertPool) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	jwksChanged := m.JWTJWKS != jwks
+	m.Method = method
+	m.JWTJWKS = jwks
+	m.JWTJWKSFingerprint = jwksFingerprint
+	m.JWTJWKSRootCAs = rootCAs
+	m.JWTIssuer = issuer
+	m.JWTAudience = audience
+	if jwksChanged {
+		// Force re-pull on next Authenticate so a stale cached JWKS
+		// from a previous binding doesn't slip through.
+		m.jwksLastRefresh = time.Time{}
+		m.jwtKeyFunc = nil
+	}
+	// JWTClaimKey defaults to "mediamtx_permissions" — the value MS-
+	// issued JWTs carry per camera-canonical-push.md §6.1. Operators
+	// can override in mediamtx.yml.
+	if m.JWTClaimKey == "" {
+		m.JWTClaimKey = "mediamtx_permissions"
+	}
 }
 
 // Claims carries ADR 0011 D2 JWT claims surfaced to callers that want
@@ -341,8 +392,39 @@ func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
 	defer m.mutex.Unlock()
 
 	if now.Sub(m.jwksLastRefresh) >= jwksRefreshPeriod {
+		var tlsCfg *gocrypto.Config
+		switch {
+		case m.JWTJWKSRootCAs != nil:
+			// Pairing-aware path: chain-pin to the MS root CA per ADR
+			// 0012 D5. InsecureSkipVerify=false (default) — Go's stdlib
+			// performs full chain validation against RootCAs. We skip
+			// hostname verification because the MS's service cert may
+			// only carry URI SANs (raikada://management/<id>) per ADR
+			// 0011 D3, not DNS SANs matching the resolved URL host.
+			// VerifyConnection re-asserts chain validity manually with
+			// hostname check stripped.
+			tlsCfg = &gocrypto.Config{
+				InsecureSkipVerify: true, //nolint:gosec
+				VerifyConnection: func(cs gocrypto.ConnectionState) error {
+					if len(cs.PeerCertificates) == 0 {
+						return fmt.Errorf("no peer certificates")
+					}
+					opts := x509.VerifyOptions{
+						Roots:         m.JWTJWKSRootCAs,
+						Intermediates: x509.NewCertPool(),
+					}
+					for _, c := range cs.PeerCertificates[1:] {
+						opts.Intermediates.AddCert(c)
+					}
+					_, err := cs.PeerCertificates[0].Verify(opts)
+					return err
+				},
+			}
+		default:
+			tlsCfg = tls.MakeConfig(m.JWTJWKSFingerprint)
+		}
 		tr := &http.Transport{
-			TLSClientConfig: tls.MakeConfig(m.JWTJWKSFingerprint),
+			TLSClientConfig: tlsCfg,
 		}
 		defer tr.CloseIdleConnections()
 

@@ -413,6 +413,38 @@ func (i *Identity) MSMetadata() *MSMetadata {
 	return &out
 }
 
+// RefreshMSMetadata updates the persisted MS endpoint URLs without
+// touching the issued cert / chain / pinned roots. Called by the
+// pairing-aware auth wiring when a live mDNS broadcast for the bound
+// MS (matched by pinned-root fingerprint) reveals a fresh URL — e.g.,
+// the MS's hostname changed since pairing. Trust is anchored by the
+// pinned-root fingerprint (per ADR 0012 D5), so URL drift is a
+// recoverable condition that doesn't require re-pairing.
+//
+// No-op if updated is identical to the current metadata. Returns an
+// error if the recorder is unpaired (pairing must have run first to
+// establish the trust anchor that this metadata accompanies).
+func (i *Identity) RefreshMSMetadata(updated MSMetadata) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.msMeta == nil {
+		return errors.New("identity: refresh ms metadata: recorder is unpaired")
+	}
+	if *i.msMeta == updated {
+		return nil
+	}
+	metaJSON, err := json.MarshalIndent(updated, "", "  ")
+	if err != nil {
+		return fmt.Errorf("identity: marshal ms metadata: %w", err)
+	}
+	if err := writeFileAtomic(filepath.Join(i.dir, msMetadataFile), metaJSON, pubFileMode); err != nil {
+		return err
+	}
+	copyMeta := updated
+	i.msMeta = &copyMeta
+	return nil
+}
+
 // CanonicalSource returns whether Camera authority is local
 // (`recorder`) or has shifted to the MS (`ms`) per ADR 0016 D3.
 // Defaults to `recorder` (no on-disk file == pre-4-B / pre-import).
