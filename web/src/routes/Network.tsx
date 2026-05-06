@@ -2,9 +2,9 @@
 // bandwidth stats. The recorder's /v1/recorder/config block exposes
 // which protocol servers are enabled (api, rtsp, rtmp, hls, webrtc,
 // srt) so the ports list reflects actual recorder config rather
-// than design constants. Bandwidth and per-interface link details
-// (gateway, DNS, MAC, MTU, VLAN) stay STUB — recorder doesn't
-// expose system network probe data today.
+// than design constants. Per-interface link details (gateway, DNS,
+// MAC, MTU, VLAN) come from /v1/recorder/network-info; bandwidth
+// peaks/averages come from the same endpoint's window stats.
 
 import {
   Btn,
@@ -48,7 +48,12 @@ export function Network({ state }: { state: AppState }) {
     { p: 'HLS', v: '8888', ok: enabled('hls') },
     { p: 'WebRTC', v: '8889', ok: enabled('webrtc') },
     { p: 'SRT', v: '8890', ok: enabled('srt') },
-    { p: 'MS tunnel (WSS)', v: '7443', ok: state.paired }, // STUB until pairing client lands
+    // MS tunnel surfacing: the recorder reaches the MS via mTLS
+    // outbound (paired-state controlled by the pairing client). When
+    // paired we know the link is alive at a transport level; deeper
+    // health (last successful poll, last successful push) lands when
+    // the recorder exposes a per-tunnel status field.
+    { p: 'MS tunnel (mTLS)', v: '8443', ok: state.paired },
   ];
 
   function badge(ok: PortStatus): { kind: StatusBadgeKind; label: string } {

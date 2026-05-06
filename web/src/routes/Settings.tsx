@@ -1,4 +1,5 @@
-// Settings route — identity / firmware update / system actions.
+// Settings route — identity / firmware update / system actions /
+// device lifecycle.
 //
 // Identity card: wires to /v1/recorder/identity. hostname and
 // timezone are read-only at the recorder API (changing them is the
@@ -6,18 +7,18 @@
 // PATCHes through to conf.ServerLocation.
 //
 // Firmware: surfaces a.Version (firmware_version) from the same
-// identity endpoint. Update flow is STUB — recorder has no update
-// endpoint yet (architectural decision pending; would need binary
-// signing + rollback semantics).
+// identity endpoint. Software updates land via the MS lifecycle
+// endpoints (ADR 0014) — recorder applier is wired in
+// internal/softwareupdate/.
 //
 // System actions:
 //   - Reboot wires to POST /v1/recorder/reboot (admin-gated, audited).
 //   - Backup Config wires to GET /v1/recorder/config-backup (browser
 //     download).
-//   - Restore Config stays a STUB — destructive, queued for a
-//     careful follow-up.
-//   - Factory Reset stays a STUB — needs an architectural decision
-//     about what "factory" means.
+//   - Restore Config wires to POST /v1/recorder/config-restore.
+//   - Wave 7 / ADR 0015 lifecycle: Reset (config-reset, optional
+//     return-to-unpaired), Factory Wipe (two-stage destructive),
+//     Recovery Bundle export.
 
 import { useEffect, useState } from 'react';
 import { Btn, Card, Input, SectionHeader, Toggle } from '../components/primitives';
@@ -45,8 +46,12 @@ interface SettingsProps {
 export function Settings({ state, addToast }: SettingsProps) {
   const identity = useFetch(fetchIdentity, []);
 
-  const [autoUpdate, setAutoUpdate] = useState(true); // STUB — no recorder flag yet
-  const [telemetry, setTelemetry] = useState(true); // STUB — no recorder flag yet
+  // Auto-update + telemetry toggles are local-state only. The recorder
+  // doesn't expose a config flag for either today; the auto-update
+  // policy lives in the MS lifecycle (ADR 0014) and telemetry isn't
+  // implemented in v1.
+  const [autoUpdate, setAutoUpdate] = useState(true);
+  const [telemetry, setTelemetry] = useState(true);
   const [hostname, setHostname] = useState(state.hostname);
   const [location, setLocation] = useState('');
   const [timezone, setTimezone] = useState('');
