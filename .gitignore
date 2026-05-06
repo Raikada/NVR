@@ -5,3 +5,11 @@
 /internal/core/VERSION
 /internal/servers/hls/hls.min.js
 /internal/staticsources/rpicamera/mtxrpicam_*/
+
+# Runtime-generated state (identity material, recordings, etc.)
+/identity/
+/recordings/
+/mediamtx
+
+# Codebase wiki (agent-generated)
+/.codebase-wiki/

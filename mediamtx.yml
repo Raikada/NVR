@@ -189,14 +189,14 @@ api: yes
 # nothing else).
 apiAddress: :9997
 # Enable HTTPS on the Control API server.
-apiEncryption: false
+apiEncryption: true
 # Path to the server key. This is needed only when encryption is yes.
 # This can be generated with:
 # openssl genrsa -out server.key 2048
 # openssl req -new -x509 -sha256 -key server.key -out server.crt -days 3650
-apiServerKey: server.key
+apiServerKey: identity/recorder.key
 # Path to the server certificate.
-apiServerCert: server.crt
+apiServerCert: identity/api-server.crt
 # Allowed CORS origins.
 # Supports wildcards: ['http://*.example.com']
 apiAllowOrigins: ['*']

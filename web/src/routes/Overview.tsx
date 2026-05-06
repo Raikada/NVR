@@ -135,7 +135,7 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
             >
               <div>
                 <SectionHeader>MANAGEMENT SERVER LINK</SectionHeader>
-                {state.paired && state.managementServer ? (
+                {state.paired ? (
                   <>
                     <div
                       style={{
@@ -145,7 +145,7 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
                         color: 'var(--text-primary)',
                       }}
                     >
-                      {state.managementServer.host}
+                      {state.managementServer?.host ?? 'Paired'}
                     </div>
                     <div
                       style={{
@@ -155,7 +155,9 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
                         marginTop: 4,
                       }}
                     >
-                      {state.managementServer.ip} · v{state.managementServer.ver} · Authenticated via mTLS
+                      {state.managementServer
+                        ? `${state.managementServer.ip} · v${state.managementServer.ver} · Authenticated via mTLS`
+                        : 'Connected to management server · Authenticated via mTLS'}
                     </div>
                   </>
                 ) : (

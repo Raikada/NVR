@@ -99,9 +99,21 @@ export function App() {
           }
           // Backend says paired but local doesn't — rare (the
           // pairing flow updates local state directly), but covers
-          // the case where another tab paired this recorder.
+          // the case where another tab paired this recorder, or
+          // the page loads with a recorder that was already paired.
           if (!prev.paired && id.paired) {
-            return { ...prev, paired: true };
+            return {
+              ...prev,
+              paired: true,
+              managementServer: prev.managementServer ?? {
+                host: 'Paired',
+                ip: '',
+                mac: '',
+                cameras: 0,
+                ver: '',
+                trust: 'SIGNED',
+              },
+            };
           }
           return prev;
         });
