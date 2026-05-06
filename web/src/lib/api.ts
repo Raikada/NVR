@@ -537,6 +537,58 @@ export const configBackupURL = '/v1/recorder/config-backup';
 export const restoreConfig = (body: unknown) =>
   api.post<{ status: string }>('/recorder/config-restore', body);
 
+/* ---------- Wave 7 / ADR 0015 device-lifecycle ---------- */
+
+// configReset — POST /v1/recorder/config-reset per ADR 0015 D7.
+// Non-destructive by default. Pass return_to_unpaired:true to layer
+// an unpair on top (D4 + D7).
+export const configReset = (body: { return_to_unpaired?: boolean }) =>
+  api.post<{
+    reset_kind: string;
+    return_to_unpaired: boolean;
+    completed_at: string;
+    preserved: string[];
+  }>('/recorder/config-reset', body);
+
+// factoryWipeRequest — stage 1 of POST /v1/recorder/factory-wipe.
+export const factoryWipeRequest = () =>
+  api.post<{
+    confirmation_required: boolean;
+    confirmation_token: string;
+    expires_at: string;
+    warning: string;
+  }>('/recorder/factory-wipe', {});
+
+// factoryWipeConfirm — stage 2 of POST /v1/recorder/factory-wipe.
+// Body's `confirm` MUST be the literal "WIPE_RECORDINGS_AND_IDENTITY"
+// per ADR 0015 D8 destructive-action confirmation pattern.
+export const factoryWipeConfirm = (token: string) =>
+  api.post<{
+    action: string;
+    completed_at: string;
+    recordings_root: string;
+    wiped_segment_bytes: number;
+    identity_dir: string;
+    v1_note: string;
+  }>('/recorder/factory-wipe', {
+    confirm: 'WIPE_RECORDINGS_AND_IDENTITY',
+    confirmation_token: token,
+  });
+
+// exportRecorderRecoveryBundle — POST /v1/recorder/recovery-bundle per
+// ADR 0015 D19. Returns a signed manifest (manifest + signature +
+// signature_algorithm). NO private keys; signature is over the
+// canonical-JSON of the manifest.
+export const exportRecorderRecoveryBundle = (body: {
+  purpose: 'evidence' | 'recovery';
+  include_audit?: boolean;
+}) =>
+  api.post<{
+    manifest: unknown;
+    signature: string;
+    signature_algorithm: string;
+  }>('/recorder/recovery-bundle', body);
+
 /* ---------- /v1/recorder/network-info ---------- */
 
 export interface NetworkInterface {

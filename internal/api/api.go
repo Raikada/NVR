@@ -235,6 +235,13 @@ func (a *API) Initialize() error {
 	group.GET("/recorder/pair/status", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairStatusGet)
 	group.POST("/recorder/pair/reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairResetPost)
 	group.POST("/recorder/unpair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderUnpairPost)
+	// Wave 7 / ADR 0015 device-lifecycle:
+	//   - config-reset    (D7)  preserves identity + recordings + audit
+	//   - factory-wipe    (D8)  destructive, two-stage confirmation
+	//   - recovery-bundle (D19) signed manifest, no private keys
+	group.POST("/recorder/config-reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderConfigResetPost)
+	group.POST("/recorder/factory-wipe", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderFactoryWipePost)
+	group.POST("/recorder/recovery-bundle", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderRecoveryBundleExport)
 	group.GET("/recorder/discovered-management", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderDiscoveredManagementGet)
 	// Wave 6: software-update apply endpoint. The MS pushes here with
 	// scope ["software_update.manage"] in its service JWT.

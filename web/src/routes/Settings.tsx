@@ -28,6 +28,10 @@ import {
   rebootRecorder,
   configBackupURL,
   restoreConfig,
+  configReset,
+  factoryWipeRequest,
+  factoryWipeConfirm,
+  exportRecorderRecoveryBundle,
 } from '../lib/api';
 import { useFetch } from '../lib/hooks';
 import { useRef } from 'react';
@@ -48,6 +52,14 @@ export function Settings({ state, addToast }: SettingsProps) {
   const [timezone, setTimezone] = useState('');
   const [savingLocation, setSavingLocation] = useState(false);
   const [rebooting, setRebooting] = useState(false);
+
+  // Wave 7 / ADR 0015 device-lifecycle state.
+  const [resetting, setResetting] = useState(false);
+  const [wipeStage, setWipeStage] = useState<'idle' | 'confirm'>('idle');
+  const [wipeToken, setWipeToken] = useState('');
+  const [wipeAck, setWipeAck] = useState(false);
+  const [wiping, setWiping] = useState(false);
+  const [exportingBundle, setExportingBundle] = useState(false);
 
   // Once identity loads, mirror its fields into local edit state.
   useEffect(() => {
@@ -104,6 +116,91 @@ export function Settings({ state, addToast }: SettingsProps) {
       body: 'Saving recorder config…',
       icon: 'download-cloud',
     });
+  }
+
+  // Wave 7 / ADR 0015 lifecycle handlers.
+  async function doConfigReset(returnToUnpaired: boolean) {
+    const msg = returnToUnpaired
+      ? 'Reset config + return to unpaired state? This wipes the issued MS identity material and returns the recorder to pre-pair operation. Recordings + identity UUID + keypair survive.'
+      : 'Reset recorder config? This is non-destructive — recordings + identity + audit + pairing all survive.';
+    if (!confirm(msg)) return;
+    setResetting(true);
+    try {
+      await configReset({ return_to_unpaired: returnToUnpaired });
+      addToast({
+        kind: 'success',
+        title: 'CONFIG RESET',
+        body: returnToUnpaired ? 'Reset + unpaired' : 'Reset complete; identity preserved',
+        icon: 'rotate-ccw',
+      });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'RESET FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setResetting(false);
+  }
+
+  async function doFactoryWipeStage1() {
+    setWiping(true);
+    try {
+      const r = await factoryWipeRequest();
+      setWipeToken(r.confirmation_token);
+      setWipeStage('confirm');
+      addToast({
+        kind: 'warning',
+        title: 'CONFIRMATION ISSUED',
+        body: `Token expires ${r.expires_at}`,
+        icon: 'alert-triangle',
+      });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'WIPE REQUEST FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setWiping(false);
+  }
+
+  async function doFactoryWipeStage2() {
+    if (!wipeAck) return;
+    setWiping(true);
+    try {
+      const r = await factoryWipeConfirm(wipeToken);
+      addToast({
+        kind: 'warning',
+        title: 'FACTORY WIPE COMPLETE',
+        body: `wiped ~${r.wiped_segment_bytes} bytes; restart recorder to regenerate identity`,
+        icon: 'trash-2',
+      });
+      setWipeStage('idle');
+      setWipeToken('');
+      setWipeAck(false);
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'WIPE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setWiping(false);
+  }
+
+  async function doRecoveryBundleExport() {
+    setExportingBundle(true);
+    try {
+      const bundle = await exportRecorderRecoveryBundle({
+        purpose: 'evidence',
+        include_audit: true,
+      });
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `raikada-recorder-bundle-${new Date().toISOString().replace(/[:.]/g, '').slice(0, 15)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addToast({
+        kind: 'success',
+        title: 'BUNDLE EXPORTED',
+        body: 'Signed manifest saved (no private keys).',
+        icon: 'download-cloud',
+      });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'BUNDLE EXPORT FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setExportingBundle(false);
   }
 
   // Restore: hidden <input type="file"> opens the OS file picker;
@@ -320,23 +417,116 @@ export function Settings({ state, addToast }: SettingsProps) {
               onChange={onRestoreFileChosen}
               style={{ display: 'none' }}
             />
-            {/* STUB: factory reset needs an architectural decision
-                about what state survives. Button toasts. */}
-            <Btn
-              kind="danger"
-              icon="trash-2"
-              onClick={() =>
-                addToast({
-                  kind: 'info',
-                  title: 'FACTORY RESET NOT WIRED',
-                  body: 'No recorder endpoint; needs scope decision',
-                  icon: 'info',
-                })
-              }
-            >
-              Factory Reset
+          </div>
+        </Card>
+        {/* Wave 7 / ADR 0015 lifecycle controls. Mirrors MS-side
+            Failover tab semantics but locally (operator standing in
+            front of the recorder, not in the MS UI). */}
+        <Card style={{ gridColumn: '1/3' }}>
+          <SectionHeader>RESET (ADR 0015 D7)</SectionHeader>
+          <div
+            style={{
+              fontFamily: 'var(--font-sans)',
+              fontSize: 12,
+              color: 'var(--text-muted)',
+              marginTop: 6,
+              marginBottom: 10,
+              lineHeight: 1.5,
+            }}
+          >
+            Non-destructive. Preserves identity (UUID + keypair + cert),
+            recordings, audit chain, update trust roots. Refreshes the
+            last-known-good config from the paired MS.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Btn kind="secondary" icon="rotate-ccw" disabled={resetting} onClick={() => doConfigReset(false)}>
+              {resetting ? 'Resetting…' : 'Config Reset'}
+            </Btn>
+            <Btn kind="secondary" icon="plug" disabled={resetting} onClick={() => doConfigReset(true)}>
+              {resetting ? 'Resetting…' : 'Reset + Return to Unpaired'}
+            </Btn>
+            <Btn kind="secondary" icon="download-cloud" disabled={exportingBundle} onClick={doRecoveryBundleExport}>
+              {exportingBundle ? 'Exporting…' : 'Export Recovery Bundle'}
             </Btn>
           </div>
+        </Card>
+        <Card style={{ gridColumn: '1/3', borderColor: 'rgba(239,68,68,0.3)' }}>
+          <SectionHeader>FACTORY WIPE (ADR 0015 D8)</SectionHeader>
+          <div
+            style={{
+              fontFamily: 'var(--font-sans)',
+              fontSize: 12,
+              color: '#EF4444',
+              marginTop: 6,
+              marginBottom: 4,
+              fontWeight: 600,
+            }}
+          >
+            DESTRUCTIVE — clears recordings, identity, audit, and pairing material.
+          </div>
+          <div
+            style={{
+              fontFamily: 'var(--font-sans)',
+              fontSize: 12,
+              color: 'var(--text-muted)',
+              marginBottom: 10,
+              lineHeight: 1.5,
+            }}
+          >
+            Two-stage: first call issues a confirmation token (10-minute
+            window); second call performs the wipe. After wipe, restart
+            the recorder process — identity regenerates clean per ADR
+            0015 D8. External / mounted storage outside PathDefaults.RecordPath
+            is NOT auto-wiped; clean those manually.
+          </div>
+          {wipeStage === 'idle' && (
+            <Btn kind="danger" icon="trash-2" disabled={wiping} onClick={doFactoryWipeStage1}>
+              {wiping ? 'Requesting…' : 'Request Wipe Confirmation'}
+            </Btn>
+          )}
+          {wipeStage === 'confirm' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <label
+                style={{
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 12,
+                  color: '#E5E5E5',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={wipeAck}
+                  onChange={(e) => setWipeAck(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  I understand my recordings, audit chain, and pairing
+                  material will be destroyed. Update trust roots survive.
+                </span>
+              </label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <Btn kind="danger" icon="trash-2" disabled={wiping || !wipeAck} onClick={doFactoryWipeStage2}>
+                  {wiping ? 'Wiping…' : 'Confirm Factory Wipe'}
+                </Btn>
+                <Btn
+                  kind="ghost"
+                  icon="x"
+                  disabled={wiping}
+                  onClick={() => {
+                    setWipeStage('idle');
+                    setWipeToken('');
+                    setWipeAck(false);
+                  }}
+                >
+                  Cancel
+                </Btn>
+              </div>
+            </div>
+          )}
         </Card>
       </div>
     </div>
