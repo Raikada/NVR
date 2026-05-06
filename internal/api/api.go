@@ -101,6 +101,9 @@ type API struct {
 	// a.mutex (write-locked during apply, read-locked otherwise).
 	// Transient — recovered on the next poll if the recorder restarts.
 	cameraAppliedVersions map[string]int64
+	// policyAppliedVersions is the slice-4-C analogue per ADR 0017 D4.
+	// Populated by the policysync apply path. Same locking convention.
+	policyAppliedVersions map[string]int64
 }
 
 // Initialize initializes API.

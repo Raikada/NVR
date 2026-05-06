@@ -162,6 +162,9 @@ func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
 	if !a.guardAdminAction(ctx) {
 		return
 	}
+	if !a.applyPolicyLockdown(ctx, "", "create") {
+		return
+	}
 	body, err := readLimitedBody(ctx)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
@@ -213,6 +216,7 @@ func (a *API) onV1RecordingPoliciesPost(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("recording_policy", policy.ID, "create", map[string]string{"policy_id": policy.ID})
+	a.engagePolicyLockdownIfMSSourced(ctx)
 
 	ctx.JSON(http.StatusCreated, &policy)
 }
@@ -224,6 +228,9 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 	id, err := uuid.Parse(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid policy id: %w", err))
+		return
+	}
+	if !a.applyPolicyLockdown(ctx, id.String(), "update") {
 		return
 	}
 
@@ -317,6 +324,7 @@ func (a *API) onV1RecordingPoliciesPatch(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("recording_policy", merged.ID, "update", map[string]string{"policy_id": merged.ID})
+	a.engagePolicyLockdownIfMSSourced(ctx)
 
 	ctx.JSON(http.StatusOK, &merged)
 }
@@ -328,6 +336,9 @@ func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
 	id, err := uuid.Parse(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid policy id: %w", err))
+		return
+	}
+	if !a.applyPolicyLockdown(ctx, id.String(), "delete") {
 		return
 	}
 
@@ -373,6 +384,7 @@ func (a *API) onV1RecordingPoliciesDelete(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("recording_policy", id.String(), "delete", map[string]string{"policy_id": id.String()})
+	a.engagePolicyLockdownIfMSSourced(ctx)
 
 	a.writeOK(ctx)
 }

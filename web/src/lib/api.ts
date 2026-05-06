@@ -393,6 +393,13 @@ export interface RecorderIdentity {
   // endpoints are locked down to the MS service principal. SPA uses
   // this to grey out Add/Edit/Delete affordances on the Cameras page.
   canonical_source?: 'recorder' | 'ms';
+  // Slice 4-C per ADR 0017 D3 / D5: same pattern as canonical_source
+  // for RecordingPolicy. Independent of canonical_source — a recorder
+  // may legitimately be at canonical_source = "ms" AND
+  // policy_canonical_source = "recorder" during the 4-B → 4-C
+  // migration window. SPA uses this to grey out Add/Edit/Delete
+  // affordances on the Policies page.
+  policy_canonical_source?: 'recorder' | 'ms';
 }
 
 export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');

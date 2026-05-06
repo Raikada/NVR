@@ -31,6 +31,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
+	"github.com/bluenviron/mediamtx/internal/policysync"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -138,6 +139,7 @@ type Core struct {
 	mdnsService      *mdns.Service
 	crlPoller        *crl.Poller
 	cameraSyncPoller *camerasync.Poller
+	policySyncPoller *policysync.Poller
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -833,6 +835,28 @@ func (p *Core) createResources(initial bool) error {
 			}
 		}
 
+		// Policy-sync poller (slice 4-C per ADR 0017 D2). Mirrors the
+		// camera-sync poller; gates internally on policy_canonical_source
+		// = ms (independent of the camera flag). Reuses the API's
+		// CameraApplyLock so push-direction conf mutation and
+		// poll-direction policy applies cannot interleave.
+		if p.policySyncPoller == nil && p.identity != nil {
+			psp, err := policysync.New(policysync.PollerOptions{
+				Identity:     p.identity,
+				Logger:       p,
+				PollInterval: time.Duration(p.conf.MSPollInterval),
+				Applier:      p.api.PolicyApplier(),
+				AuditEmitter: p.api.PolicyAuditEmitter(),
+				Mu:           p.api.CameraApplyLock(),
+			})
+			if err != nil {
+				p.Log(logger.Warn, "[policysync] failed to construct poller: %s", err)
+			} else {
+				p.policySyncPoller = psp
+				p.policySyncPoller.Start()
+			}
+		}
+
 		if p.pairingManager != nil {
 			pa := p.api
 			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
@@ -844,6 +868,7 @@ func (p *Core) createResources(initial bool) error {
 			ms := p.mdnsService
 			poller := p.crlPoller
 			cameraPoller := p.cameraSyncPoller
+			policyPoller := p.policySyncPoller
 			logRef := p
 			p.pairingManager.SetPairedCallback(func() {
 				if ms != nil {
@@ -857,12 +882,15 @@ func (p *Core) createResources(initial bool) error {
 				if poller != nil {
 					poller.Start()
 				}
-				// Start the camera-sync poller too. Internally it
-				// gates on canonical_source = ms, so this is a no-op
-				// until the MS finishes its first push (which flips
-				// the recorder's identity).
+				// Start both sync pollers. Internally each gates on its
+				// own canonical-source flag, so this is a no-op until
+				// the MS finishes its first push for the corresponding
+				// entity class (which flips the recorder's identity).
 				if cameraPoller != nil {
 					cameraPoller.Start()
+				}
+				if policyPoller != nil {
+					policyPoller.Start()
 				}
 			})
 		}
@@ -1183,6 +1211,12 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 	if newConf == nil && p.cameraSyncPoller != nil {
 		p.cameraSyncPoller.Stop()
 		p.cameraSyncPoller = nil
+	}
+	// Policy-sync poller (slice 4-C) — same full-shutdown-only
+	// pattern as the camera-sync poller above.
+	if newConf == nil && p.policySyncPoller != nil {
+		p.policySyncPoller.Stop()
+		p.policySyncPoller = nil
 	}
 
 	if p.api != nil {

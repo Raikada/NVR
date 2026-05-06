@@ -24,10 +24,11 @@ import {
   DEFAULT_RECORDING_POLICY_ID,
   deleteRecordingPolicy,
   fetchCameras,
+  fetchIdentity,
   fetchRecordingPolicies,
 } from '../lib/api';
 import type { RecordingPolicy } from '../lib/api';
-import { useFetch } from '../lib/hooks';
+import { useFetch, usePoll } from '../lib/hooks';
 import { formatDuration } from '../lib/duration';
 import type { ToastInput } from '../lib/types';
 
@@ -46,6 +47,18 @@ const MODE_LABEL: Record<RecordingPolicy['mode'], string> = {
 export function Policies({ addToast }: PoliciesProps) {
   const policies = useFetch(fetchRecordingPolicies, []);
   const cameras = useFetch(() => fetchCameras(0, 200), []);
+
+  // Slice 4-C / ADR 0017 D3 + D5: when policy_canonical_source = "ms",
+  // the recorder's local RecordingPolicy mutation endpoints are locked
+  // down to the MS service principal. The SPA reads
+  // /v1/recorder/identity to discover the lockdown state and greys out
+  // Add/Edit/Delete affordances accordingly. Independent of
+  // canonical_source (Camera) per ADR 0017 D3 — the per-entity-class
+  // flags can transition independently. Polled every 30s so an MS
+  // auto-import flips the UI without requiring a page reload.
+  const identity = usePoll(fetchIdentity, 30_000, []);
+  const lockedDown =
+    identity.status === 'ready' && identity.data.policy_canonical_source === 'ms';
 
   const [editing, setEditing] = useState<RecordingPolicy | null>(null);
   const [creating, setCreating] = useState(false);
@@ -102,12 +115,42 @@ export function Policies({ addToast }: PoliciesProps) {
             : `${items.length} policy${items.length === 1 ? '' : ''}${items.length === 1 ? '' : ' · multiple cameras can share a policy'}`)
         }
         right={
-          <Btn kind="primary" icon="plus" onClick={() => setCreating(true)}>
+          <Btn
+            kind="primary"
+            icon="plus"
+            disabled={lockedDown}
+            title={lockedDown ? 'Recording policies managed by Management Server' : undefined}
+            onClick={() => {
+              if (lockedDown) return;
+              setCreating(true);
+            }}
+          >
             New Policy
           </Btn>
         }
       />
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {lockedDown && (
+          <div
+            style={{
+              background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+              border: '1px solid var(--border, rgba(255,255,255,0.08))',
+              borderLeft: '3px solid var(--accent-info, #4a90e2)',
+              padding: '12px 16px',
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: 'var(--text-secondary, #aaa)',
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--text-primary, #fff)', marginBottom: 4 }}>
+              Recording policies managed by Management Server
+            </div>
+            This recorder is paired with a Management Server that has taken canonical
+            authority for recording policies. Add, edit, and delete operations are
+            performed in the Management Server UI. The list view remains available here
+            for reference.
+          </div>
+        )}
         <Card style={{ padding: 0 }}>
           <div style={{ padding: '14px 16px', borderBottom: '1px solid var(--border)' }}>
             <SectionHeader style={{ margin: 0 }}>POLICIES · {items.length}</SectionHeader>
@@ -252,15 +295,29 @@ export function Policies({ addToast }: PoliciesProps) {
                     </>
                   ) : (
                     <>
-                      <Btn kind="ghost" size="sm" icon="settings" onClick={() => setEditing(p)}>
+                      <Btn
+                        kind="ghost"
+                        size="sm"
+                        icon="settings"
+                        disabled={lockedDown}
+                        title={lockedDown ? 'Recording policies managed by Management Server' : undefined}
+                        onClick={() => {
+                          if (lockedDown) return;
+                          setEditing(p);
+                        }}
+                      >
                         Edit
                       </Btn>
                       <Btn
                         kind="danger"
                         size="sm"
                         icon="trash-2"
-                        disabled={Boolean(blockedReason)}
-                        onClick={() => setConfirmDelete(p.id)}
+                        disabled={lockedDown || Boolean(blockedReason)}
+                        title={lockedDown ? 'Recording policies managed by Management Server' : undefined}
+                        onClick={() => {
+                          if (lockedDown) return;
+                          setConfirmDelete(p.id);
+                        }}
                       >
                         Delete
                       </Btn>

@@ -46,6 +46,14 @@ type v1RecorderIdentity struct {
 	// ADR 0016 D3. Used by the recorder's local SPA to grey out
 	// Add/Edit/Delete on the Cameras page when MS-canonical.
 	CanonicalSource string `json:"canonical_source"`
+	// PolicyCanonicalSource is the slice-4-C analogue per ADR 0017 D3:
+	// `recorder` pre-import or `ms` once the recorder has accepted its
+	// first MS-source RecordingPolicy mutation. Independent of
+	// CanonicalSource (Camera) — a recorder may be at canonical_source
+	// = ms AND policy_canonical_source = recorder during the
+	// 4-B → 4-C migration. Used by the local SPA to grey out
+	// Add/Edit/Delete on the Policies page when MS-canonical.
+	PolicyCanonicalSource string `json:"policy_canonical_source"`
 }
 
 func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
@@ -70,6 +78,7 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 		FirmwareVersion:        a.Version,
 		PinnedRootFingerprints: []string{},
 		CanonicalSource:        "recorder",
+		PolicyCanonicalSource:  "recorder",
 	}
 
 	// Identity is set in production by Core.createResources; absent
@@ -84,6 +93,7 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 			resp.PinnedRootFingerprints = append(resp.PinnedRootFingerprints, r.FingerprintSHA256)
 		}
 		resp.CanonicalSource = a.Identity.CanonicalSource()
+		resp.PolicyCanonicalSource = a.Identity.PolicyCanonicalSource()
 	}
 
 	ctx.JSON(http.StatusOK, resp)
