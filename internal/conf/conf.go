@@ -299,8 +299,6 @@ type Conf struct {
 	ExternalAuthenticationURL *string                      `json:"externalAuthenticationURL,omitempty" deprecated:"true"`
 	AuthHTTPFingerprint       string                       `json:"authHTTPFingerprint"`
 	AuthHTTPExclude           []AuthInternalUserPermission `json:"authHTTPExclude"`
-	AuthJWTJWKS               string                       `json:"authJWTJWKS"`
-	AuthJWTJWKSFingerprint    string                       `json:"authJWTJWKSFingerprint"`
 	AuthJWTClaimKey           string                       `json:"authJWTClaimKey"`
 	AuthJWTExclude            []AuthInternalUserPermission `json:"authJWTExclude"`
 	AuthJWTInHTTPQuery        *bool                        `json:"authJWTInHTTPQuery,omitempty" deprecated:"true"`
@@ -872,16 +870,6 @@ func (conf *Conf) Validate(l logger.Writer) error {
 		}
 
 	case AuthMethodJWT:
-		if conf.AuthJWTJWKS == "" {
-			return fmt.Errorf("'authJWTJWKS' is empty")
-		}
-
-		if conf.AuthJWTJWKS != "" &&
-			!strings.HasPrefix(conf.AuthJWTJWKS, "http://") &&
-			!strings.HasPrefix(conf.AuthJWTJWKS, "https://") {
-			return fmt.Errorf("'authJWTJWKS' must be a HTTP URL")
-		}
-
 		if conf.AuthJWTClaimKey == "" {
 			return fmt.Errorf("'authJWTClaimKey' is empty")
 		}

@@ -368,23 +368,8 @@ func TestConfErrors(t *testing.T) {
 			`all_others, all and '~^.*$' are aliases`,
 		},
 		{
-			"jwt jwks empty",
-			"authMethod: jwt\n" +
-				"authJWTJWKS: \"\"\n" +
-				"authJWTClaimKey: test",
-			"'authJWTJWKS' is empty",
-		},
-		{
-			"invalid jwt jwks url",
-			"authMethod: jwt\n" +
-				"authJWTJWKS: ftp://invalid\n" +
-				"authJWTClaimKey: test",
-			"'authJWTJWKS' must be a HTTP URL",
-		},
-		{
 			"jwt claim key empty",
 			"authMethod: jwt\n" +
-				"authJWTJWKS: https://not-real.com\n" +
 				"authJWTClaimKey: \"\"",
 			"'authJWTClaimKey' is empty",
 		},
