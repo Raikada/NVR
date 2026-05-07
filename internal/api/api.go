@@ -200,6 +200,9 @@ func (a *API) Initialize() error {
 	// Phase 5 Task 5.4: recording policy schedule windows.
 	a.registerV1RecordingSchedules(group)
 
+	// Phase 5 Task 5.5: events ack + SSE stream + event-types + event-retention.
+	a.registerV1EventsExtensions(group)
+
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
 	// for service-to-service connections; the mechanism-neutral name
