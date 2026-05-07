@@ -13,6 +13,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
 )
 
 // newV1BreakdownServer mounts the breakdown endpoint plus the
@@ -265,6 +266,116 @@ func TestStorageVolumesBreakdownRollupMath(t *testing.T) {
 	for _, v := range got.ByVolume {
 		require.NotEmpty(t, v.ByContentType)
 	}
+}
+
+// TestSegmentSynthesisPrefersSidecarOverCurrentPolicy verifies the
+// Wave A3 fidelity: if a sidecar is present next to the segment file,
+// the synthesizer reads it instead of falling back to the current
+// policy mode. Models the "policy was motion at write time, then
+// the operator switched to continuous before the operator looked at
+// the breakdown" scenario.
+func TestSegmentSynthesisPrefersSidecarOverCurrentPolicy(t *testing.T) {
+	dir, err := os.MkdirTemp("", "wavea3-sidecar")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	// Conf says the camera is on the default (continuous) policy now.
+	yml := "pathDefaults:\n" +
+		"  recordPath: " + filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"recordingPolicies:\n" +
+		"  " + conf.DefaultRecordingPolicyID + ":\n" +
+		"    name: Default\n" +
+		"    mode: continuous\n" +
+		"    container: fmp4\n" +
+		"    enabled: true\n" +
+		"    retentionDuration: 24h\n" +
+		"    minSegmentDuration: 1m\n" +
+		"    maxSegmentDuration: 10m\n" +
+		"    partDuration: 1s\n" +
+		"    maxPartSize: 50000000\n" +
+		"paths:\n" +
+		"  cam_a:\n"
+
+	cnf := tempConf(t, yml)
+	a := newTestAPIWithConf(t, cnf)
+	srv := newV1Server(t, a)
+
+	segPath := writeSegmentFile(t, dir, "cam_a", "2026-01-01_10-00-00-000000")
+
+	// Write a sidecar that disagrees with the current policy: the
+	// segment was sealed under a motion policy. The synthesizer must
+	// surface motion, not continuous.
+	body := []byte(`{"policy_id":"22222222-2222-2222-2222-222222222222","mode":"motion"}`)
+	scPath := recordingmeta.SidecarPath(segPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(scPath), 0o755))
+	require.NoError(t, os.WriteFile(scPath, body, 0o644))
+
+	resp, err := http.Get(srv.URL + "/v1/recording-segments")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got struct {
+		Items []struct {
+			ContentType string `json:"content_type"`
+			PolicyID    string `json:"policy_id"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 1)
+	require.Equal(t, "motion", got.Items[0].ContentType)
+	require.Equal(t, "22222222-2222-2222-2222-222222222222", got.Items[0].PolicyID)
+}
+
+// TestSegmentSynthesisFallsBackWhenNoSidecar locks in the
+// pre-amendment / pre-Wave-A3 behavior: a segment without a sidecar
+// surfaces as the current policy's mode (matches Wave 5).
+func TestSegmentSynthesisFallsBackWhenNoSidecar(t *testing.T) {
+	dir, err := os.MkdirTemp("", "wavea3-fallback")
+	require.NoError(t, err)
+	defer os.RemoveAll(dir)
+
+	yml := "pathDefaults:\n" +
+		"  recordPath: " + filepath.Join(dir, "%path/%Y-%m-%d_%H-%M-%S-%f") + "\n" +
+		"recordingPolicies:\n" +
+		"  " + conf.DefaultRecordingPolicyID + ":\n" +
+		"    name: Default\n" +
+		"    mode: motion\n" +
+		"    container: fmp4\n" +
+		"    enabled: true\n" +
+		"    retentionDuration: 24h\n" +
+		"    minSegmentDuration: 1m\n" +
+		"    maxSegmentDuration: 10m\n" +
+		"    partDuration: 1s\n" +
+		"    maxPartSize: 50000000\n" +
+		"paths:\n" +
+		"  cam_a:\n"
+
+	cnf := tempConf(t, yml)
+	a := newTestAPIWithConf(t, cnf)
+	srv := newV1Server(t, a)
+
+	writeSegmentFile(t, dir, "cam_a", "2026-01-01_10-00-00-000000")
+	// No sidecar.
+
+	resp, err := http.Get(srv.URL + "/v1/recording-segments")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got struct {
+		Items []struct {
+			ContentType string `json:"content_type"`
+			PolicyID    string `json:"policy_id"`
+		} `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got.Items, 1)
+	require.Equal(t, "motion", got.Items[0].ContentType)
+	// No sidecar → policy_id stays empty (recorder doesn't yet stamp
+	// it from the fallback resolver — only the sidecar carries
+	// historical truth).
+	require.Empty(t, got.Items[0].PolicyID)
 }
 
 // newTestAPIWithConf is a sister helper to newTestAPI, but takes a

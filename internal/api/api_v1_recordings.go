@@ -14,6 +14,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 )
 
@@ -195,9 +196,10 @@ func (a *API) synthesize() (
 		// recordstore.FindSegments returns segments time-sorted ascending
 		// (see segment.go::FindSegments).
 
-		// Resolve content_type once per camera; SegmentFromRecordstoreFile
+		// Resolve content_type once per camera as the fallback for
+		// segments without a Wave A3 sidecar. SegmentFromRecordstoreFile
 		// surfaces "" as continuous so unmapped cameras default sanely.
-		contentType := contentTypeByCamera[cameraID]
+		fallbackContentType := contentTypeByCamera[cameraID]
 
 		canonical := make([]defs.RecordingSegment, 0, len(rsSegs))
 		for i, rs := range rsSegs {
@@ -217,6 +219,18 @@ func (a *API) synthesize() (
 			// gap detection in groupSegmentsByGap (the gap collapses to
 			// zero, preventing a Recording boundary at large time jumps).
 			_ = i
+
+			// Wave A3: prefer the per-segment sidecar (policy_id + mode
+			// captured at seal time) over the current-policy fallback.
+			// Pre-amendment segments have no sidecar; they fall back to
+			// the current resolver, matching today's behavior.
+			policyID := ""
+			contentType := fallbackContentType
+			if sc, _ := recordingmeta.Read(rs.Fpath); sc != nil {
+				policyID = sc.PolicyID
+				contentType = defs.ContentTypeFromPolicyMode(defs.RecordingPolicyMode(sc.Mode))
+			}
+
 			seg := defs.SegmentFromRecordstoreFile(
 				input,
 				recordingSegmentIDFor(cameraID, rs.Fpath),
@@ -225,7 +239,7 @@ func (a *API) synthesize() (
 				cameraID,
 				"", // recording_server_id — unknown pre-MS
 				"", // volume_id — D8: storage volumes Phase 2D
-				"", // policy_id — D8: policies Phase 2A
+				policyID,
 				"", // recording_id — backfilled below once we group
 				contentType,
 			)
@@ -619,6 +633,10 @@ func (a *API) onV1RecordingsDelete(ctx *gin.Context) {
 					fmt.Sprintf("segment %s: %v", s.ID, err))
 			}
 		}
+		// Wave A3: drop the sidecar alongside the segment so meta
+		// files don't outlive their segment. Best-effort; Remove
+		// silently swallows ErrNotExist.
+		_ = recordingmeta.Remove(s.Path)
 	}
 
 	a.recordingRegistry().reset()

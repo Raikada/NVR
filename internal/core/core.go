@@ -36,6 +36,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/policysync"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/updatepoll"
@@ -1087,6 +1088,18 @@ func (p *Core) createResources(initial bool) error {
 		}
 		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
 			return tenantID
+		})
+
+		// Wave A3: per-segment historical policy resolver. path.go's
+		// OnSegmentComplete closure calls recordingmeta.Write at seal
+		// time. The closure captures the current conf pointer by value
+		// (mirroring the SetPipelineEventTarget pattern above); a conf
+		// reload runs createResources again and re-installs a fresh
+		// closure pointing at the new conf. No mutex needed because
+		// each closure holds its own immutable snapshot.
+		confSnap := p.conf
+		recordingmeta.SetResolver(func(pathName string) (recordingmeta.Sidecar, bool) {
+			return resolveRecordingMeta(confSnap, pathName)
 		})
 
 		// Wire the recorder-side segment.write_failed publisher to

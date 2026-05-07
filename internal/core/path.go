@@ -20,6 +20,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/hooks"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/recorder"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
 	"github.com/bluenviron/mediamtx/internal/staticsources"
 	"github.com/bluenviron/mediamtx/internal/stream"
 )
@@ -940,6 +941,13 @@ func (pa *path) startRecording() {
 			}
 		},
 		OnSegmentComplete: func(segmentPath string, segmentDuration time.Duration) {
+			// Wave A3: persist a sidecar JSON next to the sealed segment
+			// recording the policy_id + mode in effect at write time.
+			// Resolver is wired by core.go on startup and conf-reload;
+			// when no resolver is set (test harnesses) Write is a no-op.
+			if err := recordingmeta.Write(pa.name, segmentPath); err != nil {
+				pa.Log(logger.Debug, "[recordingmeta] sidecar write failed: %s", err)
+			}
 			if pa.conf.RunOnRecordSegmentComplete != "" {
 				env := pa.ExternalCmdEnv()
 				env["MTX_SEGMENT_PATH"] = segmentPath
