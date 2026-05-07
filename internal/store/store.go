@@ -59,6 +59,7 @@ type Store struct {
 	NotificationOutbox        *NotificationOutboxRepo
 	AuditLog                  *AuditLogRepo
 	CloudOutbox               *CloudOutboxRepo
+	SystemSettings            *SystemSettingsRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -113,6 +114,7 @@ func Open(path string) (*Store, error) {
 	s.NotificationOutbox = &NotificationOutboxRepo{db: db}
 	s.AuditLog = &AuditLogRepo{db: db}
 	s.CloudOutbox = &CloudOutboxRepo{db: db}
+	s.SystemSettings = &SystemSettingsRepo{db: db}
 	return s, nil
 }
 
