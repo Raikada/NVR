@@ -102,9 +102,9 @@ func Run(ctx context.Context, st *store.Store, identityDir string, opts Options)
 	if err := seedAdmin(ctx, st, identityDir, &res); err != nil {
 		return res, err
 	}
-	// System settings seeding (timezone + snapshot_root + clip_root) is
-	// added by Task 6.3 in a follow-up commit (see settings.go).
-	_ = opts // referenced once Task 6.3's seedSettings ships.
+	if err := seedSettings(ctx, st, opts, &res); err != nil {
+		return res, err
+	}
 	return res, nil
 }
 
