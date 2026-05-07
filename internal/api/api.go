@@ -155,6 +155,26 @@ func (a *API) SetUpdatePollState(s UpdatePollSnapshot) {
 }
 
 // Initialize initializes API.
+//
+// Authentication / authorization model (Phase 5 Task 5.9):
+//
+//   - middlewareAuth runs before every request. It honors the
+//     isPreAuthBypassPath list (login, /v1/info, /v1/system/setup-status,
+//     /v1/system/info, the SPA static assets) by stashing an
+//     unauthenticated principal and letting the handler proceed. All
+//     other routes require the auth manager to validate the JWT (or
+//     legacy internal/HTTP credentials). On success, the per-request
+//     Principal AND an rbac.Claims projection are stored on
+//     gin.Context — the latter is what rbac.RequirePerm reads.
+//
+//   - Existing /v1/* handlers continue to gate via a.requirePermission(...)
+//     which reads the legacy Principal.Scope. Phase 5 NEW handlers gate
+//     via rbac.RequirePerm(rbac.Perm*, a.auditEmitter()) which reads
+//     rbac.Claims.Role. The two coexist; both write the same
+//     auth.permission_denied audit row on denial.
+//
+//   - /v1/health is authenticated but un-gated (no permission required)
+//     since it's the standard liveness probe operators run.
 func (a *API) Initialize() error {
 	router := gin.New()
 	router.SetTrustedProxies(a.TrustedProxies.ToTrustedProxies()) //nolint:errcheck
