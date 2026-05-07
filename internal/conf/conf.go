@@ -244,59 +244,19 @@ var defaultAuthInternalUsers = []AuthInternalUser{
 
 // Conf is a configuration.
 type Conf struct {
-	// Identity
-	TenantID string `json:"tenantId"`
-
 	// IdentityDir is the directory holding the recorder's persistent
 	// device identity (per ADR 0002 D3 self-generated UUIDv7 + ADR
-	// 0011 D1 mTLS keypair + ADR 0012 D5 pinned root CA fingerprints).
+	// 0011 D1 mTLS keypair).
 	// Generated on first start; stable for the life of the install.
 	// Empty default: derived as <dirname(confPath)>/identity by Core
 	// at startup. Operators with non-standard layouts override here.
 	IdentityDir string `json:"identityDir"`
 
-	// MDNS controls the convenience mDNS surface per pairing API
-	// contract §8: the recorder broadcasts _raikada-recorder._tcp.local
-	// so MS instances on the LAN can surface it for pairing, and
-	// listens for _raikada-management._tcp.local advertisements so
-	// the recorder's setup wizard can pre-fill discovered MS URLs.
-	// mDNS is a convenience layer; the cryptographic pinning via
-	// QR pairing-token is the trust anchor (per ADR 0012 D5).
-	// Disable on networks where multicast is forbidden.
+	// MDNS controls the convenience mDNS surface: the recorder
+	// broadcasts _raikada-nvr._tcp.local so operator UIs on the LAN
+	// can surface it for setup. Disable on networks where multicast
+	// is forbidden.
 	MDNS *bool `json:"mdns,omitempty"`
-
-	// CRLPollInterval controls how often the recorder polls the
-	// paired MS's /.well-known/raikada-crl endpoint per ADR 0011 D5.
-	// Empty / zero default = 5 minutes. Lower values reduce
-	// revocation-detection latency at the cost of MS load. The
-	// recorder also stops polling when unpaired (no MS to poll).
-	CRLPollInterval Duration `json:"crlPollInterval"`
-
-	// MSPollInterval controls how often the recorder polls the paired
-	// MS's /v1/recording-servers/{id}/cameras-desired-state endpoint
-	// per ADR 0016 D2. Empty / zero default = 30 seconds. The poll is
-	// the recovery mechanism for missed pushes; lower values catch
-	// drift faster at the cost of MS load. The recorder only polls
-	// when canonical_source = ms (post-import / 4-B-active).
-	MSPollInterval Duration `json:"msPollInterval"`
-
-	// Upstream endpoints (optional bootstrap conveniences).
-	//
-	// These pre-figure the eventual MS-pairing client (ADR 0008,
-	// reserved) without replacing it: the recorder uses them today
-	// only as TCP-reachability targets for the network block of
-	// /v1/health (HealthStatus.network per ADR 0009 §D5). Once the
-	// pairing flow lands, the resolved MS endpoint will come from
-	// pairing state and these bootstrap fields become ops-only
-	// overrides. Per ADR 0003 the recorder is a client of cloud and
-	// never a server; these are outbound-target URLs.
-	//
-	// Either field unset => the corresponding *_reachable boolean in
-	// HealthStatus.network stays false. Accepted shapes are typical
-	// URLs (wss://, https://, etc.); the probe extracts host:port
-	// for a net.Dial and ignores path/scheme beyond that.
-	ManagementServerEndpoint string `json:"managementServerEndpoint"`
-	CloudEndpoint            string `json:"cloudEndpoint"`
 
 	// ServerLocation is an operator-set free-form label for where
 	// this recorder is physically deployed (e.g. "Warehouse A —
@@ -802,11 +762,6 @@ func (conf *Conf) Validate(l logger.Writer) error {
 	}
 
 	// Identity
-
-	if conf.TenantID == "" {
-		return fmt.Errorf("'tenantId' is required: every recorder is bound to exactly one tenant. " +
-			"Set this in the bootstrap config until the pairing flow lands per ADR 0002.")
-	}
 
 	if conf.MDNS == nil {
 		on := true

@@ -4,22 +4,6 @@
 # Settings in this section are applied anywhere.
 
 ###############################################
-# Global settings -> Identity
-
-# The tenant this recorder is bound to. Required.
-#
-# Every recorder is bound to exactly one tenant — recorders are
-# physically single-tenant by construction (per ADR 0005 D4).
-# Until the pairing flow lands per ADR 0002, this value is set
-# manually here; once pairing exists, the recorder will populate
-# this field at PairingToken-consume time and the manual setting
-# becomes the bootstrap default for unpaired recorders.
-#
-# The value must be a non-empty string. UUIDv7 is the canonical
-# id format per ADR 0001 cross-cutting rule 1.
-tenantId: 00000000-0000-0000-0000-000000000000
-
-###############################################
 # Global settings -> General
 
 # Verbosity of the program; available values are "error", "warn", "info", "debug".
