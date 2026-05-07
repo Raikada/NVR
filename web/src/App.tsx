@@ -24,6 +24,7 @@ import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import {
   clearStoredToken,
+  getSetupStatus,
   getStoredToken,
   getStoredUsername,
   setOnUnauthorized,
@@ -47,7 +48,11 @@ type AuthState = 'loading' | 'anonymous' | 'must_change_password' | 'authenticat
 
 export function App() {
   const [route, setRoute] = useState<Route>(() => readHashRoute());
-  const [showWizard, setShowWizard] = useState(true);
+  // Wizard visibility is gated on /v1/system/setup-status. Default
+  // hidden so existing recorders don't suddenly see a wizard; we
+  // flip it open after the first authenticated setup-status fetch
+  // returns setup_required:true.
+  const [showWizard, setShowWizard] = useState(false);
 
   // Auth gate (pre-pairing auth slice 2026-05-06). The recorder no
   // longer accepts anonymous /v1/* requests by default, so the SPA
@@ -113,6 +118,25 @@ export function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
+
+  // Once authenticated, ask the recorder whether first-run setup is
+  // still pending. setup-status returns {setup_required:true} until
+  // the wizard's "Done" path persists setup_complete=true.
+  useEffect(() => {
+    if (auth !== 'authenticated') return;
+    let cancelled = false;
+    void getSetupStatus()
+      .then((r) => {
+        if (cancelled) return;
+        if (r.setup_required) setShowWizard(true);
+      })
+      .catch(() => {
+        // Endpoint absent on older builds; leave the wizard hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
 
   const go = useCallback((r: Route) => {
     setRoute(r);
