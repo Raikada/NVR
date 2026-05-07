@@ -3,7 +3,6 @@ package core
 
 import (
 	"context"
-	"crypto/x509"
 	_ "embed"
 	"fmt"
 	"net"
@@ -24,22 +23,17 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/api"
 	"github.com/bluenviron/mediamtx/internal/auth"
-	"github.com/bluenviron/mediamtx/internal/camerasync"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
-	"github.com/bluenviron/mediamtx/internal/crl"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	"github.com/bluenviron/mediamtx/internal/motion"
 	"github.com/bluenviron/mediamtx/internal/onvif"
-	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
-	"github.com/bluenviron/mediamtx/internal/policysync"
 	"github.com/bluenviron/mediamtx/internal/recordingmeta"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
-	"github.com/bluenviron/mediamtx/internal/updatepoll"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -142,16 +136,11 @@ type Core struct {
 	srtServer       *srt.Server
 	api             *api.API
 	confWatcher     *confwatcher.ConfWatcher
-	identity        *identity.Identity
+	identity         *identity.Identity
 	localAuth        *localauth.Manager
 	localAuthStore   *recstore.Store
-	pairingManager   *mspairing.Manager
 	mdnsService      *mdns.Service
-	crlPoller        *crl.Poller
-	cameraSyncPoller *camerasync.Poller
-	policySyncPoller *policysync.Poller
-	updatePollState  *updatepoll.State
-	updatePoller     *updatepoll.Poller
+	// TODO(phase6): wire camera/policy sync, CRL, update-poll components.
 	onvifManager     *onvif.Manager
 	motionController *motion.Controller
 
@@ -406,8 +395,8 @@ func (p *Core) createResources(initial bool) error {
 			return fmt.Errorf("identity open: %w", err)
 		}
 		p.identity = id
-		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s paired=%v",
-			id.ID().String(), idDir, id.IsPaired())
+		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s",
+			id.ID().String(), idDir)
 	}
 
 	// Recorder-local LocalUser auth (pre-pairing auth slice 2026-05-06).
@@ -433,7 +422,7 @@ func (p *Core) createResources(initial bool) error {
 		if err != nil {
 			return fmt.Errorf("local auth signing key: %w", err)
 		}
-		la := localauth.New(s, signingKey, idDir, p.conf.TenantID, p.identity.ID().String())
+		la := localauth.New(s, signingKey, idDir, "", p.identity.ID().String())
 		// Bootstrap admin if local_users is empty. Logs the initial
 		// password as a loud banner so an integrator who runs the
 		// recorder in the foreground for the first time can copy it
@@ -450,9 +439,7 @@ func (p *Core) createResources(initial bool) error {
 		p.localAuth = la
 	}
 
-	if p.pairingManager == nil {
-		p.pairingManager = mspairing.New(p.identity, p, string(version))
-	}
+	// TODO(phase6): wire pairing manager + post-pair callbacks here.
 
 	if p.mdnsService == nil && p.conf.MDNS != nil && *p.conf.MDNS && p.conf.API {
 		// Use the API listen port for mDNS announcements — that's
@@ -467,32 +454,22 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
-	if p.crlPoller == nil {
-		p.crlPoller = crl.New(p.identity, p, time.Duration(p.conf.CRLPollInterval), func(reason string) error {
-			return p.handleCRLRevocation(reason)
-		})
-		// Start now if already paired (recorder restart with valid
-		// identity); the pairing-completed callback below also calls
-		// Start() for the post-pairing transition.
-		p.crlPoller.Start()
-	}
+	// TODO(phase6): wire CRL poller for cert revocation watch.
 
 	if p.authManager == nil {
 		la := p.localAuth
 		p.authManager = &auth.Manager{
-			Method:             p.conf.AuthMethod,
-			InternalUsers:      p.conf.AuthInternalUsers,
-			HTTPAddress:        p.conf.AuthHTTPAddress,
-			HTTPFingerprint:    p.conf.AuthHTTPFingerprint,
-			HTTPExclude:        p.conf.AuthHTTPExclude,
-			JWTJWKS:            p.conf.AuthJWTJWKS,
-			JWTJWKSFingerprint: p.conf.AuthJWTJWKSFingerprint,
-			JWTClaimKey:        p.conf.AuthJWTClaimKey,
-			JWTExclude:         p.conf.AuthJWTExclude,
-			JWTInHTTPQuery:     p.conf.AuthJWTInHTTPQuery,
-			JWTIssuer:          p.conf.AuthJWTIssuer,
-			JWTAudience:        p.conf.AuthJWTAudience,
-			ReadTimeout:        time.Duration(p.conf.ReadTimeout),
+			Method:          p.conf.AuthMethod,
+			InternalUsers:   p.conf.AuthInternalUsers,
+			HTTPAddress:     p.conf.AuthHTTPAddress,
+			HTTPFingerprint: p.conf.AuthHTTPFingerprint,
+			HTTPExclude:     p.conf.AuthHTTPExclude,
+			JWTClaimKey:     p.conf.AuthJWTClaimKey,
+			JWTExclude:      p.conf.AuthJWTExclude,
+			JWTInHTTPQuery:  p.conf.AuthJWTInHTTPQuery,
+			JWTIssuer:       p.conf.AuthJWTIssuer,
+			JWTAudience:     p.conf.AuthJWTAudience,
+			ReadTimeout:     time.Duration(p.conf.ReadTimeout),
 			// Recorder-local JWT validation hook. Lets the auth
 			// manager accept JWTs minted by /v1/recorder/login even
 			// when authMethod=internal in mediamtx.yml. Pre-pairing
@@ -510,23 +487,8 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
-	// Pairing-aware auth wiring per pairing-flows §4: when the
-	// recorder boots paired, override the auth method to JWT using
-	// the bound MS's published JWKS / issuer / audience and chain-
-	// pin the JWKS fetch against the recorder's pinned MS root CA
-	// per ADR 0012 D5. The override is in-process only; mediamtx.yml
-	// stays unchanged, so unpairing reverts to the static config on
-	// next restart.
-	//
-	// URL drift (e.g. MS hostname changed since pairing) is recovered
-	// at runtime by consulting the live mDNS broadcast whose
-	// advertised root_fp matches the pinned root — that broadcast's
-	// URL supersedes the pinned URL and is written back to
-	// ms-metadata.json so subsequent restarts use the fresh URL even
-	// if mDNS isn't immediately available.
-	if p.identity.IsPaired() {
-		p.applyPairingAwareAuth()
-	}
+	// TODO(phase6): re-add pairing-aware auth wiring (override to JWT
+	// using bound MS JWKS) once the new pairing module lands.
 
 	if p.conf.Metrics &&
 		p.metrics == nil {
@@ -876,7 +838,6 @@ func (p *Core) createResources(initial bool) error {
 			AuthManager:    p.authManager,
 			Identity:       p.identity,
 			LocalAuth:      p.localAuth,
-			Pairing:        p.pairingManager,
 			MDNS:           p.mdnsService,
 			PathManager:    p.pathManager,
 			RTSPServer:     p.rtspServer,
@@ -902,81 +863,10 @@ func (p *Core) createResources(initial bool) error {
 			p.localAuth.SetAuditEmitter(p.api.EmitLocalAuthAudit)
 		}
 
-		// Wire the pairing manager's audit callback so
-		// device.pairing_completed lands in the recorder's
-		// per-emitter audit chain (per ADR 0006). Done here, after
-		// both p.api and p.pairingManager exist.
-		// Camera-sync poller (slice 4-B per ADR 0016 D2). Polls the MS
-		// every MSPollInterval for desired-state and applies any
-		// drift via the API's camerasync adapter. Dormant pre-pair
-		// AND pre-import (canonical_source != ms gates inside the
-		// goroutine).
-		if p.cameraSyncPoller == nil && p.identity != nil {
-			csp, err := camerasync.New(camerasync.PollerOptions{
-				Identity:     p.identity,
-				Logger:       p,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-				Applier:      p.api.CameraApplier(),
-				AuditEmitter: p.api.CameraAuditEmitter(),
-				Mu:           p.api.CameraApplyLock(),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[camerasync] failed to construct poller: %s", err)
-			} else {
-				p.cameraSyncPoller = csp
-				// Start now if already paired (recorder restart with a
-				// valid identity that's already canonical_source=ms);
-				// the post-pairing callback below also Starts.
-				p.cameraSyncPoller.Start()
-			}
-		}
-
-		// Policy-sync poller (slice 4-C per ADR 0017 D2). Mirrors the
-		// camera-sync poller; gates internally on policy_canonical_source
-		// = ms (independent of the camera flag). Reuses the API's
-		// CameraApplyLock so push-direction conf mutation and
-		// poll-direction policy applies cannot interleave.
-		if p.policySyncPoller == nil && p.identity != nil {
-			psp, err := policysync.New(policysync.PollerOptions{
-				Identity:     p.identity,
-				Logger:       p,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-				Applier:      p.api.PolicyApplier(),
-				AuditEmitter: p.api.PolicyAuditEmitter(),
-				Mu:           p.api.CameraApplyLock(),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[policysync] failed to construct poller: %s", err)
-			} else {
-				p.policySyncPoller = psp
-				p.policySyncPoller.Start()
-			}
-		}
-
-		// Wave A2: software-update poller. Polls the MS for
-		// approved-but-not-yet-applied lifecycle rows and exposes the
-		// freshest one through /v1/recorder/identity so the recorder's
-		// SPA can surface a "Software update available" badge. Dormant
-		// pre-pair (the goroutine's per-tick IsPaired check re-arms post-
-		// pairing without an external nudge).
-		if p.updatePoller == nil && p.identity != nil {
-			if p.updatePollState == nil {
-				p.updatePollState = updatepoll.NewState()
-			}
-			up, err := updatepoll.New(updatepoll.Options{
-				Identity:     p.identity,
-				Logger:       p,
-				State:        p.updatePollState,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[updatepoll] failed to construct poller: %s", err)
-			} else {
-				p.updatePoller = up
-				p.api.SetUpdatePollState(updatePollSnapshot{state: p.updatePollState})
-				p.updatePoller.Start()
-			}
-		}
+		// TODO(phase6): wire camera-sync, policy-sync, update-poll
+		// adapters once the new pairing module + post-pair callbacks
+		// exist. They previously polled the bound MS and dispatched
+		// drift through p.api's camera/policy applier hooks.
 
 		// Wave 6: software-update applier wiring per ADR 0014. Wired
 		// only when the operator has provisioned a Raikada release
@@ -1028,66 +918,16 @@ func (p *Core) createResources(initial bool) error {
 			}
 		}
 
-		if p.pairingManager != nil {
-			pa := p.api
-			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
-				pa.EmitPairingAudit(ev.Action, ev.Outcome, ev.Attributes)
-			})
-			// Refresh mDNS TXT records (paired=false → paired=true)
-			// after a successful pairing so MS instances on the LAN
-			// see the up-to-date advertisement.
-			ms := p.mdnsService
-			poller := p.crlPoller
-			cameraPoller := p.cameraSyncPoller
-			policyPoller := p.policySyncPoller
-			updatePoller := p.updatePoller
-			logRef := p
-			p.pairingManager.SetPairedCallback(func() {
-				if ms != nil {
-					if err := ms.Refresh(); err != nil {
-						logRef.Log(logger.Warn, "[mdns] refresh after pairing failed: %s", err)
-					}
-				}
-				// Start the CRL poller now that we have an MS to
-				// poll (Start was a no-op pre-pair; calling again
-				// after pairing spins up the goroutine).
-				if poller != nil {
-					poller.Start()
-				}
-				// Start both sync pollers. Internally each gates on its
-				// own canonical-source flag, so this is a no-op until
-				// the MS finishes its first push for the corresponding
-				// entity class (which flips the recorder's identity).
-				if cameraPoller != nil {
-					cameraPoller.Start()
-				}
-				if policyPoller != nil {
-					policyPoller.Start()
-				}
-				// Update poller. Idempotent; the first Start before
-				// pairing was a no-op, this Start now enters the
-				// running state.
-				if updatePoller != nil {
-					updatePoller.Start()
-				}
-			})
-		}
+		// TODO(phase6): re-wire pairing-manager audit + paired-callback
+		// fan-out (mDNS refresh, CRL poller Start, camera/policy/update
+		// pollers Start) once the new pairing module lands.
 
 		// Wire the pipeline-side Event publish target so path.go's
 		// camera.online / camera.offline emitters land in the same
-		// EventStore that /v1/events serves from. Tenant id is
-		// captured by value (not by closure over p.conf) to avoid a
-		// data race with reloadConf at core.go:1089. createResources
-		// runs on both initial setup and every conf reload, so each
-		// reload re-snapshots tenantID through this same SetPipeline-
-		// EventTarget call — legitimate tenant-rebind paths still
-		// flow through.
-		var tenantID string
-		if p.conf != nil {
-			tenantID = p.conf.TenantID
-		}
+		// EventStore that /v1/events serves from. Consumer NVR is
+		// single-tenant; an empty tenant id is fine.
 		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
-			return tenantID
+			return ""
 		})
 
 		// Wave A3: per-segment historical policy resolver. path.go's
@@ -1431,29 +1271,8 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.mdnsService = nil
 	}
 
-	// CRL poller likewise full-shutdown-only.
-	if newConf == nil && p.crlPoller != nil {
-		p.crlPoller.Stop()
-		p.crlPoller = nil
-	}
-
-	// Camera-sync poller full-shutdown-only too. The poller's
-	// background goroutine exits within one tick of Stop().
-	if newConf == nil && p.cameraSyncPoller != nil {
-		p.cameraSyncPoller.Stop()
-		p.cameraSyncPoller = nil
-	}
-	// Policy-sync poller (slice 4-C) — same full-shutdown-only
-	// pattern as the camera-sync poller above.
-	if newConf == nil && p.policySyncPoller != nil {
-		p.policySyncPoller.Stop()
-		p.policySyncPoller = nil
-	}
-	// Update poller (Wave A2) — same full-shutdown-only pattern.
-	if newConf == nil && p.updatePoller != nil {
-		p.updatePoller.Stop()
-		p.updatePoller = nil
-	}
+	// TODO(phase6): close CRL / camera-sync / policy-sync / update
+	// pollers here once their Phase 6 replacements land.
 
 	if p.api != nil {
 		if closeAPI {
@@ -1592,279 +1411,6 @@ func (p *Core) APIConfigSet(conf *conf.Conf) {
 	case p.chAPIConfigSet <- conf:
 	case <-p.ctx.Done():
 	}
-}
-
-// handleCRLRevocation runs when the CRL poller detects this
-// recorder's cert in the MS's revoked list. Mirrors the recorder-
-// local unpair sequence: clear the issued DeviceIdentity, reset the
-// pairing-flow state to idle, refresh mDNS so listeners see
-// paired=false, emit a device.unpaired audit entry tagged with the
-// MS-supplied reason. The pairing.Manager / mDNS Service / API
-// audit emitter are all goroutine-safe; we don't need extra locking
-// here.
-func (p *Core) handleCRLRevocation(reason string) error {
-	if p.identity == nil {
-		return nil
-	}
-	recorderID := p.identity.ID().String()
-	prefingerprints := []string{}
-	for _, root := range p.identity.PinnedRoots() {
-		prefingerprints = append(prefingerprints, root.FingerprintSHA256)
-	}
-
-	if err := p.identity.ClearIssuedIdentity(); err != nil {
-		return err
-	}
-	if p.pairingManager != nil {
-		p.pairingManager.Reset()
-	}
-	if p.mdnsService != nil {
-		_ = p.mdnsService.Refresh()
-	}
-	// Audit-emit through the API path so the entry lands in the
-	// recorder's per-emitter chain (matching device.pairing_completed
-	// from the inbound flow).
-	if p.api != nil {
-		attrs := map[string]string{
-			"recording_server_id": recorderID,
-			"reason":              "ms_initiated_revocation:" + reason,
-		}
-		for i, fp := range prefingerprints {
-			attrs[fmt.Sprintf("pinned_root_%d_fingerprint", i)] = fp
-		}
-		p.api.EmitPairingAudit("device.unpaired", "success", attrs)
-	}
-	p.Log(logger.Warn, "[crl] recorder cert revoked by MS (%s) — local DeviceIdentity wiped",
-		reason)
-	return nil
-}
-
-// applyPairingAwareAuth re-points the recorder's auth manager at the
-// bound MS's published JWKS at startup, so MS-issued operator JWTs
-// (e.g. from the slice-4-A read+write proxy) authenticate against
-// /v1/* even when mediamtx.yml says authMethod: internal. Per the
-// pairing-aware auth wiring brief: read pinned ms-metadata.json
-// (issuer + JWKS URL), check mDNS for a live broadcast whose
-// advertised root_fp matches the pinned root (URL-drift recovery),
-// build a chain-pinning x509.CertPool from the pinned roots, and
-// call auth.Manager.ApplyPairingOverride.
-//
-// Inert for unpaired recorders. Logs the resolved URLs at INFO so
-// operators can diagnose mismatches.
-func (p *Core) applyPairingAwareAuth() {
-	if p.identity == nil || !p.identity.IsPaired() {
-		return
-	}
-	pinned := p.identity.MSMetadata()
-	if pinned == nil {
-		p.Log(logger.Warn, "[pairing-auth] paired recorder lacks ms-metadata.json; auth override skipped")
-		return
-	}
-
-	// Build the trusted-root pool from the pinned roots.
-	pinnedRoots := p.identity.PinnedRoots()
-	if len(pinnedRoots) == 0 {
-		p.Log(logger.Warn, "[pairing-auth] paired recorder has no pinned roots; auth override skipped")
-		return
-	}
-	pool := x509.NewCertPool()
-	pinnedFPs := make([]string, 0, len(pinnedRoots))
-	for _, r := range pinnedRoots {
-		if !pool.AppendCertsFromPEM([]byte(r.CertPEM)) {
-			p.Log(logger.Warn, "[pairing-auth] failed to parse pinned root cert (fp=%s)", r.FingerprintSHA256)
-			continue
-		}
-		pinnedFPs = append(pinnedFPs, r.FingerprintSHA256)
-	}
-	if len(pinnedFPs) == 0 {
-		p.Log(logger.Warn, "[pairing-auth] no usable pinned roots after PEM parsing; auth override skipped")
-		return
-	}
-
-	// Resolve effective issuer + JWKS URL. The pinned URL is the
-	// fallback; a live mDNS broadcast whose advertised root_fp
-	// matches one of the pinned fingerprints supersedes it (this is
-	// the URL-drift recovery path for MS hostname renames since
-	// pairing).
-	//
-	// Two URLs come into play: the IP-form transport URL the
-	// recorder fetches the JWKS from (live.URL — host:port resolved
-	// from mDNS), and the public URL the MS uses as its JWT `iss`
-	// claim (live.PublicURL — what the MS itself signs against). The
-	// recorder validates `iss` against PublicURL but fetches the
-	// JWKS from the transport URL; chain-pinning to the root CA per
-	// ADR 0012 D5 makes this safe.
-	resolved := *pinned
-	if p.mdnsService != nil {
-		live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
-		if live != nil && live.URL != "" {
-			issuerURL := live.PublicURL
-			if issuerURL == "" {
-				issuerURL = live.URL // older MS — fall back
-			}
-			driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
-				!sameMSHost(issuerURL, pinned.JWKSURL)
-			if driftDetected {
-				// Use the canonical public URL for BOTH iss-validation
-				// and JWKS fetch. Earlier shape used live.URL (IP form)
-				// for the transport, but stale mDNS-cached IPs after
-				// DHCP changes left JWKS pointing at unreachable hosts
-				// and hung middleware on validation. Hostname-form is
-				// safer: chain-pinning per ADR 0012 D5 still secures
-				// the channel; only the URL string changes.
-				resolved.IssuerURL = issuerURL
-				resolved.JWKSURL = issuerURL + "/.well-known/jwks.json"
-				resolved.RootsURL = issuerURL + "/.well-known/raikada-roots"
-				resolved.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
-				p.Log(logger.Info,
-					"[pairing-auth] live MS broadcast supersedes pinned URL: pinned=%s live_issuer=%s live_transport=%s",
-					pinned.IssuerURL, issuerURL, live.URL)
-				if err := p.identity.RefreshMSMetadata(resolved); err != nil {
-					p.Log(logger.Warn, "[pairing-auth] failed to write refreshed ms-metadata: %s", err)
-				}
-			}
-		}
-	}
-
-	audience := "recording_server/" + p.identity.ID().String()
-	p.authManager.ApplyPairingOverride(
-		conf.AuthMethodJWT,
-		resolved.JWKSURL,
-		"", // no leaf-fingerprint pinning — chain-pin via rootCAs
-		resolved.IssuerURL,
-		audience,
-		pool,
-	)
-
-	// The recorder's bootstrap tenantId in mediamtx.yml is a placeholder
-	// for unpaired operation. Once paired, the effective tenant_id is
-	// the MS's tenant_id (per ADR 0011 D2). We can't read it from the
-	// pinned ms-metadata (the tenant_id wasn't recorded there in slice
-	// 3 phase D.2), so derive it from the live mDNS broadcast TXT
-	// field. Fall back to the bootstrap value if mDNS hasn't surfaced
-	// the broadcast yet — the polling goroutine below recovers it.
-	if p.mdnsService != nil {
-		if live := p.mdnsService.LiveMSBroadcast(pinnedFPs); live != nil && live.TenantID != "" {
-			if p.conf.TenantID != live.TenantID {
-				p.Log(logger.Info,
-					"[pairing-auth] effective tenant_id from MS broadcast: %s (was %s)",
-					live.TenantID, p.conf.TenantID)
-				p.conf.TenantID = live.TenantID
-			}
-		}
-	}
-
-	p.Log(logger.Info,
-		"[pairing-auth] paired recorder using JWT auth: issuer=%s jwks=%s aud=%s tenant=%s",
-		resolved.IssuerURL, resolved.JWKSURL, audience, p.conf.TenantID)
-
-	// Background reconciler: mDNS browse is async; the live broadcast
-	// may not be in the cache at startup. Poll for up to a minute so
-	// the recorder can recover URL drift even if it boots before the
-	// MS has been seen on the LAN. Also picks up tenant_id if it
-	// wasn't yet present.
-	go p.pairingAuthReconciler(pinnedFPs)
-}
-
-// pairingAuthReconciler is the background goroutine started by
-// applyPairingAwareAuth. It polls mDNS for the bound MS and re-applies
-// the override whenever it detects URL drift or a tenant_id change.
-// Runs for the lifetime of the process; cheap (one mDNS-cache lookup
-// every 30s).
-func (p *Core) pairingAuthReconciler(pinnedFPs []string) {
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
-	// Quick first poll so a freshly-discovered MS surfaces within
-	// seconds rather than waiting for the 30s tick.
-	first := time.NewTimer(5 * time.Second)
-	defer first.Stop()
-	for {
-		select {
-		case <-p.ctx.Done():
-			return
-		case <-first.C:
-			p.reconcilePairingAuth(pinnedFPs)
-		case <-tick.C:
-			p.reconcilePairingAuth(pinnedFPs)
-		}
-	}
-}
-
-func (p *Core) reconcilePairingAuth(pinnedFPs []string) {
-	if p.mdnsService == nil || p.identity == nil || !p.identity.IsPaired() {
-		return
-	}
-	live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
-	if live == nil || live.URL == "" {
-		return
-	}
-	pinned := p.identity.MSMetadata()
-	if pinned == nil {
-		return
-	}
-	issuerURL := live.PublicURL
-	if issuerURL == "" {
-		issuerURL = live.URL
-	}
-	// URL drift on either the issuer or the JWKS URL?
-	driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
-		!sameMSHost(issuerURL, pinned.JWKSURL)
-	if driftDetected {
-		updated := *pinned
-		updated.IssuerURL = issuerURL
-		updated.JWKSURL = issuerURL + "/.well-known/jwks.json"
-		updated.RootsURL = issuerURL + "/.well-known/raikada-roots"
-		updated.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
-		if err := p.identity.RefreshMSMetadata(updated); err != nil {
-			p.Log(logger.Warn, "[pairing-auth] reconciler: refresh ms-metadata: %s", err)
-			return
-		}
-		// Build a fresh root pool — pinned roots haven't changed but
-		// ApplyPairingOverride needs one.
-		pool := x509.NewCertPool()
-		for _, r := range p.identity.PinnedRoots() {
-			pool.AppendCertsFromPEM([]byte(r.CertPEM))
-		}
-		audience := "recording_server/" + p.identity.ID().String()
-		p.authManager.ApplyPairingOverride(
-			conf.AuthMethodJWT,
-			updated.JWKSURL,
-			"",
-			updated.IssuerURL,
-			audience,
-			pool,
-		)
-		p.Log(logger.Info,
-			"[pairing-auth] reconciler refreshed: issuer=%s jwks=%s tenant=%s",
-			updated.IssuerURL, updated.JWKSURL, p.conf.TenantID)
-	}
-	// Tenant-id drift?
-	if live.TenantID != "" && p.conf.TenantID != live.TenantID {
-		p.Log(logger.Info,
-			"[pairing-auth] reconciler tenant_id update: %s -> %s",
-			p.conf.TenantID, live.TenantID)
-		p.conf.TenantID = live.TenantID
-	}
-}
-
-// sameMSHost compares two MS URLs by scheme + host (port included),
-// ignoring path. Returns true when they refer to the same MS endpoint.
-func sameMSHost(a, b string) bool {
-	if a == b {
-		return true
-	}
-	// Strip trailing slashes / paths.
-	for _, ch := range []string{"/v1", "/.well-known"} {
-		if i := strings.Index(a, ch); i > 0 {
-			a = a[:i]
-		}
-		if i := strings.Index(b, ch); i > 0 {
-			b = b[:i]
-		}
-	}
-	a = strings.TrimSuffix(a, "/")
-	b = strings.TrimSuffix(b, "/")
-	return strings.EqualFold(a, b)
 }
 
 // parseAPIPort extracts the port number from an APIAddress like
