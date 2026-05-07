@@ -20,6 +20,7 @@ import { Logs } from './routes/Logs';
 import { Diagnostics } from './routes/Diagnostics';
 import { Settings } from './routes/Settings';
 import { Users } from './routes/Users';
+import { Notifications } from './routes/Notifications';
 import { Login } from './routes/Login';
 import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
@@ -209,7 +210,7 @@ export function App() {
       case 'users':
         return isAdmin ? <Users addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
       case 'notifications':
-        return <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
+        return isAdmin ? <Notifications addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
     }
   })();
 
