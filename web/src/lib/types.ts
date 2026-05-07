@@ -38,17 +38,6 @@ export interface UICamera {
   recording_policy_id?: string;
 }
 
-/* ---------- Management server pairing ---------- */
-
-export interface ManagementServer {
-  host: string;
-  ip: string;
-  mac: string;
-  cameras: number;
-  ver: string;
-  trust?: 'SIGNED' | 'SELF';
-}
-
 /* ---------- App-level state ---------- */
 
 export interface AppState {
@@ -59,8 +48,6 @@ export interface AppState {
   gateway: string;
   cameraCount: number;
   recordingCount: number;
-  paired: boolean;
-  managementServer: ManagementServer | null;
   cameras: UICamera[];
 }
 
@@ -70,7 +57,6 @@ export const ROUTES = [
   'overview',
   'cameras',
   'policies',
-  'pairing',
   'storage',
   'network',
   'logs',

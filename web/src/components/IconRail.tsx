@@ -11,7 +11,6 @@ const ITEMS: { id: Route; icon: IconName; label: string }[] = [
   { id: 'overview', icon: 'layout-dashboard', label: 'Overview' },
   { id: 'cameras', icon: 'cctv', label: 'Cameras' },
   { id: 'policies', icon: 'database', label: 'Policies' },
-  { id: 'pairing', icon: 'link', label: 'Pairing' },
   { id: 'storage', icon: 'hard-drive', label: 'Storage' },
   { id: 'network', icon: 'network', label: 'Network' },
   { id: 'logs', icon: 'terminal', label: 'Logs' },

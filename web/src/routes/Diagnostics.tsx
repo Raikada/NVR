@@ -52,10 +52,8 @@ export function Diagnostics({ state, addToast }: DiagnosticsProps) {
     setLines([]);
     Object.keys(tests).forEach((k) => setStatus(k, 'idle', ''));
 
-    // 1. TCP ping. Target is the configured MS / Cloud endpoint
-    //    if present; falls back to a public host (1.1.1.1:443) so
-    //    standalone recorders still get a reachability signal.
-    const pingTarget = state.managementServer?.host || '1.1.1.1';
+    // 1. TCP ping target — public DNS host for reachability signal.
+    const pingTarget = '1.1.1.1';
     setStatus('ping', 'running', '');
     pushLine({ k: 'cmd', v: `$ tcp-ping ${pingTarget}` });
     try {

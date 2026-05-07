@@ -496,119 +496,6 @@ export const fetchRecorderConfig = () => api.get<RecorderConfig>('/recorder/conf
 export const patchRecorderConfig = (body: Partial<RecorderConfig>) =>
   api.patch<{ status: string }>('/recorder/config', body);
 
-/* ---------- /v1/recorder/identity ---------- */
-
-export interface RecorderIdentity {
-  id: string;
-  tenant_id: string;
-  hostname: string;
-  location: string;
-  timezone: string;
-  firmware_version: string;
-  paired: boolean;
-  public_key_fingerprint: string;
-  pinned_root_fingerprints: string[];
-  // Slice 4-B per ADR 0016 D3 / D5: when "ms", recorder Camera mutation
-  // endpoints are locked down to the MS service principal. SPA uses
-  // this to grey out Add/Edit/Delete affordances on the Cameras page.
-  canonical_source?: 'recorder' | 'ms';
-  // Slice 4-C per ADR 0017 D3 / D5: same pattern as canonical_source
-  // for RecordingPolicy. Independent of canonical_source — a recorder
-  // may legitimately be at canonical_source = "ms" AND
-  // policy_canonical_source = "recorder" during the 4-B → 4-C
-  // migration window. SPA uses this to grey out Add/Edit/Delete
-  // affordances on the Policies page.
-  policy_canonical_source?: 'recorder' | 'ms';
-  // Wave A2: most-recent MS-approved software-update lifecycle row
-  // surfaced via the recorder's local update-state poller. nil when no
-  // approved update exists, the recorder is unpaired, or the poller
-  // hasn't completed its first cycle.
-  pending_software_update?: PendingSoftwareUpdate | null;
-  pending_software_update_polled_at?: string;
-}
-
-export interface PendingSoftwareUpdate {
-  lifecycle_id: string;
-  state: string;
-  state_changed_at?: string;
-  manifest_id?: string;
-  version?: string;
-  channel?: string;
-  release_notes_url?: string;
-}
-
-export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');
-export const patchIdentity = (body: { location: string }) =>
-  api.patch<{ status: string }>('/recorder/identity', body);
-
-/* ---------- /v1/recorder/pair ---------- */
-
-// Mirrors internal/pairing.State — the recorder-side pairing-flow
-// state machine. Drives the WizPair / Pairing-route UI loop.
-export type PairState =
-  | 'idle'
-  | 'in_progress'
-  | 'approved'
-  | 'rejected'
-  | 'token_expired'
-  | 'token_consumed_elsewhere'
-  | 'failed'
-  | 'already_paired';
-
-export interface PairStatus {
-  state: PairState;
-  started_at?: string;
-  updated_at: string;
-  ms_url?: string;
-  pairing_request_id?: string;
-  detail?: string;
-}
-
-export interface PairStartRequest {
-  ms_url: string;
-  token: string;
-  root_fingerprint?: string; // sha256 hex (with optional `sha256:` prefix); from QR
-}
-
-export interface PairStartResponse {
-  state: PairState;
-  pairing_request_id?: string;
-  detail?: string;
-}
-
-export const startPairing = (body: PairStartRequest) =>
-  api.post<PairStartResponse>('/recorder/pair', body);
-
-export const fetchPairStatus = () => api.get<PairStatus>('/recorder/pair/status');
-
-export const resetPairing = () => api.post<{ status: string }>('/recorder/pair/reset');
-
-// unpairRecorder wipes the recorder's locally-stored DeviceIdentity
-// (cert + chain + pinned roots) and returns it to unpaired state.
-// The recorder's UUIDv7 + ECDSA keypair survive — per ADR 0002 D3
-// those are stable for the life of the install. The MS still has a
-// pairing record + RecordingServer entry until an MS operator
-// cleans it up; the recorder ↔ MS WebSocket-driven unpair flow
-// (pairing-flows.md §2.5) lands in a later slice.
-export const unpairRecorder = () => api.post<{ status: string }>('/recorder/unpair');
-
-/* ---------- /v1/recorder/discovered-management ---------- */
-
-export interface DiscoveredManagement {
-  ms_id?: string;
-  hostname: string;
-  addresses: string[];
-  version?: string;
-  tenant_id?: string;
-  port: number;
-  url: string;
-  first_seen_at: string;
-  last_seen_at: string;
-}
-
-export const fetchDiscoveredManagement = () =>
-  api.get<{ items: DiscoveredManagement[] }>('/recorder/discovered-management');
-
 /* ---------- /v1/recorder system actions ---------- */
 
 export const rebootRecorder = () => api.post<{ status: string }>('/recorder/reboot');
@@ -930,4 +817,14 @@ export const changeRecorderPassword = (
     current_password,
     new_password,
   });
+
+/* ---------- /v1/system/* (foundation) ---------- */
+
+export type SystemSettings = Record<string, string>;
+
+export const getSystemSettings = () => api.get<SystemSettings>('/system/settings');
+export const patchSystemSettings = (patch: Partial<SystemSettings>) =>
+  api.patch<SystemSettings>('/system/settings', patch);
+export const putSystemTLS = (cert_pem: string, key_pem: string) =>
+  api.post<{ status: string }>('/system/tls', { cert_pem, key_pem });
 

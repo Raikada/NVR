@@ -14,7 +14,6 @@ import { SetupWizard } from './components/SetupWizard';
 import { Overview } from './routes/Overview';
 import { Cameras } from './routes/Cameras';
 import { Policies } from './routes/Policies';
-import { Pairing } from './routes/Pairing';
 import { Storage } from './routes/Storage';
 import { Network } from './routes/Network';
 import { Logs } from './routes/Logs';
@@ -25,7 +24,6 @@ import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import {
   clearStoredToken,
-  fetchIdentity,
   getStoredToken,
   getStoredUsername,
   setOnUnauthorized,
@@ -97,8 +95,6 @@ export function App() {
     gateway: '10.0.1.1',
     cameraCount: INITIAL_CAMERAS.length,
     recordingCount: INITIAL_CAMERAS.filter((c) => c.status === 'online').length,
-    paired: false,
-    managementServer: null,
     cameras: INITIAL_CAMERAS,
   });
 
@@ -117,73 +113,6 @@ export function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
-
-  // Periodic identity poll so the SPA reflects backend pairing-state
-  // transitions the operator didn't trigger from this tab — most
-  // notably MS-initiated unpair (the recorder's CRL poller detects
-  // its own cert was revoked, runs ClearIssuedIdentity, and
-  // /v1/recorder/identity flips to paired:false). Without this
-  // poll the operator would see a stale "paired" state until a
-  // manual refresh.
-  //
-  // 30s is a deliberate trade: fast enough that a remote unpair
-  // surfaces within roughly a minute (CRL poll interval + identity
-  // poll interval), slow enough that an idle browser tab isn't
-  // burning recorder CPU on a request the operator usually doesn't
-  // care about.
-  useEffect(() => {
-    if (auth !== 'authenticated') return;
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const id = await fetchIdentity();
-        if (cancelled) return;
-        setState((prev) => {
-          // Backend says unpaired but local state still thinks
-          // paired: MS-initiated unpair (or another tab unpaired)
-          // while this tab was open.
-          if (prev.paired && !id.paired) {
-            queueMicrotask(() =>
-              addToast({
-                kind: 'warning',
-                title: 'UNPAIRED BY MANAGEMENT SERVER',
-                body: 'The MS revoked this recorder. You can re-pair from the Pairing page.',
-                icon: 'unlink',
-              }),
-            );
-            return { ...prev, paired: false, managementServer: null };
-          }
-          // Backend says paired but local doesn't — rare (the
-          // pairing flow updates local state directly), but covers
-          // the case where another tab paired this recorder, or
-          // the page loads with a recorder that was already paired.
-          if (!prev.paired && id.paired) {
-            return {
-              ...prev,
-              paired: true,
-              managementServer: prev.managementServer ?? {
-                host: 'Paired',
-                ip: '',
-                mac: '',
-                cameras: 0,
-                ver: '',
-                trust: 'SIGNED',
-              },
-            };
-          }
-          return prev;
-        });
-      } catch {
-        // Network blips are expected; next tick will retry.
-      }
-    };
-    void tick();
-    const interval = window.setInterval(tick, 30 * 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [addToast, auth]);
 
   const go = useCallback((r: Route) => {
     setRoute(r);
@@ -221,8 +150,6 @@ export function App() {
         return <Cameras state={state} setState={setState} addToast={addToast} />;
       case 'policies':
         return <Policies addToast={addToast} />;
-      case 'pairing':
-        return <Pairing state={state} setState={setState} addToast={addToast} />;
       case 'storage':
         return <Storage />;
       case 'network':
@@ -256,7 +183,6 @@ export function App() {
     <>
       <TopBar
         server={serverHeader}
-        paired={state.paired}
         now={now}
         username={authUser}
         onLogout={handleLogout}

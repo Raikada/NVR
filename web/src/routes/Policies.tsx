@@ -24,11 +24,10 @@ import {
   DEFAULT_RECORDING_POLICY_ID,
   deleteRecordingPolicy,
   fetchCameras,
-  fetchIdentity,
   fetchRecordingPolicies,
 } from '../lib/api';
 import type { RecordingPolicy } from '../lib/api';
-import { useFetch, usePoll } from '../lib/hooks';
+import { useFetch } from '../lib/hooks';
 import { formatDuration } from '../lib/duration';
 import type { ToastInput } from '../lib/types';
 
@@ -48,17 +47,7 @@ export function Policies({ addToast }: PoliciesProps) {
   const policies = useFetch(fetchRecordingPolicies, []);
   const cameras = useFetch(() => fetchCameras(0, 200), []);
 
-  // Slice 4-C / ADR 0017 D3 + D5: when policy_canonical_source = "ms",
-  // the recorder's local RecordingPolicy mutation endpoints are locked
-  // down to the MS service principal. The SPA reads
-  // /v1/recorder/identity to discover the lockdown state and greys out
-  // Add/Edit/Delete affordances accordingly. Independent of
-  // canonical_source (Camera) per ADR 0017 D3 — the per-entity-class
-  // flags can transition independently. Polled every 30s so an MS
-  // auto-import flips the UI without requiring a page reload.
-  const identity = usePoll(fetchIdentity, 30_000, []);
-  const lockedDown =
-    identity.status === 'ready' && identity.data.policy_canonical_source === 'ms';
+  const lockedDown = false;
 
   const [editing, setEditing] = useState<RecordingPolicy | null>(null);
   const [creating, setCreating] = useState(false);

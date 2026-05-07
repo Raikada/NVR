@@ -30,7 +30,7 @@ interface OverviewProps {
   setShowWizard: (open: boolean) => void;
 }
 
-export function Overview({ state, go, addToast, setShowWizard, setState }: OverviewProps) {
+export function Overview({ state, go, addToast, setShowWizard }: OverviewProps) {
   // Live recorder health — polls /v1/health every second to drive
   // CPU / mem / cameras_online / network knobs and the storage tile.
   const health = usePoll(fetchHealth, 1000, []);
@@ -85,9 +85,7 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
             ? `Recorder unreachable — ${health.error.message}`
             : health.status === 'loading'
               ? 'Loading status…'
-              : state.paired
-                ? `Reported at ${formatTime(health.data.reported_at)}`
-                : 'Recorder is unpaired'
+              : `Reported at ${formatTime(health.data.reported_at)}`
         }
         right={
           <>
@@ -115,156 +113,8 @@ export function Overview({ state, go, addToast, setShowWizard, setState }: Overv
       />
 
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* Row 1: pairing hero + system vitals */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.35fr 1fr', gap: 12 }}>
-          <div
-            style={{
-              position: 'relative',
-              background: 'var(--bg-secondary)',
-              border: `1px solid ${state.paired ? 'var(--border)' : 'rgba(234,179,8,0.27)'}`,
-              borderRadius: 6,
-              padding: 20,
-              overflow: 'hidden',
-            }}
-          >
-            <Brackets />
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'flex-start',
-                marginBottom: 14,
-              }}
-            >
-              <div>
-                <SectionHeader>MANAGEMENT SERVER LINK</SectionHeader>
-                {state.paired ? (
-                  <>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-sans)',
-                        fontSize: 20,
-                        fontWeight: 600,
-                        color: 'var(--text-primary)',
-                      }}
-                    >
-                      {state.managementServer?.host ?? 'Paired'}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 11,
-                        color: 'var(--text-secondary)',
-                        marginTop: 4,
-                      }}
-                    >
-                      {state.managementServer
-                        ? `${state.managementServer.ip} · v${state.managementServer.ver} · Authenticated via mTLS`
-                        : 'Connected to management server · Authenticated via mTLS'}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-sans)',
-                        fontSize: 20,
-                        fontWeight: 600,
-                        color: 'var(--text-primary)',
-                      }}
-                    >
-                      Not paired
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 11,
-                        color: 'var(--text-secondary)',
-                        marginTop: 4,
-                      }}
-                    >
-                      This recorder is operating standalone. Recording rules and user access will not sync.
-                    </div>
-                  </>
-                )}
-              </div>
-              <StatusBadge kind={state.paired ? 'paired' : 'unpaired'} />
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
-              {(
-                [
-                  { k: 'LAST HEARTBEAT', v: state.paired ? '2s ago' : '—' },
-                  { k: 'RULES SYNC', v: state.paired ? 'UP TO DATE' : 'PENDING' },
-                  { k: 'LATENCY', v: state.paired ? '12 MS' : '—' },
-                  { k: 'TUNNEL', v: state.paired ? 'WSS/443' : 'CLOSED' },
-                ] as const
-              ).map((x) => (
-                <div
-                  key={x.k}
-                  style={{
-                    padding: 10,
-                    background: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 4,
-                  }}
-                >
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 9,
-                      letterSpacing: 1,
-                      color: 'var(--text-muted)',
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {x.k}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: 13,
-                      color: state.paired ? '#F97316' : 'var(--text-muted)',
-                      marginTop: 4,
-                      letterSpacing: 0.5,
-                    }}
-                  >
-                    {x.v}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-              {state.paired ? (
-                <>
-                  <Btn kind="secondary" icon="activity" onClick={() => go('diagnostics')}>
-                    Test Connection
-                  </Btn>
-                  <Btn
-                    kind="danger"
-                    icon="unlink"
-                    onClick={() => {
-                      setState((s) => ({ ...s, paired: false, managementServer: null }));
-                      addToast({
-                        kind: 'warning',
-                        title: 'UNPAIRED',
-                        body: 'Recorder is no longer linked',
-                        icon: 'unlink',
-                      });
-                    }}
-                  >
-                    Unpair
-                  </Btn>
-                </>
-              ) : (
-                <Btn kind="primary" icon="link" onClick={() => go('pairing')}>
-                  Pair with Management Server
-                </Btn>
-              )}
-            </div>
-          </div>
-
+        {/* Row 1: system vitals */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12 }}>
           {/* System vitals: three knobs + uptime/temp */}
           <div
             style={{
@@ -667,7 +517,6 @@ function EventsPanel({ events, go }: { events: ApiEvent[]; go: (r: Route) => voi
 function ChecksPanel({ state, go }: { state: AppState; go: (r: Route) => void }) {
   type CheckStatus = true | false | 'warn';
   const checks: { k: string; ok: CheckStatus; v: string }[] = [
-    { k: 'Management server', ok: state.paired, v: state.paired ? 'Paired, heartbeat 2s' : 'Unpaired' },
     { k: 'Storage array', ok: true, v: 'RAID1, 2 disks healthy' },
     { k: 'Network uplink', ok: true, v: '1 Gbps, no packet loss' },
     { k: 'NTP time sync', ok: true, v: 'Drift 3 ms' },

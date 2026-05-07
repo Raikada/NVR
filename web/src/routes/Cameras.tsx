@@ -36,7 +36,6 @@ import {
   probeCameraSource,
   patchCamera,
   fetchRecordingPolicies,
-  fetchIdentity,
   updateRecordingPolicy,
   onvifDiscover,
   onvifDeviceInfo,
@@ -166,17 +165,7 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
   const list = useFetch(() => fetchCameras(0, 100), []);
   const streams = usePoll(fetchStreams, 5000, []);
 
-  // Slice 4-B / ADR 0016 D3+D5: when canonical_source = "ms", the
-  // recorder's local Camera mutation endpoints are locked down to the
-  // MS service principal. The SPA reads /v1/recorder/identity to
-  // discover the lockdown state and greys out Add/Edit/Delete
-  // affordances accordingly. Pre-import (or pre-4-B) recorders surface
-  // canonical_source = "recorder" (or omit the field) and behave as
-  // before. Polled every 30s so an MS auto-import flips the UI without
-  // requiring a page reload.
-  const identity = usePoll(fetchIdentity, 30_000, []);
-  const lockedDown =
-    identity.status === 'ready' && identity.data.canonical_source === 'ms';
+  const lockedDown = false;
 
   // Index streams by camera_id for O(1) lookup in toUICamera.
   const streamsByCamera: Record<string, Stream> = {};
@@ -2371,7 +2360,6 @@ function RecordingTab({ c, patch, addToast, policyEdit, patchPolicy }: Recording
   // canonical Camera record still owns its policy linkage even when
   // the policy itself is MS-canonical.
   const policiesFetch = useFetch(fetchRecordingPolicies, []);
-  const identityFetch = useFetch(fetchIdentity, []);
   const policies = policiesFetch.data?.items ?? [];
   const [editing, setEditing] = useState<RecordingPolicy | null>(null);
   const [creating, setCreating] = useState(false);
@@ -2379,9 +2367,7 @@ function RecordingTab({ c, patch, addToast, policyEdit, patchPolicy }: Recording
   const selectedId = c.recording_policy_id ?? '';
   const selected = policies.find((p) => p.id === selectedId);
 
-  const policyLockedDown =
-    identityFetch.status === 'ready' &&
-    identityFetch.data.policy_canonical_source === 'ms';
+  const policyLockedDown = false;
 
   // Effective view of the policy: the canonical record from the API
   // overlaid with any pending in-drawer edits. The inline controls
