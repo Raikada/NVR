@@ -166,6 +166,10 @@ type Core struct {
 	pathBridge      *cameras.PathBridge
 	credVault       *cameracred.Vault
 	auditEmit       *audit.Emitter
+	// tlsReloader watches tls.crt + tls.key via fsnotify and writes
+	// a system.tls_reload_failed audit row on parse failures. The
+	// actual cert swap lives in internal/certloader. Phase 6 Task 6.5.
+	tlsReloader *tlsReloader
 
 	// fndCtx + fndCtxCancel scope every Phase 6 goroutine so a
 	// graceful shutdown stops them deterministically. Initialized at
@@ -607,8 +611,17 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
-	// Phase 6 Tasks 6.5 + 6.6 wire TLS reload + mDNS TXT refresh in
-	// follow-up commits.
+	// Phase 6 Task 6.5: TLS reload audit watcher. The actual cert swap
+	// lives in internal/certloader (already wired through httpp.Server);
+	// this watcher writes the system.tls_reload_failed audit row on
+	// parse failures so the operator-visible chain records the event.
+	if p.tlsReloader == nil && p.identity != nil && p.auditEmit != nil {
+		certPath, keyPath := p.identity.TLSPaths()
+		p.tlsReloader = newTLSReloader(certPath, keyPath, p.auditEmit, p)
+		go p.tlsReloader.Run(p.fndCtx)
+	}
+
+	// Phase 6 Task 6.6 wires mDNS TXT refresh in a follow-up commit.
 
 	// TODO(phase6): wire CRL poller for cert revocation watch.
 
@@ -1503,6 +1516,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.notifDispatcher = nil
 		p.retentionMgr = nil
 		p.cloudSvc = nil
+		p.tlsReloader = nil
 		p.camerasService = nil
 		p.eventsService = nil
 		p.scheduleResolver = nil
