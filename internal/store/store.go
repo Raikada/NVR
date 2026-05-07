@@ -40,6 +40,7 @@ type Store struct {
 
 	LocalUsers         *LocalUsersRepo
 	OnvifSubscriptions *OnvifSubscriptionsRepo
+	Roles              *RolesRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -75,6 +76,7 @@ func Open(path string) (*Store, error) {
 	s := &Store{DB: db}
 	s.LocalUsers = &LocalUsersRepo{db: db}
 	s.OnvifSubscriptions = &OnvifSubscriptionsRepo{db: db}
+	s.Roles = &RolesRepo{db: db}
 	return s, nil
 }
 
