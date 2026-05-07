@@ -313,3 +313,88 @@ func hexToBytes(s string) ([]byte, error) {
 	}
 	return hex.DecodeString(s)
 }
+
+// TestResult captures the outcome of a SendTest delivery.
+type TestResult struct {
+	TargetID string `json:"target_id"`
+	Status   int    `json:"status"`         // HTTP status (webhook); 0 means transport error or non-HTTP target
+	Body     string `json:"body,omitempty"` // first 256 bytes of response body (webhook)
+	Error    string `json:"error,omitempty"`
+	Kind     string `json:"kind"`           // 'webhook' | 'email'
+}
+
+// SendTest synthesizes a __test__ event payload and delivers it
+// synchronously to targetID using the same wsender / SendEmail path
+// the outbox uses. Returns a TestResult describing the outcome. The
+// outbox is NOT touched — this is a one-off diagnostic call.
+func (d *Dispatcher) SendTest(ctx context.Context, targetID string) (TestResult, error) {
+	tgt, err := d.store.NotificationTargets.GetByID(ctx, targetID)
+	if err != nil {
+		return TestResult{}, err
+	}
+	if tgt == nil {
+		return TestResult{}, errors.New("notification target not found")
+	}
+	res := TestResult{TargetID: targetID, Kind: tgt.Kind}
+	p := buildTestPayload(d.site, targetID)
+	switch tgt.Kind {
+	case "webhook":
+		secret, derr := d.vault.Decrypt(tgt.WebhookSecretCiphertext, tgt.WebhookSecretNonce)
+		if derr != nil {
+			res.Error = "decrypt secret: " + derr.Error()
+			return res, nil
+		}
+		wsender := &WebhookSender{HTTP: d.httpClient, Timeout: 5 * time.Second}
+		status, body, sendErr := wsender.Send(ctx, tgt.WebhookURL, secret, p)
+		res.Status = status
+		res.Body = body
+		if sendErr != nil {
+			res.Error = sendErr.Error()
+		}
+		return res, nil
+	case "email":
+		ss, err := d.smtpSettings(ctx)
+		if err != nil {
+			res.Error = "smtp settings: " + err.Error()
+			return res, nil
+		}
+		subject, html, err := RenderEmail(p)
+		if err != nil {
+			res.Error = "render: " + err.Error()
+			return res, nil
+		}
+		if err := SendEmail(ctx, ss, tgt.EmailAddress, subject, html); err != nil {
+			res.Error = err.Error()
+			return res, nil
+		}
+		res.Status = 200
+		return res, nil
+	default:
+		res.Error = "unknown kind: " + tgt.Kind
+		return res, nil
+	}
+}
+
+// buildTestPayload builds a minimal Payload tagged as a synthetic test.
+// The recorder embeds a __test__ TypeID + a fake camera record.
+func buildTestPayload(site SitePayload, targetID string) *Payload {
+	now := time.Now().UTC()
+	return &Payload{
+		Schema:     PayloadSchema,
+		DeliveryID: uuid.New().String(),
+		Site:       site,
+		Event: EventPayload{
+			ID:              "__test__",
+			Type:            "__test__",
+			TypeDisplayName: "Notification Target Test",
+			Camera: CameraPayload{
+				ID: targetID, Name: "test", DisplayName: "Notification Target Test",
+			},
+			Source:     "system",
+			Severity:   "info",
+			OccurredAt: now,
+			ReceivedAt: now,
+			Payload:    json.RawMessage(`{"note":"this is a synthetic test delivery"}`),
+		},
+	}
+}
