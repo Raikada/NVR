@@ -4261,3 +4261,303 @@ go test ./internal/notifications/ -v
 git add internal/notifications/
 git commit -m "feat(notifications): webhook + SMTP delivery + outbox dispatcher"
 ```
+
+### Task 3.7: internal/cameras — Service + bus + path-manager bridge
+
+See plan main file `internal/cameras/{types,bus,service,pathbridge,service_test}.go`. Owns canonical Camera entity, in-process bus, credential vault integration, and bridge to `internal/core/path_manager` via the small `PathManager` interface (`UpsertCameraPath`, `RemovePath`). On camera create/update/delete it emits `Change` events; the bridge translates them into pathManager calls. `Service.MaterializeRTSPURL` is the only place plaintext password meets a string.
+
+Reference patterns in the existing repo: how `internal/core/path_manager.go` registers paths; how `internal/onvif/manager.go` runs supervised goroutines.
+
+**Test:** create + get + materialize-with-credentials round trip + bus emits create/update/delete in order. Commit `feat(cameras): Service + Bus + PathBridge with credential vault integration`.
+
+### Task 3.8: internal/retention — sweepers (segments, events, clips)
+
+Three independent sweepers behind a `Sweeper` interface, each on its own ticker, run by a `Manager`. `Manager.SweepAll(ctx)` for the diagnostic API endpoint. Segments sweeper iterates cameras, looks up policy retention, calls a `SegmentLister` (wired in Phase 6 against `internal/recordstore`). Events sweeper batches `EventsRepo.DeleteExpired`. Clips sweeper batches `ClipsRepo.DeleteExpiredReady` and unlinks output files. All sweepers idempotent.
+
+**Test:** seed expired + non-expired events; sweeper deletes only expired. Commit `feat(retention): segment + event + clip sweepers`.
+
+### Task 3.9: internal/cloudbridge — Service interface + nop processor + horizon sweeper
+
+`Service.Run(ctx)` runs the processor. Foundation ships only `nopProcessor` which sleeps and runs a horizon sweeper hourly: deletes `cloud_outbox` rows older than `system_settings['cloud_outbox_horizon_hours']` (default 168h). When the cloud product launches, swap `nopProcessor` for the real HTTP processor.
+
+**Test:** seed an old + a fresh `cloud_outbox` row; nop's `sweep` deletes only the old. Commit `feat(cloudbridge): Service interface + nop processor + horizon sweeper`.
+
+### Task 3.10: Phase 3 verification + checkpoint
+
+```bash
+go test ./internal/cameracred/ ./internal/rbac/ ./internal/schedule/ \
+        ./internal/outbox/ ./internal/events/ ./internal/notifications/ \
+        ./internal/cameras/ ./internal/retention/ ./internal/cloudbridge/ -v
+go build ./...
+git tag phase-3-domain-complete
+```
+
+---
+
+## Phase 4 — MS code removal
+
+Surgical deletes + import trims. After every step, build + test must remain green.
+
+### Task 4.1: Delete MS-only packages
+
+```bash
+git rm -r internal/pairing internal/policysync internal/camerasync internal/crl internal/updatepoll
+```
+
+Build will fail; subsequent tasks repair the importers.
+
+### Task 4.2: Trim `internal/conf/conf.go`
+
+Drop fields `TenantID`, `ManagementServerEndpoint`, `CloudEndpoint`, `MSPollInterval`, `CanonicalSource` and every reference. `grep -rn` finds the call sites. Update test fixtures that construct `conf.Conf{}` literally with these fields. `go test ./internal/conf/...` must pass. Commit `refactor(conf): drop MS-coupling fields`.
+
+### Task 4.3: Trim `internal/auth/manager.go`
+
+Drop the JWKS-from-MS path, `JWTJWKSFingerprint`, `JWTJWKSRootCAs`, the `jwksRefreshPeriod` ticker. Delete `pairing_override.go` + `pairing_override_test.go`. Update `manager_test.go`. `go test ./internal/auth/...` must pass. Commit `refactor(auth): remove MS JWKS path; keep LocalJWT + InternalUsers`.
+
+### Task 4.4: Trim `internal/identity/identity.go`
+
+Keep `id` + ECDSA keypair. Drop everything around `device.crt`, `chain.crt`, `pinned-roots.json`, `ms-metadata.json`, `canonical-source` files; delete `refresh_ms_metadata.go` + `refresh_ms_metadata_test.go`. Commit `refactor(identity): drop MS cert/chain/pinned-roots/metadata persistence`.
+
+### Task 4.5: Trim `internal/core/core.go`
+
+Remove imports of `pairing`, `policysync`, `camerasync`, `crl`, `updatepoll`. Remove the matching fields from `Core{}` and every initialize/Start/Close line. Leave `// TODO(phase6): wire <new package>` comments where the deleted wiring used to be. Delete `internal/core/onvif_persister.go` and `updatepoll_adapter.go`. Build will still fail until 4.7 lands. Commit `refactor(core): unwire MS components; leave Phase 6 hooks`.
+
+### Task 4.6: Repurpose `internal/mdns/mdns.go`
+
+Change service name to `_raikada-nvr._tcp`. Remove the Browse-side that listened for MS advertisements. Keep the TXT-records mechanism but the runtime values come from `core` (Phase 6). Update tests. Commit `refactor(mdns): advertise _raikada-nvr._tcp for operator discovery`.
+
+### Task 4.7: Delete pairing API handlers + lockdown gates
+
+```bash
+git rm internal/api/api_v1_recorder_pair.go \
+       internal/api/api_v1_recorder_unpair.go \
+       internal/api/api_v1_recorder_discovered_management.go \
+       internal/api/api_camerasync.go \
+       internal/api/api_policysync.go \
+       internal/api/camera_lockdown_gate.go \
+       internal/api/policy_lockdown_gate.go
+git rm internal/api/api_v1_recorder_pair*_test.go 2>/dev/null
+git rm internal/api/*lockdown*_test.go 2>/dev/null
+```
+
+Edit `api_v1_recorder_lifecycle.go` to keep only non-pairing endpoints (factory wipe, reboot). Edit `internal/api/api.go` to remove route registrations for any deleted handler. Adapt or delete tests that referenced removed symbols. Commit `refactor(api): remove pairing/sync/lockdown handlers`.
+
+### Task 4.8: Phase 4 verification
+
+```bash
+go build ./...
+go vet ./...
+go test ./... -count=1 -timeout 300s 2>&1 | tail -40
+git tag phase-4-ms-removal-complete
+```
+
+---
+
+## Phase 5 — API handlers
+
+Pattern (apply to every handler file):
+
+```go
+package api
+
+import (
+    "github.com/gin-gonic/gin"
+    "github.com/bluenviron/mediamtx/internal/rbac"
+)
+
+func (a *API) registerV1<Resource>(r gin.IRouter, audit rbac.AuditEmitter) {
+    g := r.Group("/v1/<resource>")
+    g.GET("",       rbac.RequirePerm(rbac.PermXxxRead, audit),  a.handleList<Resource>)
+    g.GET("/:id",   rbac.RequirePerm(rbac.PermXxxRead, audit),  a.handleGet<Resource>)
+    g.POST("",      rbac.RequirePerm(rbac.PermXxxWrite, audit), a.handleCreate<Resource>)
+    g.PATCH("/:id", rbac.RequirePerm(rbac.PermXxxWrite, audit), a.handleUpdate<Resource>)
+    g.DELETE("/:id", rbac.RequirePerm(rbac.PermXxxWrite, audit), a.handleDelete<Resource>)
+}
+```
+
+Each handler reads claims from `c.MustGet(rbac.ClaimsContextKey).(rbac.Claims)`, validates body, calls Service/Repo, renders JSON, emits audit row on mutations. Error mapping: `sql.ErrNoRows` → 404; sentinel `*Exists` → 409; validation → 400; vault errors → 500.
+
+### Task 5.1: Auth endpoints
+
+`POST /v1/auth/login` (anonymous), `POST /v1/auth/logout`, `POST /v1/auth/password`, `GET /v1/auth/me`. Login validates via `localauth.Manager.VerifyCredentials`, mints JWT via `IssueAccessToken(user, role)`, returns body + `HttpOnly` cookie. Audit `auth.login.success`/`failure`. Commit `feat(api): auth endpoints`.
+
+### Task 5.2: Cameras + credentials + probe + health
+
+`GET/POST/PATCH/DELETE /v1/cameras[/:id]`, `PUT /v1/cameras/:id/credentials`, `POST /v1/cameras/:id/probe` (501 in foundation), `GET /v1/cameras/:id/health`, preserve existing `GET /v1/cameras/:id/snapshot`. PATCH must reject `credentials` field with 400 (use the dedicated PUT). Camera serializer redacts credentials (`password_set: bool` only). Commit `feat(api): camera CRUD + credentials PUT + health endpoint`.
+
+### Task 5.3: Camera groups
+
+`GET/POST/PATCH/DELETE /v1/camera-groups[/:id]`. DELETE returns 409 if any camera still references the group. Commit `feat(api): camera groups CRUD`.
+
+### Task 5.4: Recording policies + schedules + recording-state
+
+Rewire existing `api_v1_recording_policies.go` to the new repo (drop any canonical-source / lockdown gate). Add `GET/PUT /v1/recording-policies/:id/schedules` (PUT is atomic replace-all; body `{schedules: [{day_of_week, start: "HH:MM", end: "HH:MM"}]}` → translate to minutes). Add `GET /v1/cameras/:id/recording-state` calling `schedule.Resolver.IsActive`. Commit `feat(api): recording policies + schedules + recording-state`.
+
+### Task 5.5: Events + types + retention + SSE
+
+Rewire `api_v1_events.go` to `events.Service`. Add `GET /v1/events/stream` (SSE: `Content-Type: text/event-stream`, subscribe to `events.Service.Subscribe()`, write `data: <json>\n\n` per event, unsubscribe on context done). Add `/v1/event-types` CRUD + `/v1/event-retention` GET/PUT. Audit only `event.acknowledged`. Commit `feat(api): events list/get/ack/SSE + event-types + event-retention`.
+
+### Task 5.6: Notification targets + subscriptions + outbox + test
+
+`/v1/notification-targets`, `/v1/notification-subscriptions`, `/v1/notification-outbox` CRUD. Webhook secret in plaintext on POST → vault-encrypt before persist. `POST /v1/notification-targets/:id/test` synthesizes a `__test__` event payload, runs the dispatcher's per-target send synchronously, returns delivery result. After every notification mutation, call `notifications.Dispatcher.InvalidateCache()`. Commit `feat(api): notifications targets/subs/outbox + test endpoint`.
+
+### Task 5.7: System endpoints
+
+`/v1/system/settings` GET/PATCH (allow-list of mutable keys), `/v1/system/tls` PUT (validate PEM by parsing, write to identity-dir paths, signal hot-reload), `/v1/system/retention/sweep` POST (calls `retention.Manager.SweepAll`), `/v1/system/setup-status` (anonymous; returns `setup_required: bool` based on bootstrap admin's `must_change_password` flag), `/v1/system/info` (anonymous; version + recorder id + setup status). Commit `feat(api): system settings + TLS + retention sweep + setup-status + info`.
+
+### Task 5.8: Audit + users management
+
+Audit: `GET /v1/audit`, `GET /v1/audit/:id`, `POST /v1/audit/export`, `POST /v1/audit/purge` (admin only, audited first). Users: `GET/POST/PATCH/DELETE /v1/users[/:id]`, `POST /v1/users/:id/role`, `POST /v1/users/:id/password` (admin reset). Commit `feat(api): audit log + user management endpoints`.
+
+### Task 5.9: Wire RBAC middleware globally
+
+`internal/api/auth_middleware.go` extracts JWT from cookie or `Authorization` header, validates via `localauth.Manager`, looks up user, populates `c.Set(rbac.ClaimsContextKey, Claims{UserID, Username, Role})`. Apply globally to authenticated routes. Anonymous routes registered on a separate group without the middleware. Pass audit emitter to every `RequirePerm`. Commit `feat(api): JWT auth middleware + global RBAC wiring`.
+
+### Task 5.10: Phase 5 verification
+
+```bash
+go build ./...
+go test ./internal/api/... -v -count=1 -timeout 300s
+git tag phase-5-api-complete
+```
+
+---
+
+## Phase 6 — Bootstrap + integration wiring
+
+### Task 6.1: Identity dir generation
+
+Extend `internal/identity/identity.go::Open(dir)` to create on first start: `id` (UUIDv7), `recorder.key`+`recorder.pub` (ECDSA P-256, existing), `jwt.key` (Ed25519 for `localauth`), `cred.key` (32B for `cameracred`), `tls.crt`+`tls.key` (self-signed, SANs = hostname + `<id>.local` + `localhost` + IPv4 NICs, 1y validity). All private keys mode 0600. Auto-renew TLS within 30d of expiry. Commit `feat(identity): generate jwt + cred + self-signed TLS keys on first start`.
+
+### Task 6.2: Bootstrap admin seeding
+
+New package `internal/bootstrap/`: `Run(ctx, st, identityDir)` creates an admin row when `local_users.count == 0`. Honors `RAIKADA_BOOTSTRAP_PASSWORD` env var (skips file write + must_change). Otherwise generates 24-char random password, writes `<identityDir>/initial-admin-password.txt` (mode 0600), logs once with explicit "not redacted" warning. Commit `feat(bootstrap): seed admin user on first start`.
+
+### Task 6.3: System settings runtime seeding
+
+After bootstrap admin, populate `system_settings['timezone']` from `time.Local` if missing. Also seed `snapshot_root` (default `<recordings_root>/snapshots`) and `clip_root` (default `<recordings_root>/clips`) once `conf.RecordingPath` is known. Commit `feat(bootstrap): seed timezone + snapshot/clip roots`.
+
+### Task 6.4: Wire all the new services in `core.go`
+
+After `store.Open` and `bootstrap.Run`, construct: `cameracred.Vault`, `cameras.Bus`+`Service`, `events.Bus`+`Service`, `schedule.Resolver`, `notifications.Dispatcher`, `retention.Manager`, `cloudbridge.Service`, `cameras.PathBridge`. Call `pathBridge.Bootstrap(ctx)` to register existing cameras with the path manager. Start long-lived goroutines: `pathBridge.Run`, `notifDispatcher.Run`, `retentionMgr.Run`, `cloudSvc.Run`. Pass everything the API needs via a single `api.Config{}`. Replace the deleted MS wiring's `// TODO(phase6)` markers. Commit `feat(core): wire foundation services and start long-lived goroutines`.
+
+### Task 6.5: TLS hot-reload via fsnotify
+
+In core, watch `tls.cert_path` + `tls.key_path` (defaulting to identity-dir paths). On WRITE event, re-load + validate the pair, atomically swap into HTTPS server's `tls.Config.GetCertificate` callback. On parse error: keep prior pair, log, write `system.tls_reload_failed` audit row, never fall back to no-TLS. Commit `feat(core): TLS hot-reload via fsnotify with safe fallback`.
+
+### Task 6.6: mDNS service start
+
+Start the repurposed mDNS advertiser. TXT `setup_required` derived from `LocalUsers.Count == 0 || bootstrap admin still has must_change_password`. Commit `feat(core): start mDNS NVR advertisement`.
+
+### Task 6.7: Audit emitter wiring
+
+New package `internal/audit/`: `Emitter` struct wrapping `store.AuditLogRepo` with per-domain helpers (`emitter.Auth.LoginSuccess(ctx, user, ip)`, `emitter.Camera.Created(ctx, actor, cam)`, etc.) and explicit allow-list redaction at write time. Pass to API constructor + each handler module. Commit `feat(audit): emitter with per-domain allow-list redaction`.
+
+### Task 6.8: Phase 6 verification
+
+```bash
+go build ./...
+go test ./internal/core/ ./internal/bootstrap/ ./internal/audit/ -v
+./mediamtx --confpath /tmp/raikada-test.yml &
+sleep 3
+curl -k https://localhost:9997/v1/system/info
+curl -k https://localhost:9997/v1/system/setup-status
+kill %1
+git tag phase-6-bootstrap-complete
+```
+
+---
+
+## Phase 7 — Embedded SPA updates
+
+The existing SPA lives in `web/` (Vite + React + TypeScript). The pre-built bundle in `internal/web/dist/` is what `go:embed` ships. Every SPA change requires `make web` to refresh the embed.
+
+### Task 7.1: Inventory the existing SPA
+
+Read `web/package.json` + `web/src/` structure. Identify pages tied to the deleted MS-pairing flow (PairWizard, DiscoveredManagementList, LockdownBanner, "managed by Management Server" copy) and mark for removal.
+
+### Task 7.2: Remove pairing UI
+
+Delete or stub the components above. Update routes. Commit `feat(web): remove MS pairing UI`.
+
+### Task 7.3: First-run setup wizard
+
+New `/setup` route that renders only when `GET /v1/system/setup-status` returns `setup_required: true`. Hijack any other navigation until setup is complete. Steps: enter initial password → set new admin password → site name + timezone + language → optional TLS upload → optional SMTP setup → done. Commit `feat(web): first-run setup wizard`.
+
+### Task 7.4: Login page
+
+New `/login` route. Posts to `/v1/auth/login`. On `must_change_password` route to `/account/password`; otherwise to `/dashboard`. Commit `feat(web): login + must-change-password flows`.
+
+### Task 7.5: Users management page (admin only)
+
+`/users` page (visible only when `claims.role == admin`). Lists users; create/edit/delete; reset password. Commit `feat(web): users management page`.
+
+### Task 7.6: Notification targets + subscriptions
+
+`/notifications/targets` (list, create webhook|email, test, delete) and `/notifications/subscriptions` (list, create with target × event_type × camera × min_severity × quiet_hours, delete). Commit `feat(web): notification targets + subscriptions UI`.
+
+### Task 7.7: Recording schedules editor
+
+`/policies/:id/schedule` with a drag-to-create weekly Sun..Sat × 0..24 grid. Save → `PUT /v1/recording-policies/:id/schedules`. Commit `feat(web): weekly schedule editor`.
+
+### Task 7.8: Refresh embed
+
+```bash
+make web
+git add internal/web/dist web/
+git commit -m "feat(web): refresh embedded SPA bundle for foundation UI"
+```
+
+---
+
+## Phase 8 — Cypress E2E + integration tests + final checkpoint
+
+### Task 8.1: Cypress scaffolding
+
+Add `cypress` + `@testing-library/cypress` dev deps to `web/package.json`. Add `web/cypress/cypress.config.ts` with `baseUrl: 'https://localhost:9997'` and `chromeWebSecurity: false`. Add `cy:open` and `cy:run` npm scripts.
+
+### Task 8.2: Setup wizard spec
+
+`web/cypress/e2e/setup-wizard.cy.ts` — `before()` resets the recorder (helper: wipe identity dir + restart server), navigates to `/`, walks the wizard, asserts dashboard renders.
+
+### Task 8.3: Camera CRUD spec
+
+`web/cypress/e2e/cameras.cy.ts` — adds a camera (mock RTSP fixture), edits, rotates credentials, deletes; verifies list reflects each step.
+
+### Task 8.4: Notifications spec
+
+`web/cypress/e2e/notifications.cy.ts` — creates webhook target with `cy.intercept('POST', '...')`, creates subscription, triggers `POST /v1/notification-targets/:id/test`, asserts mock received signed POST.
+
+### Task 8.5: Real-camera smoke runbook (for the user)
+
+Write `docs/superpowers/runbooks/real-camera-smoke.md` documenting the manual smoke procedure against the user's LAN cameras: setup wizard → manual-add camera → live view → recording → motion event → webhook delivery. Includes prerequisites, exact steps, and failure-reporting checklist (`journalctl`, `audit_log`, browser console).
+
+### Task 8.6: Final acceptance run + tag + PR
+
+```bash
+go build ./...
+go vet ./...
+go test ./... -count=1 -race -timeout 600s
+make web-typecheck
+cd web && npm run cy:run
+git tag v1.0.0-foundation -m "Consumer NVR foundation: sub-project 1 of 4 complete"
+gh pr create --title "Consumer NVR foundation (sub-project 1 of 4)" --body "..."
+```
+
+---
+
+## Self-review summary
+
+**Spec coverage:** every spec section maps to plan tasks (Section 1 → Phases 1+4; Section 2 → Phases 1+2; Section 3 → Tasks 3.1, 3.2, 5.1, 6.1, 6.2, 6.5, 6.6; Section 4 → 3.7, 5.2; Section 5 → 3.3, 3.8, 5.4; Section 6 → 3.4, 3.5, 3.6, 5.5, 5.6; Section 7 → 3.9, 5.8, 6.7).
+
+**Open items O1–O11:** preserved as defaults (simple `X-Raikada-Signature`; max attempts 8; 3-tier severity; per-domain allow-list redaction; dual-insert accepted; module rename / config rename / ACME / TPM / DB-defined custom roles / JWT revocation all deferred per spec).
+
+**Type consistency:** `cameras.PathManager` interface has two methods (`UpsertCameraPath`, `RemovePath`) — Phase 6 wires real path manager via small adapter funcs in core if signatures differ. `events.CloudOutboxEnqueuer` is a one-method interface satisfied by `store.CloudOutboxRepo.Insert`. `cameras.OnvifTeardown` is one-method satisfied by a Phase 6 adapter on the existing onvif manager.
+
+**Placeholder note:** the SMTP `hexToBytes` helper in 3.6 and the `osStat` indirection in `cameracred/vault_test.go` are sketch fragments — implement with `encoding/hex.DecodeString` and `os.Stat` respectively.
+
+---
+
+## Execution
+
+Plan is being executed by parallel subagents in this branch (`consumer-foundation`) in worktree `../NVR-consumer-foundation`. Final report on user wake-up.
