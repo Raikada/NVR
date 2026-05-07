@@ -19,17 +19,19 @@ import { Network } from './routes/Network';
 import { Logs } from './routes/Logs';
 import { Diagnostics } from './routes/Diagnostics';
 import { Settings } from './routes/Settings';
+import { Users } from './routes/Users';
 import { Login } from './routes/Login';
 import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import {
   clearStoredToken,
+  getMe,
   getSetupStatus,
   getStoredToken,
   getStoredUsername,
   setOnUnauthorized,
 } from './lib/api';
-import type { AppState, Route, Toast, ToastInput } from './lib/types';
+import type { AppState, MeResponse, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
 
 function readHashRoute(): Route {
@@ -68,6 +70,8 @@ export function App() {
     return t ? 'authenticated' : 'anonymous';
   });
   const [authUser, setAuthUser] = useState<string>(() => getStoredUsername() ?? 'admin');
+  const [claims, setClaims] = useState<MeResponse | null>(null);
+  const isAdmin = claims?.user.role === 'admin';
 
   // Wire the api.ts 401 handler so an expired-token request bumps the
   // SPA back to the Login screen instead of cascading hard errors.
@@ -118,6 +122,24 @@ export function App() {
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
+
+  // Load /v1/me claims (role + permissions) once authenticated so
+  // admin-gated routes (Users, Notifications) can reveal themselves.
+  useEffect(() => {
+    if (auth !== 'authenticated') return;
+    let cancelled = false;
+    void getMe()
+      .then((m) => {
+        if (cancelled) return;
+        setClaims(m);
+      })
+      .catch(() => {
+        // Endpoint absent on older builds; treat as non-admin.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
 
   // Once authenticated, ask the recorder whether first-run setup is
   // still pending. setup-status returns {setup_required:true} until
@@ -184,6 +206,10 @@ export function App() {
         return <Diagnostics state={state} addToast={addToast} />;
       case 'settings':
         return <Settings state={state} addToast={addToast} />;
+      case 'users':
+        return isAdmin ? <Users addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
+      case 'notifications':
+        return <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
     }
   })();
 
@@ -212,7 +238,7 @@ export function App() {
         onLogout={handleLogout}
       />
       <div className="shell">
-        <IconRail route={route} go={go} />
+        <IconRail route={route} go={go} isAdmin={isAdmin} />
         {main}
       </div>
       {showWizard && (

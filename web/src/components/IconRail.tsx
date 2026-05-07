@@ -5,9 +5,10 @@ import type { Route } from '../lib/types';
 interface IconRailProps {
   route: Route;
   go: (next: Route) => void;
+  isAdmin?: boolean;
 }
 
-const ITEMS: { id: Route; icon: IconName; label: string }[] = [
+const BASE_ITEMS: { id: Route; icon: IconName; label: string }[] = [
   { id: 'overview', icon: 'layout-dashboard', label: 'Overview' },
   { id: 'cameras', icon: 'cctv', label: 'Cameras' },
   { id: 'policies', icon: 'database', label: 'Policies' },
@@ -15,6 +16,11 @@ const ITEMS: { id: Route; icon: IconName; label: string }[] = [
   { id: 'network', icon: 'network', label: 'Network' },
   { id: 'logs', icon: 'terminal', label: 'Logs' },
   { id: 'diagnostics', icon: 'activity', label: 'Diagnostics' },
+];
+
+const ADMIN_ITEMS: { id: Route; icon: IconName; label: string }[] = [
+  { id: 'users', icon: 'user', label: 'Users' },
+  { id: 'notifications', icon: 'bell', label: 'Notifications' },
 ];
 
 interface RailBtnProps {
@@ -86,7 +92,8 @@ function RailBtn({ icon, label, active, onClick, badge }: RailBtnProps) {
   );
 }
 
-export function IconRail({ route, go }: IconRailProps) {
+export function IconRail({ route, go, isAdmin }: IconRailProps) {
+  const ITEMS = isAdmin ? [...BASE_ITEMS, ...ADMIN_ITEMS] : BASE_ITEMS;
   return (
     <aside
       style={{
