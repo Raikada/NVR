@@ -48,6 +48,7 @@ type Store struct {
 	CameraHealth       *CameraHealthRepo
 	RecordingPolicies  *RecordingPoliciesRepo
 	RecordingSchedules *RecordingSchedulesRepo
+	EventTypes         *EventTypesRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -91,6 +92,7 @@ func Open(path string) (*Store, error) {
 	s.CameraHealth = &CameraHealthRepo{db: db}
 	s.RecordingPolicies = &RecordingPoliciesRepo{db: db}
 	s.RecordingSchedules = &RecordingSchedulesRepo{db: db}
+	s.EventTypes = &EventTypesRepo{db: db}
 	return s, nil
 }
 
