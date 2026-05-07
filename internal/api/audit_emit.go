@@ -63,12 +63,12 @@ func (a *API) emitAudit(in defs.AuditLogEntryInput) {
 }
 
 // emitAuditLocked is for callers that already hold a.mutex (write or
-// read). Reads a.Conf.TenantID directly without re-acquiring the
+// read). Reads "" directly without re-acquiring the
 // mutex, matching publishEventLocked's pattern.
 func (a *API) emitAuditLocked(in defs.AuditLogEntryInput) {
 	tenantID := ""
 	if a != nil && a.Conf != nil {
-		tenantID = a.Conf.TenantID
+		tenantID = ""
 	}
 	_, _ = defaultAuditChain().Append(in, tenantID, "")
 }

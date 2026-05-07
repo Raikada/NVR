@@ -150,7 +150,7 @@ func (a *API) onV1RecorderCameraSourceConfigGet(ctx *gin.Context) {
 	}
 
 	out := rpiCameraSourceConfigFromPath(c.Paths[pathName])
-	out.TenantID = c.TenantID
+	out.TenantID = ""
 	ctx.JSON(http.StatusOK, out)
 }
 

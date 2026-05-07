@@ -19,7 +19,6 @@ import (
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
-	"github.com/bluenviron/mediamtx/internal/pairing"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	"github.com/bluenviron/mediamtx/internal/web"
 )
@@ -56,7 +55,6 @@ func paramName(ctx *gin.Context) (string, bool) {
 type apiAuthManager interface {
 	Authenticate(req *auth.Request) (string, *auth.Error)
 	AuthenticateWithClaims(req *auth.Request) (string, auth.Claims, *auth.Error)
-	RefreshJWTJWKS()
 }
 
 type apiParent interface {
@@ -81,7 +79,6 @@ type API struct {
 	AuthManager    apiAuthManager
 	Identity       *identity.Identity
 	LocalAuth      *localauth.Manager
-	Pairing        *pairing.Manager
 	MDNS           *mdns.Service
 	PathManager    defs.APIPathManager
 	RTSPServer     defs.APIRTSPServer
@@ -97,25 +94,14 @@ type API struct {
 	mutex        sync.RWMutex
 	networkProbe *networkProbe
 
-	// cameraAppliedVersions tracks the most recent MS-issued version
-	// applied per camera id (slice 4-B per ADR 0016 D4). Populated by
-	// the camerasync apply path; read by the apply diff. Guarded by
-	// a.mutex (write-locked during apply, read-locked otherwise).
-	// Transient — recovered on the next poll if the recorder restarts.
-	cameraAppliedVersions map[string]int64
-	// policyAppliedVersions is the slice-4-C analogue per ADR 0017 D4.
-	// Populated by the policysync apply path. Same locking convention.
-	policyAppliedVersions map[string]int64
-
 	// Wave 6: software-update applier. Wired by Core at startup when a
 	// pinned Raikada release public key is configured. Guarded by
 	// a.mutex.
 	softwareUpdateApplier softwareUpdateApplierField
 
-	// Wave A2: process-wide cache of MS-approved update lifecycle rows
-	// for this recorder. Read-only access from the
-	// /v1/recorder/identity handler; populated by internal/updatepoll's
-	// goroutine. Wired lazily via SetUpdatePollState.
+	// updatePollState is a process-wide cache of approved update
+	// lifecycle rows for this recorder. Read-only access from the
+	// /v1/recorder/identity handler.
 	updatePollState UpdatePollSnapshot
 }
 
@@ -275,23 +261,12 @@ func (a *API) Initialize() error {
 	group.GET("/recorder/config-backup", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigBackup)
 	group.POST("/recorder/config-restore", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigRestore)
 	group.GET("/recorder/network-info", a.requirePermission("health.read"), a.onV1RecorderNetworkInfo)
-	// Pairing — recorder-side trigger + status for the MS pairing
-	// flow. Operator drives this from the Setup Wizard. ADR 0015
-	// device_lifecycle.manage covers pair/unpair/discover.
-	group.POST("/recorder/pair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairPost)
-	group.GET("/recorder/pair/status", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairStatusGet)
-	group.POST("/recorder/pair/reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairResetPost)
-	group.POST("/recorder/unpair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderUnpairPost)
 	// Wave 7 / ADR 0015 device-lifecycle:
-	//   - config-reset    (D7)  preserves identity + recordings + audit
 	//   - factory-wipe    (D8)  destructive, two-stage confirmation
 	//   - recovery-bundle (D19) signed manifest, no private keys
-	group.POST("/recorder/config-reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderConfigResetPost)
 	group.POST("/recorder/factory-wipe", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderFactoryWipePost)
 	group.POST("/recorder/recovery-bundle", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderRecoveryBundleExport)
-	group.GET("/recorder/discovered-management", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderDiscoveredManagementGet)
-	// Wave 6: software-update apply endpoint. The MS pushes here with
-	// scope ["software_update.manage"] in its service JWT.
+	// Wave 6: software-update apply endpoint.
 	group.POST("/recorder/software-updates/apply", a.requirePermission("software_update.manage"), a.onV1RecorderSoftwareUpdateApplyPost)
 	// Diagnostics suite (cross-platform; no shell-outs). ping + ntp
 	// are recorder-config-manage; rtsp-probe targets a camera and
@@ -630,13 +605,9 @@ func (a *API) onInfo(ctx *gin.Context) {
 }
 
 // onV1AuthRefreshIssuerMaterial handles POST /v1/auth/refresh-issuer-material.
-// Renamed from /v3/auth/jwks/refresh per ADR 0009 §D7 to be mechanism-neutral.
-// ADR 0011 picked JWT/JWKS for user flows and mTLS for service-to-service;
-// the mechanism-neutral name was retained so additional issuer-material
-// kinds (e.g., mTLS trust roots) can flow through this endpoint without a
-// rename. Today the body refreshes the JWKS cache.
+// Consumer NVR no longer pulls remote JWKS; the endpoint is preserved as a
+// no-op so existing clients can call it without 404'ing.
 func (a *API) onV1AuthRefreshIssuerMaterial(ctx *gin.Context) {
-	a.AuthManager.RefreshJWTJWKS()
 	a.writeOK(ctx)
 }
 

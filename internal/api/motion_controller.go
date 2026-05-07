@@ -115,7 +115,7 @@ func TenantIDFnForAPI(a *API) motion.TenantIDFn {
 		if a.Conf == nil {
 			return ""
 		}
-		return a.Conf.TenantID
+		return ""
 	}
 }
 

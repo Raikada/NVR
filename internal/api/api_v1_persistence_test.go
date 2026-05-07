@@ -26,8 +26,7 @@ func TestCameraPostPersistsAcrossReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
 	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
-			"api: yes\n"), 0o644))
+		"api: yes\n"), 0o644))
 
 	cnf, _, err := conf.Load(confPath, nil, nil)
 	require.NoError(t, err)
@@ -73,8 +72,7 @@ func TestCameraPatchRecordingPolicyIDPersistsAcrossReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
 	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
-			"api: yes\n"), 0o644))
+		"api: yes\n"), 0o644))
 
 	cnf, _, err := conf.Load(confPath, nil, nil)
 	require.NoError(t, err)
@@ -127,7 +125,7 @@ func TestRecordingPolicyPostPersistsAcrossReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
 	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+		""), 0o644))
 
 	cnf, _, err := conf.Load(confPath, nil, nil)
 	require.NoError(t, err)
@@ -161,7 +159,7 @@ func TestRecordingPolicyDeletePersistsAcrossReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
 	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+		""), 0o644))
 
 	cnf, _, err := conf.Load(confPath, nil, nil)
 	require.NoError(t, err)

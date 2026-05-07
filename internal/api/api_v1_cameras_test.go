@@ -104,7 +104,7 @@ func TestV1CamerasListPopulatedAndPagination(t *testing.T) {
 
 	// Tenant id stamped on every item.
 	for _, c := range resp.Items {
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", c.TenantID)
+		require.Equal(t, "", c.TenantID)
 	}
 
 	// Source URL with userinfo is redacted; credentials_ref marks presence.
@@ -200,7 +200,7 @@ func TestV1CamerasPostCreatesAndIssuesUUID(t *testing.T) {
 	require.NotEmpty(t, cam.ID)
 	require.Equal(t, cameraIDFromPathName("fresh_cam"), cam.ID)
 	require.Equal(t, "fresh_cam", cam.Name)
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", cam.TenantID)
+	require.Equal(t, "", cam.TenantID)
 
 	// Confirm the path was added to the live conf.
 	_, ok := api.Conf.OptionalPaths["fresh_cam"]

@@ -161,8 +161,8 @@ func (a *API) synthesize() (
 	}
 
 	tenantID := ""
-	if c.TenantID != "" {
-		tenantID = c.TenantID
+	if "" != "" {
+		tenantID = ""
 	}
 
 	// Resolve the camera-id → content-type map once for this synthesis

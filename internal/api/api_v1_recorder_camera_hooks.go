@@ -119,7 +119,7 @@ func (a *API) onV1RecorderCameraHooksGet(ctx *gin.Context) {
 	}
 
 	out := cameraHooksFromPath(c.Paths[pathName])
-	out.TenantID = c.TenantID
+	out.TenantID = ""
 	a.inspectCameraHooksForSecrets("camera="+cameraID, out)
 	ctx.JSON(http.StatusOK, out)
 }

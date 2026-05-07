@@ -60,43 +60,6 @@ func makeLifecycleAPI(t *testing.T) (*API, *identity.Identity, string, string) {
 	return api, id, idDir, "http://" + addr
 }
 
-func TestConfigReset_Default_PreservesIdentity(t *testing.T) {
-	api, id, _, base := makeLifecycleAPI(t)
-	originalID := id.ID().String()
-
-	tr := &http.Transport{}
-	defer tr.CloseIdleConnections()
-	hc := &http.Client{Transport: tr}
-
-	var out map[string]any
-	httpRequest(t, hc, http.MethodPost,
-		base+"/v1/recorder/config-reset", nil, &out)
-	require.Equal(t, "config", out["reset_kind"])
-	require.Equal(t, false, out["return_to_unpaired"])
-
-	// Identity ID is the same.
-	require.Equal(t, originalID, api.Identity.ID().String())
-}
-
-func TestConfigReset_ReturnToUnpaired_ClearsIssuedIdentityWhenPaired(t *testing.T) {
-	// When the recorder isn't paired (no issued cert), return_to_unpaired
-	// is a no-op for the issued material. We verify the request still
-	// succeeds and the identity ID survives.
-	api, id, _, base := makeLifecycleAPI(t)
-	originalID := id.ID().String()
-
-	tr := &http.Transport{}
-	defer tr.CloseIdleConnections()
-	hc := &http.Client{Transport: tr}
-
-	var out map[string]any
-	body := map[string]any{"return_to_unpaired": true}
-	httpRequest(t, hc, http.MethodPost,
-		base+"/v1/recorder/config-reset", body, &out)
-	require.Equal(t, true, out["return_to_unpaired"])
-	require.Equal(t, originalID, api.Identity.ID().String())
-}
-
 func TestFactoryWipe_FirstCallReturnsConfirmation(t *testing.T) {
 	_, _, _, base := makeLifecycleAPI(t)
 

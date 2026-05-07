@@ -91,7 +91,7 @@ func (a *API) cameraFromConfPath(c *conf.Conf, p *conf.Path) defs.Camera {
 	_, nameToID := cameraIDMaps(c.Paths)
 	cameraID := nameToID[p.Name]
 	runtime := a.cameraRuntimeForPath(p.Name)
-	cam := defs.CameraFromPath(p, cameraID, c.TenantID, recordingPolicyIDForPath(p), nameToID, runtime)
+	cam := defs.CameraFromPath(p, cameraID, "", recordingPolicyIDForPath(p), nameToID, runtime)
 	return cam
 }
 
@@ -268,9 +268,6 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !a.guardAdminAction(ctx) {
 		return
 	}
-	if !a.applyCameraLockdown(ctx, "", "create") {
-		return
-	}
 	cam, _, ok := a.decodeCameraBody(ctx)
 	if !ok {
 		return
@@ -311,7 +308,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	// derive it from the name; the round-trip stays stable regardless
 	// of restarts.
 	cam.ID = cameraIDFromPathName(cam.Name)
-	cam.TenantID = a.Conf.TenantID
+	cam.TenantID = ""
 	now := time.Now().UTC()
 	cam.CreatedAt = now
 	cam.UpdatedAt = now
@@ -378,8 +375,6 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", cam.ID, "create", map[string]string{"camera_id": cam.ID})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
 	ctx.JSON(http.StatusCreated, &cam2)
 }
@@ -391,9 +386,6 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
-		return
-	}
-	if !a.applyCameraLockdown(ctx, id, "update") {
 		return
 	}
 
@@ -520,8 +512,6 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "update", map[string]string{"camera_id": id})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -533,9 +523,6 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
-		return
-	}
-	if !a.applyCameraLockdown(ctx, id, "replace") {
 		return
 	}
 
@@ -557,7 +544,7 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	// recorder-internal name (the route's UUID maps to it).
 	cam.ID = id
 	cam.Name = name
-	cam.TenantID = a.Conf.TenantID
+	cam.TenantID = ""
 	if cam.CreatedAt.IsZero() {
 		// Keep original CreatedAt; fall through with a zero value to be
 		// handled below if we lack the original.
@@ -618,8 +605,6 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "replace", map[string]string{"camera_id": id})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -631,9 +616,6 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
-		return
-	}
-	if !a.applyCameraLockdown(ctx, id, "delete") {
 		return
 	}
 
@@ -676,8 +658,6 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("camera", id, "delete", map[string]string{"camera_id": id})
-
-	a.engageLockdownIfMSSourced(ctx)
 
 	a.writeOK(ctx)
 }
