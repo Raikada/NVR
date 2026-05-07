@@ -13,13 +13,21 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
+	"github.com/bluenviron/mediamtx/internal/cameracred"
+	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/notifications"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
+	"github.com/bluenviron/mediamtx/internal/rbac"
+	"github.com/bluenviron/mediamtx/internal/retention"
+	"github.com/bluenviron/mediamtx/internal/schedule"
+	"github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/web"
 )
 
@@ -89,6 +97,17 @@ type API struct {
 	WebRTCServer   defs.APIWebRTCServer
 	SRTServer      defs.APISRTServer
 	Parent         apiParent
+
+	// Phase 5 wiring: foundation services. Set by Core (Phase 6) via direct
+	// struct initialization. May be nil during early bootstrap or in tests
+	// — handlers must defensively check before use.
+	Store           *store.Store
+	CamerasService  *cameras.Service
+	EventsService   *events.Service
+	ScheduleResolver *schedule.Resolver
+	NotifDispatcher *notifications.Dispatcher
+	RetentionMgr    *retention.Manager
+	Vault           *cameracred.Vault
 
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
@@ -160,6 +179,15 @@ func (a *API) Initialize() error {
 	// still rotate.
 	group.POST("/recorder/login", a.onV1RecorderLogin)
 	group.POST("/recorder/local-users/me/password", a.onV1RecorderLocalUsersMePasswordPost)
+
+	// Phase 5: consumer-friendly auth endpoints. Login/me/password are
+	// aliases over the recorder-local authentication path. Logout is new.
+	// Login is anonymous (pre-auth bypass list above); the others gate
+	// on the standard authenticated principal.
+	group.POST("/auth/login", a.onV1AuthLogin)
+	group.POST("/auth/logout", a.onV1AuthLogout)
+	group.POST("/auth/password", a.onV1AuthPassword)
+	group.GET("/auth/me", a.onV1AuthMe)
 
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
@@ -407,7 +435,7 @@ func (a *API) middlewarePreflightRequests(ctx *gin.Context) {
 // Anything else falls through to authentication. The list is path-
 // prefix matched; route-shape changes must update this list explicitly.
 func isPreAuthBypassPath(method, path string) bool {
-	if method == http.MethodPost && path == "/v1/recorder/login" {
+	if method == http.MethodPost && (path == "/v1/recorder/login" || path == "/v1/auth/login") {
 		return true
 	}
 	if method != http.MethodGet {
@@ -420,8 +448,9 @@ func isPreAuthBypassPath(method, path string) bool {
 	if len(path) >= len("/assets/") && path[:len("/assets/")] == "/assets/" {
 		return true
 	}
-	// Anonymous /v1/info — the operator-UI liveness probe used pre-login.
-	if path == "/v1/info" {
+	// Anonymous /v1/info, /v1/system/setup-status, /v1/system/info — the
+	// operator-UI liveness/setup probes used pre-login per Phase 5.
+	if path == "/v1/info" || path == "/v1/system/setup-status" || path == "/v1/system/info" {
 		return true
 	}
 	return false
@@ -546,6 +575,12 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	}
 
 	setPrincipalOnContext(ctx, principal)
+	// Phase 5 wiring: also stash the rbac.Claims projection so the new
+	// rbac.RequirePerm middleware can consume it directly. Roles are
+	// derived from the principal's Scope per claimsFromPrincipal; bootstrap
+	// admins read RoleAdmin, MediaMTX internal/HTTP auth callers read
+	// RoleAdmin (legacy compat), everything else falls back to Viewer.
+	ctx.Set(rbac.ClaimsContextKey, claimsFromPrincipal(principal))
 
 	// Successful authentication: emit an audit entry per ADR 0006 D1.
 	// Now that ADR 0011 is Accepted, the resolved Principal carries
