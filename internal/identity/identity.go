@@ -147,6 +147,16 @@ func (i *Identity) ID() uuid.UUID {
 	return i.id
 }
 
+// Dir returns the on-disk directory housing the identity material.
+// Phase 5 callers (system TLS PUT, bootstrap admin password file, etc.)
+// use this to derive sibling file paths like tls.crt / tls.key without
+// re-deriving the path.
+func (i *Identity) Dir() string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.dir
+}
+
 // PublicKey returns the ECDSA public key (a copy is safe; we return
 // a pointer because the underlying ecdsa.PublicKey is immutable
 // once generated).

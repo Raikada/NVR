@@ -397,6 +397,18 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	if !a.checkBodyTenantSnakeCase(ctx, body) {
 		return
 	}
+	// Phase 5: PATCH must reject the `credentials` field; operators
+	// rotate via the dedicated PUT /v1/cameras/:id/credentials.
+	{
+		var probe map[string]json.RawMessage
+		if err := json.Unmarshal(body, &probe); err == nil {
+			if _, has := probe["credentials"]; has {
+				a.writeError(ctx, http.StatusBadRequest,
+					fmt.Errorf("credentials cannot be set via PATCH; use PUT /v1/cameras/{id}/credentials"))
+				return
+			}
+		}
+	}
 
 	a.mutex.Lock()
 	defer a.mutex.Unlock()

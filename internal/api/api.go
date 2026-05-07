@@ -189,6 +189,11 @@ func (a *API) Initialize() error {
 	group.POST("/auth/password", a.onV1AuthPassword)
 	group.GET("/auth/me", a.onV1AuthMe)
 
+	// Phase 5 Task 5.2: per-camera credentials, probe, health,
+	// recording-state. Additive surfaces alongside the existing /v1/cameras
+	// CRUD which remains rooted in the path manager.
+	a.registerV1CameraExtensions(group)
+
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
 	// for service-to-service connections; the mechanism-neutral name
