@@ -2,12 +2,22 @@
 // goroutine per subscription that loops {pull, translate, emit, renew}
 // until cancelled.
 //
-// Subscription state lives in-memory only — recorder restart drops all
-// active subscriptions. This is intentional for v1: persisting
-// subscription URLs across restarts adds complexity (URL is camera-
-// scoped state, must be revalidated on resume) and the operator can
-// re-subscribe via the SPA after a restart. A persistent-subscription
-// follow-up is documented in docs/web-ui.md as a future-slice item.
+// Subscription state is persisted to a recorder-local store via the
+// Persister interface (Wave A1; see internal/store/onvif_subscriptions.go
+// for the production implementation). On startup the recorder calls
+// Rehydrate to reattach goroutines to live cameras; the manager treats
+// a nil Persister as "in-memory only" (legacy mode kept for tests).
+//
+// Persistence is fire-and-forget on the run-loop's hot path: a failed
+// UpdateState logs and continues — the goroutine's in-memory state is
+// authoritative and a transient SQLite hiccup must not crash the
+// pull-loop. Insert (AddSubscription) and Delete (RemoveSubscription)
+// errors propagate to the caller because those are operator-initiated
+// and the operator should see persistence failures.
+//
+// Factory-wipe semantics: the recorder DB sits in the identity dir,
+// which Wave 7's factory-wipe removes wholesale, so this table is
+// auto-cleared on D8 — no separate teardown wiring is needed.
 
 package onvif
 
@@ -43,6 +53,40 @@ type SubscriptionRecord struct {
 // path.
 type EventSink func(ev EventNotification)
 
+// Persister stores subscription rows so the manager can rehydrate
+// active subscriptions after a recorder restart. The production
+// implementation is internal/store.OnvifSubscriptionsRepo; tests can
+// supply an in-memory stub.
+//
+// All methods take ctx for cancellation; implementations should use
+// short-deadline contexts because the run-loop calls UpdateState on
+// every event and a slow store would back-pressure the pull-loop.
+type Persister interface {
+	Insert(ctx context.Context, row PersistedSubscription) error
+	UpdateState(ctx context.Context, row PersistedSubscription) error
+	Delete(ctx context.Context, id string) error
+	ListActive(ctx context.Context) ([]PersistedSubscription, error)
+	DeleteTerminated(ctx context.Context) (int, error)
+}
+
+// PersistedSubscription is the wire shape passed across the Persister
+// boundary. Mirrors SubscriptionRecord plus the subscription URL +
+// credentials needed to resume after a restart.
+type PersistedSubscription struct {
+	ID              string
+	CameraID        string
+	XAddr           string
+	Username        string
+	Password        string
+	SubscriptionURL string
+	TerminationTime time.Time
+	CreatedAt       time.Time
+	State           string
+	LastError       string
+	LastEventAt     time.Time
+	EventCount      int
+}
+
 // Manager keeps a registry of active subscriptions and runs one
 // goroutine per subscription. Construction is cheap; subscriptions
 // start when AddSubscription is called.
@@ -50,6 +94,7 @@ type Manager struct {
 	logger    logger.Writer
 	sink      EventSink
 	httpClient *http.Client
+	persister Persister
 
 	// PullTimeout overrides the default per-PullMessages long-poll
 	// timeout. Zero = DefaultPullTimeout.
@@ -64,11 +109,13 @@ type Manager struct {
 }
 
 type subRunner struct {
-	record *SubscriptionRecord
-	sub    *Subscription
-	client *PullPointClient
-	cancel context.CancelFunc
-	done   chan struct{}
+	record   *SubscriptionRecord
+	sub      *Subscription
+	client   *PullPointClient
+	cancel   context.CancelFunc
+	done     chan struct{}
+	username string
+	password string
 }
 
 // NewManager constructs a Manager. Sink is invoked for each event
@@ -81,6 +128,13 @@ func NewManager(log logger.Writer, sink EventSink, httpClient *http.Client) *Man
 		httpClient: httpClient,
 		subs:      make(map[string]*subRunner),
 	}
+}
+
+// SetPersister installs a Persister. Call once at construction time;
+// switching persisters mid-run is not supported. A nil persister
+// disables persistence (in-memory only, legacy mode for tests).
+func (m *Manager) SetPersister(p Persister) {
+	m.persister = p
 }
 
 // AddSubscriptionInput carries the fields the API handler collects
@@ -128,13 +182,39 @@ func (m *Manager) AddSubscription(ctx context.Context, in AddSubscriptionInput) 
 		State:           "active",
 	}
 
+	// Persist before starting the goroutine. Persistence failure on
+	// AddSubscription is a hard error: if we can't durably record
+	// the subscription, we shouldn't pretend it survives restart.
+	// The camera-side Unsubscribe is best-effort cleanup.
+	if m.persister != nil {
+		row := PersistedSubscription{
+			ID:              id,
+			CameraID:        in.CameraID,
+			XAddr:           in.XAddr,
+			Username:        in.Username,
+			Password:        in.Password,
+			SubscriptionURL: sub.URL,
+			TerminationTime: sub.TerminationTime,
+			CreatedAt:       record.CreatedAt,
+			State:           "active",
+		}
+		if err := m.persister.Insert(ctx, row); err != nil {
+			uctx, ucancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = client.Unsubscribe(uctx, sub)
+			ucancel()
+			return nil, fmt.Errorf("persist subscription: %w", err)
+		}
+	}
+
 	runCtx, cancel := context.WithCancel(context.Background())
 	runner := &subRunner{
-		record: record,
-		sub:    sub,
-		client: client,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		record:   record,
+		sub:      sub,
+		client:   client,
+		cancel:   cancel,
+		done:     make(chan struct{}),
+		username: in.Username,
+		password: in.Password,
 	}
 
 	m.mu.Lock()
@@ -174,6 +254,18 @@ func (m *Manager) RemoveSubscription(ctx context.Context, id string) error {
 	uctx, ucancel := context.WithTimeout(ctx, 10*time.Second)
 	defer ucancel()
 	_ = runner.client.Unsubscribe(uctx, runner.sub)
+
+	// Persist the deletion. Logged-and-continued on error: the row
+	// is now orphaned but Rehydrate's reattach-or-prune path will
+	// clean it up on the next restart, and the operator's
+	// in-memory removal succeeded.
+	if m.persister != nil {
+		dctx, dcancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := m.persister.Delete(dctx, id); err != nil {
+			m.log(logger.Warn, "[onvif] persist delete subscription %s: %v", id, err)
+		}
+		dcancel()
+	}
 	return nil
 }
 
@@ -305,8 +397,114 @@ func (m *Manager) recordError(runner *subRunner, msg string) {
 
 func (m *Manager) touch(runner *subRunner, fn func(*SubscriptionRecord)) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	fn(runner.record)
+	snap := *runner.record
+	url := runner.sub.URL
+	m.mu.Unlock()
+
+	// Persist outside the lock so a slow store doesn't block other
+	// subscriptions' touches. Best-effort: the in-memory record is
+	// authoritative for the running process; a missed UpdateState
+	// just means the next-restart rehydrate uses slightly stale
+	// counters. Errors are logged and swallowed.
+	if m.persister != nil {
+		row := PersistedSubscription{
+			ID:              snap.ID,
+			CameraID:        snap.CameraID,
+			XAddr:           snap.XAddr,
+			Username:        runner.username,
+			Password:        runner.password,
+			SubscriptionURL: url,
+			TerminationTime: snap.TerminationTime,
+			CreatedAt:       snap.CreatedAt,
+			State:           snap.State,
+			LastError:       snap.LastError,
+			LastEventAt:     snap.LastEventAt,
+			EventCount:      snap.EventCount,
+		}
+		uctx, ucancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := m.persister.UpdateState(uctx, row); err != nil {
+			m.log(logger.Debug, "[onvif] persist update subscription %s: %v", snap.ID, err)
+		}
+		ucancel()
+	}
+}
+
+// Rehydrate loads persisted subscriptions and restarts a goroutine for
+// each one. Called once at recorder startup, after the manager has
+// been wired into the API package's package-level handle.
+//
+// Each rehydrated subscription resumes against the camera-issued
+// SubscriptionURL persisted at AddSubscription time. If the camera
+// rebooted or the subscription expired during the recorder's downtime,
+// the first PullMessages will fail and the existing renew-or-recreate
+// fallback in run() will reissue a fresh subscription transparently
+// (manager.go run-loop ~240). This is the same path a long-lived
+// subscription already takes when a camera glitches.
+//
+// After loading active rows, terminated rows from prior runs are
+// pruned so the table stays bounded. Returns the number of
+// subscriptions rehydrated.
+func (m *Manager) Rehydrate(ctx context.Context) (int, error) {
+	if m.persister == nil {
+		return 0, nil
+	}
+	rows, err := m.persister.ListActive(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list active subscriptions: %w", err)
+	}
+	if _, err := m.persister.DeleteTerminated(ctx); err != nil {
+		// Non-fatal: a stale terminated row is harmless until the
+		// next prune attempt. Log and continue.
+		m.log(logger.Warn, "[onvif] prune terminated subscriptions: %v", err)
+	}
+
+	count := 0
+	for _, row := range rows {
+		client := &PullPointClient{
+			XAddr:                row.XAddr,
+			Username:             row.Username,
+			Password:             row.Password,
+			HTTPClient:           m.httpClient,
+			PullTimeout:          m.PullTimeout,
+			SubscriptionDuration: m.SubscriptionDuration,
+		}
+		sub := &Subscription{
+			URL:             row.SubscriptionURL,
+			TerminationTime: row.TerminationTime,
+			CameraID:        row.CameraID,
+		}
+		record := &SubscriptionRecord{
+			ID:              row.ID,
+			CameraID:        row.CameraID,
+			XAddr:           row.XAddr,
+			CreatedAt:       row.CreatedAt,
+			TerminationTime: row.TerminationTime,
+			State:           "active",
+			LastError:       row.LastError,
+			LastEventAt:     row.LastEventAt,
+			EventCount:      row.EventCount,
+		}
+		runCtx, cancel := context.WithCancel(context.Background())
+		runner := &subRunner{
+			record:   record,
+			sub:      sub,
+			client:   client,
+			cancel:   cancel,
+			done:     make(chan struct{}),
+			username: row.Username,
+			password: row.Password,
+		}
+		m.mu.Lock()
+		m.subs[row.ID] = runner
+		m.mu.Unlock()
+		go m.run(runCtx, runner)
+		count++
+	}
+	if count > 0 {
+		m.log(logger.Info, "[onvif] rehydrated %d ONVIF subscription(s) from store", count)
+	}
+	return count, nil
 }
 
 func (m *Manager) log(level logger.Level, format string, args ...any) {

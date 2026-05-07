@@ -1072,6 +1072,19 @@ func (p *Core) createResources(initial bool) error {
 			p.onvifManager = onvif.NewManager(p, func(ev onvif.EventNotification) {
 				api.PublishOnvifEvent(ev)
 			}, nil)
+			// Persistence (Wave A1). Reuses the recorder-local SQLite
+			// at <identityDir>/recorder.db that already backs the
+			// LocalUser store. Subscriptions are wiped on factory-wipe
+			// because the entire identity dir is removed by D8 (see
+			// internal/api/api_v1_recorder_lifecycle.go).
+			if p.localAuthStore != nil && p.localAuthStore.OnvifSubscriptions != nil {
+				p.onvifManager.SetPersister(onvifSubscriptionPersister{repo: p.localAuthStore.OnvifSubscriptions})
+				rctx, rcancel := context.WithTimeout(p.ctx, 30*time.Second)
+				if _, err := p.onvifManager.Rehydrate(rctx); err != nil {
+					p.Log(logger.Warn, "[onvif] rehydrate subscriptions: %s", err)
+				}
+				rcancel()
+			}
 			api.SetOnvifManager(p.onvifManager)
 		}
 
