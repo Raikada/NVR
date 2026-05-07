@@ -194,6 +194,9 @@ func (a *API) Initialize() error {
 	// CRUD which remains rooted in the path manager.
 	a.registerV1CameraExtensions(group)
 
+	// Phase 5 Task 5.3: camera groups CRUD.
+	a.registerV1CameraGroups(group)
+
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
 	// for service-to-service connections; the mechanism-neutral name
