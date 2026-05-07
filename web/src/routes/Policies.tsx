@@ -19,6 +19,7 @@ import {
 import { Icon } from '../components/Icon';
 import { PageHeader } from '../components/PageHeader';
 import { PolicyEditorModal } from '../components/PolicyEditorModal';
+import { SchedulesEditor } from './SchedulesEditor';
 import {
   ApiError,
   DEFAULT_RECORDING_POLICY_ID,
@@ -52,6 +53,7 @@ export function Policies({ addToast }: PoliciesProps) {
   const [editing, setEditing] = useState<RecordingPolicy | null>(null);
   const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [scheduleFor, setScheduleFor] = useState<string | null>(null);
 
   const items = policies.data?.items ?? [];
 
@@ -287,6 +289,13 @@ export function Policies({ addToast }: PoliciesProps) {
                       <Btn
                         kind="ghost"
                         size="sm"
+                        onClick={() => setScheduleFor(scheduleFor === p.id ? null : p.id)}
+                      >
+                        Schedule
+                      </Btn>
+                      <Btn
+                        kind="ghost"
+                        size="sm"
                         icon="settings"
                         disabled={lockedDown}
                         title={lockedDown ? 'Recording policies managed by Management Server' : undefined}
@@ -333,6 +342,9 @@ export function Policies({ addToast }: PoliciesProps) {
             );
           })}
         </Card>
+        {scheduleFor && (
+          <SchedulesEditor policyID={scheduleFor} addToast={addToast} />
+        )}
       </div>
 
       {creating && (
