@@ -170,6 +170,9 @@ type Core struct {
 	// a system.tls_reload_failed audit row on parse failures. The
 	// actual cert swap lives in internal/certloader. Phase 6 Task 6.5.
 	tlsReloader *tlsReloader
+	// mdnsRefresher polls setup-status every 30s and re-publishes the
+	// mDNS TXT records when state flips. Phase 6 Task 6.6.
+	mdnsRefresher *mdnsRefresher
 
 	// fndCtx + fndCtxCancel scope every Phase 6 goroutine so a
 	// graceful shutdown stops them deterministically. Initialized at
@@ -621,7 +624,16 @@ func (p *Core) createResources(initial bool) error {
 		go p.tlsReloader.Run(p.fndCtx)
 	}
 
-	// Phase 6 Task 6.6 wires mDNS TXT refresh in a follow-up commit.
+	// Phase 6 Task 6.6: mDNS TXT-record refresher. Polls setup state
+	// every 30s and republishes when state flips (setup-required ↔
+	// setup-complete). Only runs when the mDNS broadcaster is up.
+	if p.mdnsRefresher == nil && p.mdnsService != nil && p.localAuthStore != nil {
+		p.mdnsRefresher = newMDNSRefresher(
+			p.mdnsService, p.localAuthStore,
+			string(version), p.identity.ID().String(), p,
+		)
+		go p.mdnsRefresher.Run(p.fndCtx)
+	}
 
 	// TODO(phase6): wire CRL poller for cert revocation watch.
 
@@ -1517,6 +1529,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.retentionMgr = nil
 		p.cloudSvc = nil
 		p.tlsReloader = nil
+		p.mdnsRefresher = nil
 		p.camerasService = nil
 		p.eventsService = nil
 		p.scheduleResolver = nil
