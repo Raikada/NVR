@@ -984,12 +984,18 @@ pragmatic v1 cuts that are tracked here.
   and not relaunch — documented limitation, applies only to
   developer setups.
 
-- **Recorder SPA does not self-poll for updates.** The MS pushes
-  apply requests; the recorder is the apply mechanism, not the
-  approval surface (D6). The recorder Settings page surfaces the
-  current version + a hint pointing operators at the MS UI rather
-  than offering a "Check for Updates" button on the recorder
-  itself.
+- **Recorder SPA polls MS for available updates (closed Wave A2,
+  recorder@4c587809).** The MS still pushes apply requests; the
+  recorder remains the apply mechanism, not the approval surface
+  (D6). What changed: the recorder now polls
+  `GET /v1/recording-servers/{id}/software-updates/available` every
+  ~30s while paired and surfaces the current pending update on
+  `/v1/recorder/identity` (additive `pending_software_update` +
+  `pending_software_update_polled_at`). The Settings page renders
+  a "Software update available" badge linking the operator to the
+  MS UI for approval. Pre-Wave-A2 the recorder had no view of MS
+  update state until an apply landed; this closes that visibility
+  gap without altering the approval-on-MS posture.
 
 - **Health check is per-deployment.** OQ3 leaves the post-update
   health check shape implementation-specific. v1 ships the seam
@@ -1000,3 +1006,36 @@ pragmatic v1 cuts that are tracked here.
   `/v1/health`-pings-OK + `no-panic-in-last-5min` default is a
   future slice (deliberate to keep v1 conservative — false
   positives in the rollback path are worse than no rollback).
+
+### D19. Per-segment historical RecordingPolicy state
+
+**Resolved 2026-05-07.** Closed by Wave A3 (`recorder@84d2e49d`,
+Change-Id `2026-05-07-segment-historical-policy`).
+
+Wave 5 (`recorder@a38a63a1`) stamped `RecordingSegment.content_type`
+from the *current* `RecordingPolicy.mode` at synthesis time. That
+made a mid-policy change retroactively reclassify every segment ever
+recorded under the old mode — fine for an operational rollup, wrong
+as an audit-grade truth surface and for the per-content-type breakdown
+on `/v1/storage-volumes/breakdown`.
+
+Wave A3 closes the gap by writing a tiny JSON sidecar next to each
+segment when it seals: the `policy_id` and `mode` in effect at write
+time. The synthesizer prefers the sidecar when present and falls back
+to the current-policy mode for pre-amendment segments. Segments
+sealed before Wave A3 landed have no sidecar; the fallback keeps
+them surfacing as continuous, matching today's behavior — no
+historical reconstruction of segments written under a mode different
+from the current one is possible (only segments sealed post-Wave-A3
+carry truthful historical state).
+
+Sidecars live at `<segment-dir>/.meta/<basename>.json` (parallel
+`.meta/` subdirectory) rather than as `<segment>.meta.json` siblings
+because `recordstore.FindSegments` runs the segment-path regex
+unanchored against every file under the segment dir; a sibling
+`.meta.json` matches the same regex as the `.mp4` and surfaces as a
+phantom segment. The parallel subdirectory keeps the sidecar
+adjacent on disk but invisible to that regex.
+
+The cascading recording delete also removes the sidecar so meta
+files don't outlive the segment they document.
