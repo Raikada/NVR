@@ -11,6 +11,17 @@
 // status + parsed `{status,error}` body when the server returned a
 // non-2xx response.
 
+import type {
+  User,
+  CameraGroup,
+  RecordingSchedule,
+  EventType,
+  NotificationTarget,
+  NotificationSubscription,
+  MeResponse,
+  Role,
+} from './types';
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -119,6 +130,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   get<T>(path: string): Promise<T> { return request<T>('GET', path); },
   post<T>(path: string, body?: unknown): Promise<T> { return request<T>('POST', path, body); },
+  put<T>(path: string, body?: unknown): Promise<T> { return request<T>('PUT', path, body); },
   patch<T>(path: string, body?: unknown): Promise<T> { return request<T>('PATCH', path, body); },
   delete<T>(path: string): Promise<T> { return request<T>('DELETE', path); },
 };
@@ -827,4 +839,234 @@ export const patchSystemSettings = (patch: Partial<SystemSettings>) =>
   api.patch<SystemSettings>('/system/settings', patch);
 export const putSystemTLS = (cert_pem: string, key_pem: string) =>
   api.post<{ status: string }>('/system/tls', { cert_pem, key_pem });
+
+export const getSetupStatus = () =>
+  api.get<{ setup_required: boolean }>('/system/setup-status');
+
+export const getSystemInfo = () =>
+  api.get<{ recorder_id: string; version: string }>('/system/info');
+
+export const runRetentionSweep = () =>
+  api.post<{ swept: { segments: number; events: number; clips: number } }>(
+    '/system/retention-sweep',
+  );
+
+/* ---------- /v1/users (foundation, admin-only) ---------- */
+
+export const listUsers = () =>
+  api.get<{ items: User[] }>('/users').then((r) => r.items);
+
+export interface CreateUserInput {
+  username: string;
+  password: string;
+  role: Role;
+  email?: string;
+  display_name?: string;
+}
+
+export const createUser = (input: CreateUserInput) =>
+  api.post<User>('/users', input);
+
+export interface UpdateUserPatch {
+  display_name?: string;
+  email?: string;
+  language?: string;
+  is_active?: boolean;
+}
+
+export const updateUser = (id: string, patch: UpdateUserPatch) =>
+  api.patch<User>(`/users/${id}`, patch);
+
+export const setUserRole = (id: string, role: Role) =>
+  api.patch<User>(`/users/${id}/role`, { role });
+
+export const resetUserPassword = (id: string, new_password: string) =>
+  api.post<{ status: string }>(`/users/${id}/reset-password`, { new_password });
+
+export const deleteUser = (id: string) =>
+  api.delete<{ status: string }>(`/users/${id}`);
+
+export const getMe = () => api.get<MeResponse>('/me');
+
+/* ---------- /v1/notifications (foundation) ---------- */
+
+export const listNotificationTargets = () =>
+  api.get<{ items: NotificationTarget[] }>('/notifications/targets').then((r) => r.items);
+
+export interface CreateNotificationTargetInput {
+  kind: 'webhook' | 'email';
+  name: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+  email_address?: string;
+  enabled?: boolean;
+}
+
+export const createNotificationTarget = (input: CreateNotificationTargetInput) =>
+  api.post<NotificationTarget>('/notifications/targets', input);
+
+export interface UpdateNotificationTargetPatch {
+  name?: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+  email_address?: string;
+  enabled?: boolean;
+}
+
+export const updateNotificationTarget = (id: string, patch: UpdateNotificationTargetPatch) =>
+  api.patch<NotificationTarget>(`/notifications/targets/${id}`, patch);
+
+export const deleteNotificationTarget = (id: string) =>
+  api.delete<{ status: string }>(`/notifications/targets/${id}`);
+
+export const testNotificationTarget = (id: string) =>
+  api.post<{ ok: boolean; status?: number; error?: string }>(
+    `/notifications/targets/${id}/test`,
+  );
+
+export const listNotificationSubscriptions = () =>
+  api.get<{ items: NotificationSubscription[] }>('/notifications/subscriptions').then(
+    (r) => r.items,
+  );
+
+export interface CreateNotificationSubscriptionInput {
+  target_id: string;
+  event_type_id?: string;
+  camera_id?: string;
+  min_severity?: 'info' | 'warning' | 'critical';
+  quiet_hours_start_minute?: number;
+  quiet_hours_end_minute?: number;
+}
+
+export const createNotificationSubscription = (
+  input: CreateNotificationSubscriptionInput,
+) => api.post<NotificationSubscription>('/notifications/subscriptions', input);
+
+export const deleteNotificationSubscription = (id: string) =>
+  api.delete<{ status: string }>(`/notifications/subscriptions/${id}`);
+
+export const listNotificationOutbox = (limit = 50) =>
+  api.get<{ items: unknown[] }>(`/notifications/outbox?limit=${limit}`).then((r) => r.items);
+
+export const retryNotificationOutbox = (id: string) =>
+  api.post<{ status: string }>(`/notifications/outbox/${id}/retry`);
+
+/* ---------- Recording schedules (foundation) ---------- */
+
+export const getPolicySchedules = (policyID: string) =>
+  api.get<{ items: RecordingSchedule[] }>(
+    `/recording-policies/${policyID}/schedules`,
+  ).then((r) => r.items);
+
+export const putPolicySchedules = (
+  policyID: string,
+  schedules: RecordingSchedule[],
+) =>
+  api.post<{ status: string }>(
+    `/recording-policies/${policyID}/schedules`,
+    { schedules },
+  );
+
+export const getCameraRecordingState = (cameraID: string) =>
+  api.get<{ active: boolean; mode: string; reason: string; until?: string }>(
+    `/cameras/${cameraID}/recording-state`,
+  );
+
+/* ---------- Event types & retention (foundation) ---------- */
+
+export const listEventTypes = () =>
+  api.get<{ items: EventType[] }>('/event-types').then((r) => r.items);
+
+export interface CreateEventTypeInput {
+  id: string;
+  display_name: string;
+  description?: string;
+}
+
+export const createEventType = (input: CreateEventTypeInput) =>
+  api.post<EventType>('/event-types', input);
+
+export const updateEventType = (
+  id: string,
+  patch: { display_name?: string; description?: string },
+) => api.patch<EventType>(`/event-types/${id}`, patch);
+
+export const getEventRetention = () =>
+  api.get<Record<string, number>>('/event-retention');
+
+export const setEventRetention = (typeID: string, keepDurationSeconds: number) =>
+  api.post<{ status: string }>('/event-retention', {
+    event_type_id: typeID,
+    keep_duration_seconds: keepDurationSeconds,
+  });
+
+/* ---------- Camera groups (foundation) ---------- */
+
+export const listCameraGroups = () =>
+  api.get<{ items: CameraGroup[] }>('/camera-groups').then((r) => r.items);
+
+export const createCameraGroup = (input: { name: string; display_order?: number }) =>
+  api.post<CameraGroup>('/camera-groups', input);
+
+export const updateCameraGroup = (
+  id: string,
+  patch: { name?: string; display_order?: number },
+) => api.patch<CameraGroup>(`/camera-groups/${id}`, patch);
+
+export const deleteCameraGroup = (id: string) =>
+  api.delete<{ status: string }>(`/camera-groups/${id}`);
+
+/* ---------- Camera credentials (foundation) ---------- */
+
+export interface CameraCredentials {
+  rtsp_username: string;
+  rtsp_password: string;
+  onvif_username?: string;
+  onvif_password?: string;
+}
+
+export const setCameraCredentials = (cameraID: string, creds: CameraCredentials) =>
+  api.put<{ status: string }>(`/cameras/${cameraID}/credentials`, creds);
+
+/* ---------- /v1/audit list (typed wrapper) ---------- */
+
+export const listAudit = (filter?: { page?: number; perPage?: number }) =>
+  fetchAudit(filter?.page ?? 0, filter?.perPage ?? 100).then((r) => r.items);
+
+/* ---------- Events SSE stream (foundation) ---------- */
+
+export interface EventStreamFilter {
+  cameraId?: string;
+  severity?: string;
+  kind?: string;
+}
+
+/**
+ * Subscribe to /v1/events/stream via Server-Sent Events. Returns an
+ * unsubscribe function that closes the underlying EventSource.
+ */
+export function subscribeEventsStream(
+  filter: EventStreamFilter,
+  onEvent: (ev: Event) => void, // local Event interface defined above (id, kind, …)
+  onError?: (err: unknown) => void,
+): () => void {
+  const qs = new URLSearchParams();
+  if (filter.cameraId) qs.set('camera_id', filter.cameraId);
+  if (filter.severity) qs.set('severity', filter.severity);
+  if (filter.kind) qs.set('kind', filter.kind);
+  const url = `${BASE}/events/stream${qs.toString() ? `?${qs}` : ''}`;
+  const es = new EventSource(url, { withCredentials: false });
+  es.onmessage = (msg) => {
+    try {
+      const parsed = JSON.parse(msg.data) as Event;
+      onEvent(parsed);
+    } catch (e) {
+      if (onError) onError(e);
+    }
+  };
+  es.onerror = (e) => {
+    if (onError) onError(e);
+  };
+  return () => es.close();
+}
 
