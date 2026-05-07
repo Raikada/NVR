@@ -210,6 +210,10 @@ func (a *API) Initialize() error {
 	// setup-status/info probes.
 	a.registerV1SystemEndpoints(group)
 
+	// Phase 5 Task 5.8: audit log export/purge + user management.
+	a.registerV1AuditExtensions(group)
+	a.registerV1Users(group)
+
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
 	// for service-to-service connections; the mechanism-neutral name
