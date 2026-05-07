@@ -22,16 +22,25 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/bluenviron/mediamtx/internal/api"
+	"github.com/bluenviron/mediamtx/internal/audit"
 	"github.com/bluenviron/mediamtx/internal/auth"
+	"github.com/bluenviron/mediamtx/internal/bootstrap"
+	"github.com/bluenviron/mediamtx/internal/cameracred"
+	"github.com/bluenviron/mediamtx/internal/cameras"
+	"github.com/bluenviron/mediamtx/internal/cloudbridge"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
+	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	"github.com/bluenviron/mediamtx/internal/motion"
+	"github.com/bluenviron/mediamtx/internal/notifications"
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/recordingmeta"
+	"github.com/bluenviron/mediamtx/internal/retention"
+	"github.com/bluenviron/mediamtx/internal/schedule"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -140,9 +149,29 @@ type Core struct {
 	localAuth        *localauth.Manager
 	localAuthStore   *recstore.Store
 	mdnsService      *mdns.Service
-	// TODO(phase6): wire camera/policy sync, CRL, update-poll components.
 	onvifManager     *onvif.Manager
 	motionController *motion.Controller
+
+	// Phase 6 foundation services. Constructed once at first
+	// createResources call; the long-lived goroutines run for the
+	// life of Core. Cancelled at shutdown via fndCtxCancel.
+	camerasBus      *cameras.Bus
+	camerasService  *cameras.Service
+	eventsBus       *events.Bus
+	eventsService   *events.Service
+	scheduleResolver *schedule.Resolver
+	notifDispatcher *notifications.Dispatcher
+	retentionMgr    *retention.Manager
+	cloudSvc        *cloudbridge.Service
+	pathBridge      *cameras.PathBridge
+	credVault       *cameracred.Vault
+	auditEmit       *audit.Emitter
+
+	// fndCtx + fndCtxCancel scope every Phase 6 goroutine so a
+	// graceful shutdown stops them deterministically. Initialized at
+	// the bottom of the foundation-services block in createResources.
+	fndCtx       context.Context
+	fndCtxCancel func()
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -244,6 +273,9 @@ func (p *Core) Wait() {
 
 // Log implements logger.Writer.
 func (p *Core) Log(level logger.Level, format string, args ...any) {
+	if p == nil || p.logger == nil {
+		return
+	}
 	p.logger.Log(level, format, args...)
 }
 
@@ -401,9 +433,9 @@ func (p *Core) createResources(initial bool) error {
 
 	// Recorder-local LocalUser auth (pre-pairing auth slice 2026-05-06).
 	// Stores LocalUser rows + recorder-local JWT signing key alongside
-	// the device identity. On first boot, generates a bootstrap admin
-	// password (printed to logs + written to identity/initial-admin-password.txt
-	// mode 0600).
+	// the device identity. The bootstrap admin is now seeded by the
+	// canonical internal/bootstrap package (Phase 6); the localauth.New
+	// constructor is the runtime token issuer + login flow only.
 	if p.localAuth == nil {
 		idDir := p.conf.IdentityDir
 		if idDir == "" {
@@ -422,24 +454,145 @@ func (p *Core) createResources(initial bool) error {
 		if err != nil {
 			return fmt.Errorf("local auth signing key: %w", err)
 		}
-		la := localauth.New(s, signingKey, idDir, "", p.identity.ID().String())
-		// Bootstrap admin if local_users is empty. Logs the initial
-		// password as a loud banner so an integrator who runs the
-		// recorder in the foreground for the first time can copy it
-		// out without grep'ing the logs.
-		initialPW, err := la.BootstrapIfEmpty(p.ctx)
+
+		// Phase 6 Task 6.2 + 6.3: bootstrap admin + system-settings
+		// runtime defaults. The bootstrap package is idempotent so a
+		// re-Open of an existing recorder is a no-op.
+		bootRes, err := bootstrap.Run(p.ctx, s, idDir, bootstrap.Options{
+			RecordingsRoot: defaultRecordingsRoot(p.conf),
+		})
 		if err != nil {
-			return fmt.Errorf("local auth bootstrap: %w", err)
+			return fmt.Errorf("bootstrap: %w", err)
 		}
-		if initialPW != "" {
+		if bootRes.AdminCreated && bootRes.InitialPassword != "" {
 			banner := strings.Repeat("=", 72)
-			p.Log(logger.Info, "\n%s\nRECORDER BOOTSTRAP ADMIN CREATED\n  username:        admin\n  initial password: %s\n  must_change_password: yes (forced rotation on first login)\n  also written to: %s/%s (mode 0600)\nLog in at https://<this-host>:9997/ to complete setup.\n%s",
-				banner, initialPW, idDir, "initial-admin-password.txt", banner)
+			p.Log(logger.Info,
+				"\n%s\nRECORDER BOOTSTRAP ADMIN CREATED\n  username:        admin\n  initial password: %s\n  must_change_password: %t (forced rotation on first login)\n  also written to: %s/%s (mode 0600)\nLog in at https://<this-host>:9997/ to complete setup.\n%s",
+				banner, bootRes.InitialPassword, bootRes.MustChangePassword,
+				idDir, "initial-admin-password.txt", banner)
+		} else if bootRes.AdminCreated {
+			p.Log(logger.Info,
+				"recorder bootstrap admin created using RAIKADA_BOOTSTRAP_PASSWORD env var")
 		}
-		p.localAuth = la
+
+		p.localAuth = localauth.New(s, signingKey, idDir, "", p.identity.ID().String())
 	}
 
-	// TODO(phase6): wire pairing manager + post-pair callbacks here.
+	// Phase 6 Task 6.4: foundation services wiring. Construct once,
+	// re-use across conf reloads. Uses the recorder's localAuthStore
+	// (the same SQLite handle the API surface depends on) so all
+	// foundation packages share one backing store.
+	if p.fndCtxCancel == nil {
+		p.fndCtx, p.fndCtxCancel = context.WithCancel(context.Background())
+	}
+	if p.credVault == nil {
+		idDir := p.conf.IdentityDir
+		if idDir == "" {
+			if p.confPath != "" {
+				idDir = filepath.Join(filepath.Dir(p.confPath), "identity")
+			} else {
+				idDir = "identity"
+			}
+		}
+		v, err := cameracred.Open(idDir)
+		if err != nil {
+			return fmt.Errorf("cameracred open: %w", err)
+		}
+		p.credVault = v
+	}
+	if p.auditEmit == nil && p.localAuthStore != nil {
+		p.auditEmit = audit.New(p.localAuthStore.AuditLog)
+	}
+
+	if p.camerasBus == nil {
+		p.camerasBus = cameras.NewBus()
+	}
+	if p.eventsBus == nil {
+		p.eventsBus = events.NewBus()
+	}
+
+	// Camera service. Onvif teardown is wired below once the onvif
+	// manager exists; until then the service uses a nil teardown which
+	// is benign (Delete logs a debug warning instead of unsubscribing).
+	if p.camerasService == nil && p.localAuthStore != nil {
+		p.camerasService = cameras.NewService(p.localAuthStore, p.credVault, p.camerasBus, nil)
+	}
+
+	// Events service. Cloud outbox enqueuer is the foundation
+	// CloudOutboxRepo (a one-method interface).
+	if p.eventsService == nil && p.localAuthStore != nil {
+		p.eventsService = events.NewService(
+			p.localAuthStore.Events,
+			p.localAuthStore.EventRetention,
+			p.localAuthStore.CloudOutbox,
+			p.eventsBus,
+		)
+	}
+
+	// Schedule resolver — motion controller is wired later in this
+	// function (Wave 4 motion controller block); we pass nil here
+	// because the resolver's New tolerates nil and the foundation
+	// motion controller is not currently feeding the resolver.
+	if p.scheduleResolver == nil && p.localAuthStore != nil {
+		p.scheduleResolver = schedule.New(
+			p.localAuthStore.Cameras,
+			p.localAuthStore.RecordingPolicies,
+			p.localAuthStore.RecordingSchedules,
+			p.localAuthStore.SystemSettings,
+			nil, // motion controller (set up later in this fn)
+		)
+	}
+
+	// Notifications dispatcher.
+	if p.notifDispatcher == nil && p.eventsService != nil {
+		site := notifications.SitePayload{
+			ID:   p.identity.ID().String(),
+			Name: getSiteName(p.fndCtx, p.localAuthStore),
+		}
+		// Token issuer for signed snapshot URLs. Phase 6 leaves it
+		// nil — adding a per-event short-lived JWT is a follow-up; for
+		// now URLs surface as plain (the SPA opens them with a session
+		// cookie).
+		signURL := makeSignedURL(p.conf.APIAddress, nil)
+		p.notifDispatcher = notifications.NewDispatcher(
+			p.localAuthStore, p.credVault, p.eventsService,
+			site, signURL, p,
+		)
+		go p.notifDispatcher.Run(p.fndCtx)
+	}
+
+	// Retention manager: segments + events + clips sweepers.
+	if p.retentionMgr == nil && p.localAuthStore != nil {
+		segLister := newSegmentListerAdapter(
+			func() map[string]*conf.Path { return snapshotPathConfs(p.pathManager) },
+			resolveCameraName(p.localAuthStore.Cameras),
+			p,
+		)
+		segs := retention.NewSegmentsSweeper(
+			p.localAuthStore.Cameras,
+			p.localAuthStore.RecordingPolicies,
+			segLister,
+			0, p,
+		)
+		evs := retention.NewEventsSweeper(p.localAuthStore.Events, 0, 0, p)
+		clips := retention.NewClipsSweeper(p.localAuthStore.Clips, 0, 0, p)
+		p.retentionMgr = retention.NewManager(p, segs, evs, clips)
+		go p.retentionMgr.Run(p.fndCtx)
+	}
+
+	// Cloud bridge: foundation ships a nop processor + horizon sweeper.
+	if p.cloudSvc == nil && p.localAuthStore != nil {
+		hSweeper := cloudbridge.NewHorizonSweeper(
+			p.localAuthStore.CloudOutbox,
+			func(ctx context.Context) int {
+				n, _ := p.localAuthStore.SystemSettings.GetInt(ctx, "cloud_outbox_horizon_hours", 168)
+				return n
+			},
+			0, p,
+		)
+		p.cloudSvc = cloudbridge.NewService(cloudbridge.NewNopProcessor(), hSweeper, p)
+		go p.cloudSvc.Run(p.fndCtx)
+	}
 
 	if p.mdnsService == nil && p.conf.MDNS != nil && *p.conf.MDNS && p.conf.API {
 		// Use the API listen port for mDNS announcements — that's
@@ -453,6 +606,9 @@ func (p *Core) createResources(initial bool) error {
 			p.mdnsService = nil
 		}
 	}
+
+	// Phase 6 Tasks 6.5 + 6.6 wire TLS reload + mDNS TXT refresh in
+	// follow-up commits.
 
 	// TODO(phase6): wire CRL poller for cert revocation watch.
 
@@ -587,6 +743,19 @@ func (p *Core) createResources(initial bool) error {
 			parent:            p,
 		}
 		p.pathManager.initialize()
+	}
+
+	// Phase 6 Task 6.4: cameras → path-manager bridge. Built after the
+	// path manager exists so the adapter can dispatch ReloadFromCameras.
+	// Bootstrap pushes the existing camera set immediately; Run blocks
+	// until the foundation context cancels.
+	if p.pathBridge == nil && p.camerasService != nil && p.pathManager != nil {
+		pmAdapter := newPathManagerAdapter(p.pathManager, pathDefaultsFromConf(p.conf), p)
+		p.pathBridge = cameras.NewPathBridge(p.camerasService, pmAdapter, p)
+		if err := p.pathBridge.Bootstrap(p.fndCtx); err != nil {
+			p.Log(logger.Warn, "[cameras.bridge] bootstrap: %v", err)
+		}
+		go p.pathBridge.Run(p.fndCtx)
 	}
 
 	if p.conf.RTSP &&
@@ -822,14 +991,26 @@ func (p *Core) createResources(initial bool) error {
 
 	if p.conf.API &&
 		p.api == nil {
+		// API server: certificate paths default to identity-managed
+		// tls.crt + tls.key when not operator-overridden in conf.
+		certPath := p.conf.APIServerCert
+		keyPath := p.conf.APIServerKey
+		if (certPath == "" || keyPath == "" ||
+			certPath == "identity/api-server.crt" || keyPath == "identity/recorder.key") &&
+			p.identity != nil {
+			tlsCert, tlsKey := p.identity.TLSPaths()
+			certPath = tlsCert
+			keyPath = tlsKey
+		}
+
 		i := &api.API{
 			Version:        string(version),
 			Started:        started,
 			Address:        p.conf.APIAddress,
 			DumpPackets:    p.conf.DumpPackets,
 			Encryption:     p.conf.APIEncryption,
-			ServerKey:      p.conf.APIServerKey,
-			ServerCert:     p.conf.APIServerCert,
+			ServerKey:      keyPath,
+			ServerCert:     certPath,
 			AllowOrigins:   p.conf.APIAllowOrigins,
 			TrustedProxies: p.conf.APITrustedProxies,
 			ReadTimeout:    p.conf.ReadTimeout,
@@ -848,6 +1029,17 @@ func (p *Core) createResources(initial bool) error {
 			WebRTCServer:   p.webRTCServer,
 			SRTServer:      p.srtServer,
 			Parent:         p,
+
+			// Phase 6 foundation services. Handlers defensively check
+			// for nil so the API still serves /v1/info and the SPA
+			// even if a service failed to wire.
+			Store:            p.localAuthStore,
+			Vault:            p.credVault,
+			CamerasService:   p.camerasService,
+			EventsService:    p.eventsService,
+			ScheduleResolver: p.scheduleResolver,
+			NotifDispatcher:  p.notifDispatcher,
+			RetentionMgr:     p.retentionMgr,
 		}
 		err = i.Initialize()
 		if err != nil {
@@ -963,6 +1155,18 @@ func (p *Core) createResources(initial bool) error {
 			// TODO(phase6): re-attach the subscription persister + rehydrate
 			// once the post-MS persistence layer ships.
 			api.SetOnvifManager(p.onvifManager)
+
+			// Phase 6: rebuild the cameras.Service with the onvif
+			// teardown adapter now that the manager exists. The
+			// service was constructed with a nil teardown earlier so
+			// the path bridge could come up before onvif; we swap in
+			// a wired service so Camera.Delete unsubscribes cleanly.
+			if p.camerasService != nil && p.localAuthStore != nil {
+				teardown := newOnvifTeardownAdapter(p.onvifManager, p)
+				p.camerasService = cameras.NewService(
+					p.localAuthStore, p.credVault, p.camerasBus, teardown,
+				)
+			}
 		}
 
 		// Motion controller (Wave 4). Subscribes to the EventStore
@@ -1287,12 +1491,33 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.motionController = nil
 	}
 
+	// Phase 6 foundation goroutines — cancel on full shutdown so
+	// pathBridge / notifDispatcher / retentionMgr / cloudSvc /
+	// mdnsRefresher / tlsReloader exit cleanly. fndCtx is shared
+	// across all of them so a single cancel suffices.
+	if newConf == nil && p.fndCtxCancel != nil {
+		p.fndCtxCancel()
+		p.fndCtxCancel = nil
+		p.fndCtx = nil
+		p.pathBridge = nil
+		p.notifDispatcher = nil
+		p.retentionMgr = nil
+		p.cloudSvc = nil
+		p.camerasService = nil
+		p.eventsService = nil
+		p.scheduleResolver = nil
+		p.camerasBus = nil
+		p.eventsBus = nil
+		p.credVault = nil
+	}
+
 	// LocalAuth store (pre-pairing auth slice 2026-05-06) — close on
 	// full shutdown so the SQLite handle releases the WAL file.
 	if newConf == nil && p.localAuthStore != nil {
 		_ = p.localAuthStore.Close()
 		p.localAuthStore = nil
 		p.localAuth = nil
+		p.auditEmit = nil
 	}
 
 	if closeSRTServer && p.srtServer != nil {
