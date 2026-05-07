@@ -52,8 +52,9 @@ type Store struct {
 	EventRetention     *EventRetentionRepo
 	Events             *EventsRepo
 	EventSnapshots     *EventSnapshotsRepo
-	Clips              *ClipsRepo
-	ClipSegments       *ClipSegmentsRepo
+	Clips               *ClipsRepo
+	ClipSegments        *ClipSegmentsRepo
+	NotificationTargets *NotificationTargetsRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -103,6 +104,7 @@ func Open(path string) (*Store, error) {
 	s.EventSnapshots = &EventSnapshotsRepo{db: db}
 	s.Clips = &ClipsRepo{db: db}
 	s.ClipSegments = &ClipSegmentsRepo{db: db}
+	s.NotificationTargets = &NotificationTargetsRepo{db: db}
 	return s, nil
 }
 
