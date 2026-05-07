@@ -206,6 +206,10 @@ func (a *API) Initialize() error {
 	// Phase 5 Task 5.6: notification targets/subs/outbox + test endpoint.
 	a.registerV1Notifications(group)
 
+	// Phase 5 Task 5.7: system settings/TLS/retention sweep + anonymous
+	// setup-status/info probes.
+	a.registerV1SystemEndpoints(group)
+
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
 	// for service-to-service connections; the mechanism-neutral name
