@@ -1,21 +1,16 @@
-// Package mdns is the recorder's mDNS broadcaster + listener per
-// pairing API contract §8.3-8.4. The recorder broadcasts
-// _raikada-recorder._tcp.local so an MS on the same LAN can surface
-// it for operator-driven pairing, and listens for
-// _raikada-management._tcp.local advertisements so the recorder's
-// setup wizard can pre-fill discovered MS URLs.
+// Package mdns is the recorder's mDNS broadcaster. The recorder
+// advertises _raikada-nvr._tcp.local so operator UIs and setup
+// wizards on the same LAN can surface it for first-boot configuration.
 //
-// mDNS does not establish trust — it's a convenience layer per
-// pairing-flows.md §2.2 and ADR 0012 D5 ("the cryptographic pinning
-// via QR pairing-token is the trust anchor"). Operators can disable
-// the entire surface via conf.MDNS.
+// The advertise-only surface is a convenience: the cryptographic
+// trust anchor for any future operator <-> recorder transport lives
+// elsewhere (per pairing-flows when re-introduced). Operators can
+// disable the entire surface via conf.MDNS.
 package mdns
 
 import (
 	"context"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/grandcat/zeroconf"
 
@@ -24,41 +19,16 @@ import (
 )
 
 const (
-	ServiceTypeRecorder   = "_raikada-recorder._tcp"
-	ServiceTypeManagement = "_raikada-management._tcp"
+	// ServiceTypeNVR is the consumer NVR's mDNS service type. Operator
+	// UIs browse for this to surface unconfigured / freshly-booted
+	// recorders on the LAN.
+	ServiceTypeNVR = "_raikada-nvr._tcp"
 
-	announceInstancePrefix = "raikada-recorder-"
-	listenerStaleAfter     = 5 * time.Minute
+	announceInstancePrefix = "raikada-nvr-"
 )
 
-// DiscoveredManagement is one entry in the recorder's mDNS-listener
-// cache.
-//
-// URL is the IP-form transport URL built from the broadcast's
-// AddrIPv4 + Port — the value the recorder uses for outbound HTTPS
-// fetches (e.g., the JWKS URL). PublicURL is the MS-advertised
-// externally-visible URL — the value the recorder uses as the JWT
-// `iss` claim (which the MS itself signs against, regardless of the
-// transport URL the recorder fetches by). When the broadcast omits
-// public_url (older MS), PublicURL is empty and the recorder falls
-// back to URL — accepting the cost that JWT iss validation may fail
-// in that case.
-type DiscoveredManagement struct {
-	MSID            string    `json:"ms_id,omitempty"`
-	Hostname        string    `json:"hostname"`
-	Addresses       []string  `json:"addresses"`
-	Version         string    `json:"version,omitempty"`
-	TenantID        string    `json:"tenant_id,omitempty"`
-	RootFingerprint string    `json:"root_fingerprint,omitempty"`
-	PublicURL       string    `json:"public_url,omitempty"`
-	Port            int       `json:"port"`
-	URL             string    `json:"url"`
-	FirstSeenAt     time.Time `json:"first_seen_at"`
-	LastSeenAt      time.Time `json:"last_seen_at"`
-}
-
-// Service runs the recorder's mDNS broadcaster + listener. One
-// instance per recorder process.
+// Service runs the recorder's mDNS broadcaster. One instance per
+// recorder process.
 type Service struct {
 	identity *identity.Identity
 	logger   logger.Writer
@@ -68,9 +38,12 @@ type Service struct {
 	mu        sync.Mutex
 	announcer *zeroconf.Server
 	cancelFn  context.CancelFunc
-	wg        sync.WaitGroup
 	running   bool
-	cache     map[string]*DiscoveredManagement // keyed by ms_id (or hostname when ms_id absent)
+
+	// txt is the latest TXT-record set Phase 6 will populate (e.g.
+	// `setup=required` vs `setup=complete`). Defaults to a minimal
+	// `version`+`id` set so the broadcaster is useful pre-Phase-6.
+	txt map[string]string
 }
 
 // New constructs a Service. port is the recorder's HTTPS port (or
@@ -81,11 +54,25 @@ func New(id *identity.Identity, log logger.Writer, version string, port int) *Se
 		logger:   log,
 		version:  version,
 		port:     port,
-		cache:    make(map[string]*DiscoveredManagement),
+		txt:      map[string]string{},
 	}
 }
 
-// Start kicks off broadcaster + listener goroutines. Non-blocking.
+// SetTXT replaces the TXT-record key/value set the broadcaster will
+// announce. Phase 6 will call this with the runtime values that
+// reflect the recorder's current setup state (e.g. `setup=required`,
+// `setup=complete`). The next Refresh / Start picks up the new values.
+func (s *Service) SetTXT(values map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make(map[string]string, len(values))
+	for k, v := range values {
+		cp[k] = v
+	}
+	s.txt = cp
+}
+
+// Start kicks off the broadcaster. Non-blocking.
 func (s *Service) Start() error {
 	s.mu.Lock()
 	if s.running {
@@ -94,11 +81,11 @@ func (s *Service) Start() error {
 	}
 	s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(context.Background())
 
 	announcer, err := zeroconf.Register(
 		announceInstancePrefix+s.identity.ID().String()[:8],
-		ServiceTypeRecorder,
+		ServiceTypeNVR,
 		"local.",
 		s.port,
 		s.recorderTXTRecords(),
@@ -115,16 +102,12 @@ func (s *Service) Start() error {
 	s.cancelFn = cancel
 	s.mu.Unlock()
 
-	s.logger.Log(logger.Info, "[mdns] broadcasting %s port=%d id=%s paired=%v",
-		ServiceTypeRecorder, s.port, s.identity.ID().String(), s.identity.IsPaired())
-
-	s.wg.Add(2)
-	go s.runListener(ctx)
-	go s.runSweeper(ctx)
+	s.logger.Log(logger.Info, "[mdns] broadcasting %s port=%d id=%s",
+		ServiceTypeNVR, s.port, s.identity.ID().String())
 	return nil
 }
 
-// Stop halts broadcaster + listener.
+// Stop halts the broadcaster.
 func (s *Service) Stop() {
 	s.mu.Lock()
 	cancel := s.cancelFn
@@ -140,19 +123,15 @@ func (s *Service) Stop() {
 	if announcer != nil {
 		announcer.Shutdown()
 	}
-	s.wg.Wait()
 }
 
 // Refresh re-registers the broadcaster with current TXT records so
-// state changes (notably paired=false → paired=true after a
-// successful pairing) propagate to LAN listeners. zeroconf doesn't
-// expose in-place TXT updates; the operational shape is shutdown +
-// re-Register, which works fine for mDNS (clients re-resolve on
-// next browse).
+// state changes (e.g. setup=required → setup=complete after first-boot
+// configuration) propagate to LAN listeners. zeroconf doesn't expose
+// in-place TXT updates; the operational shape is shutdown + re-Register,
+// which works fine for mDNS (clients re-resolve on next browse).
 //
-// Safe to call when the service isn't running (no-op). Listener +
-// sweeper goroutines are not affected — only the announcer is
-// refreshed.
+// Safe to call when the service isn't running (no-op).
 func (s *Service) Refresh() error {
 	s.mu.Lock()
 	if !s.running {
@@ -169,7 +148,7 @@ func (s *Service) Refresh() error {
 
 	newAnnouncer, err := zeroconf.Register(
 		announceInstancePrefix+s.identity.ID().String()[:8],
-		ServiceTypeRecorder,
+		ServiceTypeNVR,
 		"local.",
 		s.port,
 		s.recorderTXTRecords(),
@@ -183,230 +162,31 @@ func (s *Service) Refresh() error {
 	s.announcer = newAnnouncer
 	s.mu.Unlock()
 
-	s.logger.Log(logger.Info, "[mdns] re-broadcasting %s id=%s paired=%v",
-		ServiceTypeRecorder, s.identity.ID().String(), s.identity.IsPaired())
+	s.logger.Log(logger.Info, "[mdns] re-broadcasting %s id=%s",
+		ServiceTypeNVR, s.identity.ID().String())
 	return nil
 }
 
-// Discovered returns a snapshot of currently-cached MS advertisements.
-func (s *Service) Discovered() []DiscoveredManagement {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]DiscoveredManagement, 0, len(s.cache))
-	for _, d := range s.cache {
-		out = append(out, *d)
-	}
-	return out
-}
-
-// recorderTXTRecords builds the TXT record list per pairing API
-// contract §8.3.
+// recorderTXTRecords builds the TXT record list. The mandatory
+// fields are `version` and `id`; Phase 6 adds `setup=required|complete`
+// + any other runtime-state fields via SetTXT.
 func (s *Service) recorderTXTRecords() []string {
-	paired := "false"
-	if s.identity.IsPaired() {
-		paired = "true"
+	s.mu.Lock()
+	custom := make(map[string]string, len(s.txt))
+	for k, v := range s.txt {
+		custom[k] = v
 	}
-	return []string{
+	s.mu.Unlock()
+
+	out := []string{
 		"version=" + s.version,
 		"id=" + s.identity.ID().String(),
-		"paired=" + paired,
 	}
-}
-
-// runListener browses for management advertisements and updates the
-// cache. The browse cycle re-runs on a 30-second cadence so newly-
-// announced MS instances surface within roughly that window.
-func (s *Service) runListener(ctx context.Context) {
-	defer s.wg.Done()
-	resolver, err := zeroconf.NewResolver(nil)
-	if err != nil {
-		s.logger.Log(logger.Warn, "[mdns] resolver: %s", err)
-		return
-	}
-	for {
-		if ctx.Err() != nil {
-			return
+	for k, v := range custom {
+		if k == "version" || k == "id" {
+			continue // mandatory fields take precedence over SetTXT overrides
 		}
-		entries := make(chan *zeroconf.ServiceEntry, 16)
-		browseCtx, browseCancel := context.WithTimeout(ctx, 30*time.Second)
-		go s.consume(ctx, entries)
-		if err := resolver.Browse(browseCtx, ServiceTypeManagement, "local.", entries); err != nil {
-			s.logger.Log(logger.Warn, "[mdns] browse: %s", err)
-		}
-		<-browseCtx.Done()
-		browseCancel()
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-	}
-}
-
-func (s *Service) consume(ctx context.Context, entries <-chan *zeroconf.ServiceEntry) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case entry, ok := <-entries:
-			if !ok {
-				return
-			}
-			s.handleEntry(entry)
-		}
-	}
-}
-
-func (s *Service) handleEntry(entry *zeroconf.ServiceEntry) {
-	if entry == nil {
-		return
-	}
-	txt := parseTXT(entry.Text)
-	addrs := []string{}
-	for _, ip := range entry.AddrIPv4 {
-		addrs = append(addrs, ip.String())
-	}
-	for _, ip := range entry.AddrIPv6 {
-		addrs = append(addrs, ip.String())
-	}
-
-	key := txt["ms_id"]
-	if key == "" {
-		key = entry.HostName
-	}
-	url := ""
-	if len(addrs) > 0 {
-		url = "https://" + addrs[0] + ":" + itoa(entry.Port)
-	}
-	now := time.Now()
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	existing, ok := s.cache[key]
-	if !ok {
-		s.cache[key] = &DiscoveredManagement{
-			MSID:            txt["ms_id"],
-			Hostname:        entry.HostName,
-			Addresses:       addrs,
-			Version:         txt["version"],
-			TenantID:        txt["tenant_id"],
-			RootFingerprint: txt["root_fp"],
-			PublicURL:       txt["public_url"],
-			Port:            entry.Port,
-			URL:             url,
-			FirstSeenAt:     now,
-			LastSeenAt:      now,
-		}
-		return
-	}
-	existing.MSID = txt["ms_id"]
-	existing.Hostname = entry.HostName
-	existing.Addresses = addrs
-	existing.Version = txt["version"]
-	existing.TenantID = txt["tenant_id"]
-	existing.RootFingerprint = txt["root_fp"]
-	existing.PublicURL = txt["public_url"]
-	existing.Port = entry.Port
-	existing.URL = url
-	existing.LastSeenAt = now
-}
-
-// LiveMSBroadcast returns the most recent cached MS broadcast whose
-// advertised root_fp TXT field matches one of the supplied trusted
-// fingerprints (case-insensitive hex). Returns nil when no cached
-// entry matches — the caller falls back to pinned ms-metadata.json.
-//
-// The fingerprint match is the recorder's defense against accepting a
-// hostile mDNS broadcast: an attacker on the LAN can advertise
-// _raikada-management._tcp.local with a different root_fp, but only
-// the legitimate MS holds a matching root CA per ADR 0012 D5.
-//
-// If multiple cached entries match (unusual — implies multiple MS
-// instances share a root, e.g., during root rotation), the one with
-// the most recent LastSeenAt wins.
-func (s *Service) LiveMSBroadcast(trustedFingerprints []string) *DiscoveredManagement {
-	if len(trustedFingerprints) == 0 {
-		return nil
-	}
-	trusted := make(map[string]struct{}, len(trustedFingerprints))
-	for _, fp := range trustedFingerprints {
-		if fp == "" {
-			continue
-		}
-		trusted[strings.ToLower(fp)] = struct{}{}
-	}
-	if len(trusted) == 0 {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var best *DiscoveredManagement
-	for _, d := range s.cache {
-		if d.RootFingerprint == "" {
-			continue
-		}
-		if _, ok := trusted[strings.ToLower(d.RootFingerprint)]; !ok {
-			continue
-		}
-		if best == nil || d.LastSeenAt.After(best.LastSeenAt) {
-			tmp := *d
-			best = &tmp
-		}
-	}
-	return best
-}
-
-func (s *Service) runSweeper(ctx context.Context) {
-	defer s.wg.Done()
-	tick := time.NewTicker(60 * time.Second)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			cutoff := time.Now().Add(-listenerStaleAfter)
-			s.mu.Lock()
-			for k, d := range s.cache {
-				if d.LastSeenAt.Before(cutoff) {
-					delete(s.cache, k)
-				}
-			}
-			s.mu.Unlock()
-		}
-	}
-}
-
-func parseTXT(records []string) map[string]string {
-	out := make(map[string]string, len(records))
-	for _, r := range records {
-		idx := strings.Index(r, "=")
-		if idx <= 0 {
-			continue
-		}
-		out[r[:idx]] = r[idx+1:]
+		out = append(out, k+"="+v)
 	}
 	return out
-}
-
-// itoa is a tiny int→string without strconv import; keeps the file
-// dep list minimal. (zeroconf entry.Port is int.)
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	buf := make([]byte, 0, 11)
-	for n > 0 {
-		buf = append([]byte{byte(n%10) + '0'}, buf...)
-		n /= 10
-	}
-	if neg {
-		buf = append([]byte{'-'}, buf...)
-	}
-	return string(buf)
 }
