@@ -56,6 +56,7 @@ type Store struct {
 	ClipSegments        *ClipSegmentsRepo
 	NotificationTargets       *NotificationTargetsRepo
 	NotificationSubscriptions *NotificationSubscriptionsRepo
+	NotificationOutbox        *NotificationOutboxRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -107,6 +108,7 @@ func Open(path string) (*Store, error) {
 	s.ClipSegments = &ClipSegmentsRepo{db: db}
 	s.NotificationTargets = &NotificationTargetsRepo{db: db}
 	s.NotificationSubscriptions = &NotificationSubscriptionsRepo{db: db}
+	s.NotificationOutbox = &NotificationOutboxRepo{db: db}
 	return s, nil
 }
 
