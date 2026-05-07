@@ -38,6 +38,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/policysync"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
+	"github.com/bluenviron/mediamtx/internal/updatepoll"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
@@ -148,6 +149,8 @@ type Core struct {
 	crlPoller        *crl.Poller
 	cameraSyncPoller *camerasync.Poller
 	policySyncPoller *policysync.Poller
+	updatePollState  *updatepoll.State
+	updatePoller     *updatepoll.Poller
 	onvifManager     *onvif.Manager
 	motionController *motion.Controller
 
@@ -949,6 +952,31 @@ func (p *Core) createResources(initial bool) error {
 			}
 		}
 
+		// Wave A2: software-update poller. Polls the MS for
+		// approved-but-not-yet-applied lifecycle rows and exposes the
+		// freshest one through /v1/recorder/identity so the recorder's
+		// SPA can surface a "Software update available" badge. Dormant
+		// pre-pair (the goroutine's per-tick IsPaired check re-arms post-
+		// pairing without an external nudge).
+		if p.updatePoller == nil && p.identity != nil {
+			if p.updatePollState == nil {
+				p.updatePollState = updatepoll.NewState()
+			}
+			up, err := updatepoll.New(updatepoll.Options{
+				Identity:     p.identity,
+				Logger:       p,
+				State:        p.updatePollState,
+				PollInterval: time.Duration(p.conf.MSPollInterval),
+			})
+			if err != nil {
+				p.Log(logger.Warn, "[updatepoll] failed to construct poller: %s", err)
+			} else {
+				p.updatePoller = up
+				p.api.SetUpdatePollState(updatePollSnapshot{state: p.updatePollState})
+				p.updatePoller.Start()
+			}
+		}
+
 		// Wave 6: software-update applier wiring per ADR 0014. Wired
 		// only when the operator has provisioned a Raikada release
 		// public key in conf; without one the apply endpoint surfaces
@@ -1011,6 +1039,7 @@ func (p *Core) createResources(initial bool) error {
 			poller := p.crlPoller
 			cameraPoller := p.cameraSyncPoller
 			policyPoller := p.policySyncPoller
+			updatePoller := p.updatePoller
 			logRef := p
 			p.pairingManager.SetPairedCallback(func() {
 				if ms != nil {
@@ -1033,6 +1062,12 @@ func (p *Core) createResources(initial bool) error {
 				}
 				if policyPoller != nil {
 					policyPoller.Start()
+				}
+				// Update poller. Idempotent; the first Start before
+				// pairing was a no-op, this Start now enters the
+				// running state.
+				if updatePoller != nil {
+					updatePoller.Start()
 				}
 			})
 		}
@@ -1400,6 +1435,11 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 	if newConf == nil && p.policySyncPoller != nil {
 		p.policySyncPoller.Stop()
 		p.policySyncPoller = nil
+	}
+	// Update poller (Wave A2) — same full-shutdown-only pattern.
+	if newConf == nil && p.updatePoller != nil {
+		p.updatePoller.Stop()
+		p.updatePoller = nil
 	}
 
 	if p.api != nil {

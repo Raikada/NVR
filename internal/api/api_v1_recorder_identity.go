@@ -54,6 +54,19 @@ type v1RecorderIdentity struct {
 	// 4-B → 4-C migration. Used by the local SPA to grey out
 	// Add/Edit/Delete on the Policies page when MS-canonical.
 	PolicyCanonicalSource string `json:"policy_canonical_source"`
+
+	// PendingSoftwareUpdate (Wave A2) is the most-recent MS-approved
+	// software-update lifecycle row this recorder has discovered via
+	// the updatepoll goroutine. nil when no update is approved (or
+	// the poller hasn't completed its first cycle yet, or the
+	// recorder is unpaired). The recorder SPA renders a "Software
+	// update available" badge when this is non-nil.
+	PendingSoftwareUpdate *PendingSoftwareUpdate `json:"pending_software_update,omitempty"`
+
+	// PendingSoftwareUpdatePolledAt is the wall-clock timestamp of the
+	// poller's last successful cycle. Empty when the poller has not
+	// yet completed a cycle. Used by the SPA to surface staleness.
+	PendingSoftwareUpdatePolledAt string `json:"pending_software_update_polled_at,omitempty"`
 }
 
 func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
@@ -94,6 +107,18 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 		}
 		resp.CanonicalSource = a.Identity.CanonicalSource()
 		resp.PolicyCanonicalSource = a.Identity.PolicyCanonicalSource()
+	}
+
+	a.mutex.RLock()
+	pollState := a.updatePollState
+	a.mutex.RUnlock()
+	if pollState != nil {
+		if pending := pollState.Pending(); pending != nil {
+			resp.PendingSoftwareUpdate = pending
+		}
+		if t := pollState.LastPoll(); !t.IsZero() {
+			resp.PendingSoftwareUpdatePolledAt = t.UTC().Format(time.RFC3339)
+		}
 	}
 
 	ctx.JSON(http.StatusOK, resp)

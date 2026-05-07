@@ -345,6 +345,68 @@ export function Settings({ state, addToast }: SettingsProps) {
               Updates →
             </Btn>
           </div>
+          {/* Wave A2: software-update poller surfaces MS-approved
+              lifecycle rows via /v1/recorder/identity. Badge appears
+              only when an approved update exists and hasn't been
+              applied yet; operators apply from the MS UI per ADR 0014
+              D6. */}
+          {identity.data?.pending_software_update ? (
+            <div
+              style={{
+                marginTop: 12,
+                padding: '10px 12px',
+                background: 'var(--accent-info-bg, rgba(76, 154, 255, 0.08))',
+                border: '1px solid var(--accent-info, rgba(76, 154, 255, 0.4))',
+                borderRadius: 4,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    color: 'var(--accent-info, #4c9aff)',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  SOFTWARE UPDATE AVAILABLE
+                </div>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    color: 'var(--text-primary)',
+                    marginTop: 3,
+                  }}
+                >
+                  v{identity.data.pending_software_update.version || '?'}
+                  {identity.data.pending_software_update.channel
+                    ? ` · ${identity.data.pending_software_update.channel}`
+                    : ''}
+                </div>
+              </div>
+              {identity.data.pending_software_update.release_notes_url ? (
+                <a
+                  href={identity.data.pending_software_update.release_notes_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    color: 'var(--accent-info, #4c9aff)',
+                    textDecoration: 'none',
+                  }}
+                >
+                  RELEASE NOTES →
+                </a>
+              ) : null}
+            </div>
+          ) : null}
           <div
             style={{
               display: 'flex',

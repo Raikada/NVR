@@ -111,6 +111,42 @@ type API struct {
 	// pinned Raikada release public key is configured. Guarded by
 	// a.mutex.
 	softwareUpdateApplier softwareUpdateApplierField
+
+	// Wave A2: process-wide cache of MS-approved update lifecycle rows
+	// for this recorder. Read-only access from the
+	// /v1/recorder/identity handler; populated by internal/updatepoll's
+	// goroutine. Wired lazily via SetUpdatePollState.
+	updatePollState UpdatePollSnapshot
+}
+
+// UpdatePollSnapshot is the minimal projection of internal/updatepoll
+// State that the API needs. Defined here so internal/api doesn't import
+// internal/updatepoll (and vice-versa).
+type UpdatePollSnapshot interface {
+	Pending() *PendingSoftwareUpdate
+	LastPoll() time.Time
+}
+
+// PendingSoftwareUpdate mirrors updatepoll.PendingUpdate. Owned by the
+// API package because the /v1/recorder/identity wire shape lives here;
+// the updatepoll package adapts to it through a thin core-level shim.
+type PendingSoftwareUpdate struct {
+	LifecycleID    string `json:"lifecycle_id"`
+	State          string `json:"state"`
+	StateChangedAt string `json:"state_changed_at,omitempty"`
+	ManifestID     string `json:"manifest_id,omitempty"`
+	Version        string `json:"version,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	ReleaseNotes   string `json:"release_notes_url,omitempty"`
+}
+
+// SetUpdatePollState wires the update-poll snapshot accessor. Called
+// by Core after constructing the poller. nil clears the wiring
+// (used by tests).
+func (a *API) SetUpdatePollState(s UpdatePollSnapshot) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.updatePollState = s
 }
 
 // Initialize initializes API.

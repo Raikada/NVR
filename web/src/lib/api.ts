@@ -519,6 +519,22 @@ export interface RecorderIdentity {
   // migration window. SPA uses this to grey out Add/Edit/Delete
   // affordances on the Policies page.
   policy_canonical_source?: 'recorder' | 'ms';
+  // Wave A2: most-recent MS-approved software-update lifecycle row
+  // surfaced via the recorder's local update-state poller. nil when no
+  // approved update exists, the recorder is unpaired, or the poller
+  // hasn't completed its first cycle.
+  pending_software_update?: PendingSoftwareUpdate | null;
+  pending_software_update_polled_at?: string;
+}
+
+export interface PendingSoftwareUpdate {
+  lifecycle_id: string;
+  state: string;
+  state_changed_at?: string;
+  manifest_id?: string;
+  version?: string;
+  channel?: string;
+  release_notes_url?: string;
 }
 
 export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');
