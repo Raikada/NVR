@@ -50,6 +50,7 @@ type Store struct {
 	RecordingSchedules *RecordingSchedulesRepo
 	EventTypes         *EventTypesRepo
 	EventRetention     *EventRetentionRepo
+	Events             *EventsRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -95,6 +96,7 @@ func Open(path string) (*Store, error) {
 	s.RecordingSchedules = &RecordingSchedulesRepo{db: db}
 	s.EventTypes = &EventTypesRepo{db: db}
 	s.EventRetention = &EventRetentionRepo{db: db}
+	s.Events = &EventsRepo{db: db}
 	return s, nil
 }
 
