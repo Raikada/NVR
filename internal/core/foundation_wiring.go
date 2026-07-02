@@ -11,6 +11,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -28,6 +29,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/retention"
 	"github.com/bluenviron/mediamtx/internal/store"
+	"github.com/bluenviron/mediamtx/internal/vendorevents"
 )
 
 // pathManagerAdapter satisfies cameras.PathManager. It owns a base
@@ -488,4 +490,49 @@ func (a *pathListerAdapter) ListPaths(_ context.Context) ([]camerahealth.PathSna
 		out = append(out, snap)
 	}
 	return out, nil
+}
+
+// vendorChannelResolver builds the vendorevents.Resolver: store camera
+// row → ChannelCamera with the CGI host (hostname only — vendor HTTP
+// services live on their default port, not the RTSP port), the
+// capability probe's events XAddr, and a late-bound credentials
+// closure so plaintext never sits in a struct field.
+func vendorChannelResolver(st *store.Store, camerasService *cameras.Service) vendorevents.Resolver {
+	return func(cam *store.Camera) vendorevents.ChannelCamera {
+		cc := vendorevents.ChannelCamera{
+			ID:           cam.ID,
+			Name:         cam.Name,
+			Manufacturer: cam.Manufacturer,
+			OnvifXAddr:   cam.OnvifXAddr,
+			Channel:      cam.EventChannel,
+		}
+		if u, err := url.Parse(cam.SourceURL); err == nil {
+			cc.Host = u.Hostname()
+		}
+		if st != nil {
+			if caps, err := st.CameraCapabilities.Get(context.Background(), cam.ID); err == nil {
+				var vendor struct {
+					EventsXAddr string `json:"events_xaddr"`
+				}
+				if json.Unmarshal([]byte(caps.VendorCapabilitiesJSON), &vendor) == nil {
+					cc.EventsXAddr = vendor.EventsXAddr
+				}
+			}
+		}
+		id := cam.ID
+		cc.Credentials = func(ctx context.Context) (string, string, error) {
+			return camerasService.PlaintextCredentials(ctx, id)
+		}
+		return cc
+	}
+}
+
+// notImplementedChannelFactory is the registry stub for vendors whose
+// adapters haven't shipped (Hikvision ISAPI, Reolink) — the interface
+// contract they'll implement later.
+func notImplementedChannelFactory(vendor string) vendorevents.AdapterFactory {
+	return func(_ context.Context, cam vendorevents.ChannelCamera) (vendorevents.Adapter, error) {
+		return nil, fmt.Errorf("%s event channel not implemented (camera %s): %w",
+			vendor, cam.ID, vendorevents.ErrUnsupported)
+	}
 }

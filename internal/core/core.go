@@ -57,6 +57,9 @@ import (
 	"github.com/bluenviron/mediamtx/internal/servers/webrtc"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
+	"github.com/bluenviron/mediamtx/internal/vendorevents"
+	"github.com/bluenviron/mediamtx/internal/vendorevents/amcrestchannel"
+	"github.com/bluenviron/mediamtx/internal/vendorevents/onvifchannel"
 )
 
 //go:generate go run ./versiongetter
@@ -169,6 +172,8 @@ type Core struct {
 	pmAdapter        *pathManagerAdapter
 	discoverySvc     *discovery.Service
 	healthCollector  *camerahealth.Collector
+	vendorEvents     *vendorevents.Manager
+	onvifDispatch    *onvifchannel.Dispatcher
 	pathLister       *pathListerAdapter
 	credVault        *cameracred.Vault
 	auditEmit        *audit.Emitter
@@ -1224,8 +1229,14 @@ func (p *Core) createResources(initial bool) error {
 		// into publishOnvifEvent, which reuses the pipeline's
 		// EventStore.
 		if p.onvifManager == nil {
+			if p.onvifDispatch == nil {
+				p.onvifDispatch = onvifchannel.NewDispatcher()
+			}
+			dispatch := p.onvifDispatch
 			p.onvifManager = onvif.NewManager(p, func(ev onvif.EventNotification) {
 				api.PublishOnvifEvent(ev)
+				// SP3: fan out to per-camera vendor event channels.
+				dispatch.Dispatch(ev)
 			}, nil)
 			// TODO(phase6): re-attach the subscription persister + rehydrate
 			// once the post-MS persistence layer ships.
@@ -1258,6 +1269,30 @@ func (p *Core) createResources(initial bool) error {
 			p.motionController.Close()
 		}
 		p.motionController = api.WireMotionControllerForAPI(p.api, p)
+
+		// SP3: vendor event channel manager. Started once everything it
+		// funnels through exists (cameras service/bus, events service,
+		// onvif manager for the PullPoint factory, health collector for
+		// last_event_at stamps).
+		if p.vendorEvents == nil && p.camerasService != nil && p.camerasBus != nil &&
+			p.eventsService != nil && p.onvifManager != nil && p.fndCtx != nil {
+			var touch vendorevents.Toucher
+			if p.healthCollector != nil {
+				touch = p.healthCollector.Touch
+			}
+			factories := map[string]vendorevents.AdapterFactory{
+				"onvif":     onvifchannel.New(p.onvifManager, p.onvifDispatch),
+				"amcrest":   amcrestchannel.New,
+				"hikvision": notImplementedChannelFactory("hikvision"),
+				"reolink":   notImplementedChannelFactory("reolink"),
+			}
+			p.vendorEvents = vendorevents.NewManager(
+				p.camerasService, p.camerasBus, factories,
+				p.eventsService, touch,
+				vendorChannelResolver(p.localAuthStore, p.camerasService), p,
+			)
+			go p.vendorEvents.Run(p.fndCtx)
+		}
 	}
 
 	if initial && p.confPath != "" {
@@ -1578,6 +1613,8 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.pmAdapter = nil
 		p.discoverySvc = nil
 		p.healthCollector = nil
+		p.vendorEvents = nil
+		p.onvifDispatch = nil
 		p.pathLister = nil
 		p.notifDispatcher = nil
 		p.retentionMgr = nil
