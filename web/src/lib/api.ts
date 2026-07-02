@@ -209,6 +209,10 @@ export interface Camera {
   source_url: string;
   credentials_ref?: string;
   recording_policy_id?: string;
+  // SP3 vendor event channel: ''|'auto' auto-resolve, or an explicit
+  // 'onvif'|'amcrest'|'none'. Lives on the store row; surfaced on the
+  // camera GET and settable via PATCH.
+  event_channel?: string;
   runtime?: CameraRuntime;
   created_at: string;
   updated_at: string;
@@ -227,6 +231,10 @@ export interface CameraList extends ListEnvelope<Camera> {
 export const fetchCameras = (page = 0, perPage = 50) =>
   api.get<CameraList>(`/cameras?page=${page}&items_per_page=${perPage}`);
 
+// Single-camera fetch. GET /v1/cameras/:id folds the store-row-only
+// fields (event_channel, …) onto the canonical camera.
+export const fetchCamera = (id: string) => api.get<Camera>(`/cameras/${id}`);
+
 export const deleteCamera = (id: string) => api.delete<unknown>(`/cameras/${id}`);
 
 export interface CameraCreateBody {
@@ -242,6 +250,8 @@ export interface CameraPatchBody {
   source_type?: CameraSourceType;
   source_url?: string;
   recording_policy_id?: string;
+  // SP3: '' | 'auto' | 'onvif' | 'amcrest' | 'none'. Invalid values → 400.
+  event_channel?: string;
 }
 
 export const patchCamera = (id: string, patch: CameraPatchBody) =>
@@ -1175,4 +1185,75 @@ export function subscribeEventsStream(
   };
   return () => es.close();
 }
+
+/* ---------- SP4 DB-backed events (snapshots + clip export) ---------- */
+//
+// The canonical event store (events.Service → SQLite) surfaces a richer
+// wire shape than the legacy in-memory Event above: per-event snapshot /
+// thumbnail media URLs, acknowledge metadata, and a linked clip id.
+// snapshot_url / thumbnail_url are RELATIVE, signed, short-lived (~15min)
+// URLs — usable directly as <img src> / <a href> WITHOUT auth headers;
+// re-list to refresh them once they expire.
+
+export interface EventRecord {
+  id: string;
+  camera_id: string;
+  type_id: string;
+  source: string;
+  occurred_at: string;
+  received_at: string;
+  severity: string;
+  payload?: unknown;
+  acknowledged_at?: string;
+  acknowledged_by?: string;
+  expires_at: string;
+  snapshot_url?: string;
+  thumbnail_url?: string;
+  clip_id?: string;
+}
+
+export interface EventRecordList {
+  items: EventRecord[];
+  item_count: number;
+  next_cursor: string;
+}
+
+export interface ListEventsParams {
+  cameraId?: string;
+  typeId?: string;
+  itemsPerPage?: number;
+  cursor?: string;
+  unacknowledged?: boolean;
+}
+
+export const listEvents = (params: ListEventsParams = {}) => {
+  const qs = new URLSearchParams();
+  if (params.cameraId) qs.set('camera_id', params.cameraId);
+  if (params.typeId) qs.set('type_id', params.typeId);
+  if (params.itemsPerPage) qs.set('items_per_page', String(params.itemsPerPage));
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.unacknowledged) qs.set('unacknowledged', 'true');
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return api.get<EventRecordList>(`/events${suffix}`);
+};
+
+// POST /v1/events/:id/acknowledge → 204 No Content.
+export const ackEvent = (id: string) =>
+  api.post<void>(`/events/${id}/acknowledge`);
+
+export interface EventClipBody {
+  pre_roll_seconds?: number;
+  post_roll_seconds?: number;
+}
+
+export interface EventClipResponse {
+  clip: { id: string; state: string; [key: string]: unknown };
+  download_url: string;
+}
+
+// POST /v1/events/:id/clip → 201 (created) or 200 (already existed).
+// Throws ApiError with status 409 when the footage has already been
+// swept and no segments cover the event window.
+export const createEventClip = (id: string, body?: EventClipBody) =>
+  api.post<EventClipResponse>(`/events/${id}/clip`, body ?? {});
 

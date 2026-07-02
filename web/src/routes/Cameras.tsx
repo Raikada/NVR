@@ -52,11 +52,14 @@ import {
   getCameraCapabilities,
   probeCameraCapabilities,
   getCameraHealth,
+  fetchCamera,
+  listEvents,
 } from '../lib/api';
 import type {
   OnvifSubscription,
   OnvifDiscoveredDevice,
   Event as ApiEvent,
+  EventRecord,
   MotionConfig as MotionConfigShape,
   MotionConfigPatchBody,
   DiscoveredCamera,
@@ -2639,7 +2642,7 @@ function CameraConfigDrawer({ camera, onClose, onSave, onRemove, addToast }: Dra
             />
           )}
           {tab === 'motion' && <MotionTab c={c} patch={patch} />}
-          {tab === 'events' && <EventsTab c={c} patch={patch} />}
+          {tab === 'events' && <EventsTab c={c} patch={patch} addToast={addToast} />}
           {tab === 'advanced' && <AdvancedTab c={c} patch={patch} />}
         </div>
 
@@ -4151,7 +4154,88 @@ function ScheduleEditor({
   );
 }
 
-function EventsTab({ c, patch }: TabProps) {
+// EventsChannelSelect — SP3 vendor event-channel picker. Reads the
+// camera's persisted event_channel (store-row field, surfaced on the
+// camera GET) and PATCHes on change. Empty / 'auto' both display as
+// "Auto"; the recorder resolves the concrete channel from manufacturer.
+const EVENT_CHANNEL_OPTIONS: { value: string; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'onvif', label: 'ONVIF' },
+  { value: 'amcrest', label: 'Amcrest' },
+  { value: 'none', label: 'Off' },
+];
+
+function EventsChannelSelect({
+  cameraId,
+  addToast,
+}: {
+  cameraId: string;
+  addToast: (t: ToastInput) => void;
+}) {
+  const [value, setValue] = useState<string>('auto');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCamera(cameraId)
+      .then((cam) => {
+        if (cancelled) return;
+        // '' means "not specified" → auto-resolve; display as Auto.
+        setValue(cam.event_channel && cam.event_channel !== '' ? cam.event_channel : 'auto');
+      })
+      .catch(() => {
+        /* leave default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraId]);
+
+  async function onChange(next: string) {
+    const prev = value;
+    setValue(next);
+    setSaving(true);
+    try {
+      await patchCamera(cameraId, { event_channel: next });
+      addToast({ kind: 'success', title: 'EVENTS CHANNEL UPDATED', body: next, icon: 'zap' });
+    } catch (e) {
+      setValue(prev);
+      addToast({ kind: 'danger', title: 'UPDATE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setSaving(false);
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: 1 }}>
+        EVENTS CHANNEL
+      </span>
+      <select
+        value={value}
+        disabled={saving}
+        onChange={(e) => void onChange(e.target.value)}
+        style={{
+          background: 'var(--bg-tertiary)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+          padding: '8px 10px',
+          color: 'var(--text-primary)',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 12,
+          opacity: saving ? 0.6 : 1,
+        }}
+      >
+        {EVENT_CHANNEL_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function EventsTab({ c, patch, addToast }: StreamTabProps) {
   type EventKey = keyof CameraConfig['events'];
   const eventToggles: { k: EventKey; l: string; d: string }[] = [
     { k: 'motion', l: 'Motion Detection', d: 'Standard pixel-difference motion' },
@@ -4168,7 +4252,7 @@ function EventsTab({ c, patch }: TabProps) {
   const [subs, setSubs] = useState<OnvifSubscription[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [recentEvents, setRecentEvents] = useState<ApiEvent[]>([]);
+  const [recentEvents, setRecentEvents] = useState<EventRecord[]>([]);
 
   const ourSub = subs.find((s) => s.camera_id === c.id);
 
@@ -4183,16 +4267,10 @@ function EventsTab({ c, patch }: TabProps) {
 
   async function refreshEvents() {
     try {
-      const list = await fetchEvents({ perPage: 50 });
-      // Filter for events whose subject_id matches this camera and
-      // whose kind starts with 'camera.' (motion, tamper, signal_loss,
-      // onvif_event). The recorder doesn't yet expose a `subject_id=`
-      // filter so we filter client-side.
-      setRecentEvents(
-        list.items
-          .filter((e) => e.subject_id === c.id && e.kind.startsWith('camera.'))
-          .slice(0, 30),
-      );
+      // Last 5 canonical events for this camera, straight from the
+      // camera_id-filtered store query (thumbnails ride signed media URLs).
+      const list = await listEvents({ cameraId: c.id, itemsPerPage: 5 });
+      setRecentEvents(list.items);
     } catch {
       // Best-effort; leave the previous list intact.
     }
@@ -4244,6 +4322,9 @@ function EventsTab({ c, patch }: TabProps) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* SP3 vendor event channel selector. */}
+      <EventsChannelSelect cameraId={c.id} addToast={addToast} />
+
       <div
         style={{
           padding: 12,
@@ -4347,55 +4428,111 @@ function EventsTab({ c, patch }: TabProps) {
         </div>
       )}
 
-      {/* Recent events feed */}
+      {/* Recent events strip — last 5, with snapshot thumbnails. Each
+          links out to the full Events page. */}
       {recentEvents.length > 0 && (
         <div>
-          <SectionHeader>RECENT EVENTS</SectionHeader>
+          <SectionHeader
+            right={
+              <a
+                href="#events"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  letterSpacing: 1,
+                  textTransform: 'uppercase',
+                  color: '#F97316',
+                  textDecoration: 'none',
+                }}
+              >
+                Open Events
+              </a>
+            }
+          >
+            RECENT EVENTS
+          </SectionHeader>
           <div
             style={{
               marginTop: 10,
               border: '1px solid var(--border)',
               borderRadius: 4,
               overflow: 'hidden',
-              maxHeight: 220,
-              overflowY: 'auto',
             }}
           >
-            {recentEvents.map((ev) => (
-              <div
-                key={ev.id}
-                style={{
-                  padding: '8px 12px',
-                  borderBottom: '1px solid var(--border)',
-                  display: 'grid',
-                  gridTemplateColumns: '120px 1fr auto',
-                  gap: 10,
-                  alignItems: 'center',
-                  background: 'var(--bg-tertiary)',
-                }}
-              >
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
-                  {new Date(ev.occurred_at).toLocaleTimeString()}
-                </span>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{ev.kind}</span>
-                <span
+            {recentEvents.map((ev) => {
+              const accent =
+                ev.severity === 'error' || ev.severity === 'critical'
+                  ? '#EF4444'
+                  : ev.severity === 'warning'
+                    ? '#F59E0B'
+                    : '#22C55E';
+              return (
+                <a
+                  key={ev.id}
+                  href="#events"
                   style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 9,
-                    letterSpacing: 1,
-                    color:
-                      ev.severity === 'error'
-                        ? '#EF4444'
-                        : ev.severity === 'warning'
-                          ? '#F59E0B'
-                          : '#22C55E',
-                    textTransform: 'uppercase',
+                    textDecoration: 'none',
+                    color: 'inherit',
+                    padding: '8px 12px',
+                    borderBottom: '1px solid var(--border)',
+                    display: 'grid',
+                    gridTemplateColumns: '54px 1fr auto',
+                    gap: 10,
+                    alignItems: 'center',
+                    background: 'var(--bg-tertiary)',
                   }}
                 >
-                  {ev.severity}
-                </span>
-              </div>
-            ))}
+                  {ev.thumbnail_url ? (
+                    <img
+                      src={ev.thumbnail_url}
+                      alt=""
+                      style={{
+                        width: 54,
+                        height: 34,
+                        objectFit: 'cover',
+                        borderRadius: 3,
+                        border: '1px solid var(--border)',
+                        display: 'block',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        width: 54,
+                        height: 34,
+                        borderRadius: 3,
+                        border: '1px solid var(--border)',
+                        background: 'var(--bg-primary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <Icon name="video" style={{ width: 12, height: 12, color: 'var(--text-muted)' }} />
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-primary)' }}>
+                      {ev.type_id}
+                    </span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+                      {new Date(ev.occurred_at).toLocaleTimeString()}
+                    </span>
+                  </div>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 9,
+                      letterSpacing: 1,
+                      color: accent,
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {ev.severity}
+                  </span>
+                </a>
+              );
+            })}
           </div>
         </div>
       )}

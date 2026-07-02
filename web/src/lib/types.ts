@@ -56,6 +56,7 @@ export interface AppState {
 export const ROUTES = [
   'overview',
   'cameras',
+  'events',
   'policies',
   'storage',
   'network',

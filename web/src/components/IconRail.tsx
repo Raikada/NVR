@@ -11,6 +11,7 @@ interface IconRailProps {
 const BASE_ITEMS: { id: Route; icon: IconName; label: string }[] = [
   { id: 'overview', icon: 'layout-dashboard', label: 'Overview' },
   { id: 'cameras', icon: 'cctv', label: 'Cameras' },
+  { id: 'events', icon: 'zap', label: 'Events' },
   { id: 'policies', icon: 'database', label: 'Policies' },
   { id: 'storage', icon: 'hard-drive', label: 'Storage' },
   { id: 'network', icon: 'network', label: 'Network' },
