@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bluenviron/mediamtx/internal/cameras"
@@ -31,11 +32,18 @@ import (
 // pathManagerAdapter satisfies cameras.PathManager. It owns a base
 // snapshot of operator-supplied conf.Paths (e.g. paths declared in
 // mediamtx.yml that aren't camera-backed) and merges in the
-// camera-derived specs on every reload.
+// camera-derived specs on every reload. The snapshot is refreshed on
+// every conf apply (RefreshDefaults) so paths created after boot —
+// e.g. via POST /v1/cameras — are merged against their real conf
+// rather than a nil base. pathTemplate carries the validated
+// conf.PathDefaults for cameras that have no conf path at all.
 type pathManagerAdapter struct {
-	pm           *pathManager
-	logger       logger.Writer
+	pm     *pathManager
+	logger logger.Writer
+
+	mu           sync.Mutex
 	defaultPaths map[string]*conf.Path
+	pathTemplate *conf.Path
 }
 
 // newPathManagerAdapter returns an adapter pinned to the recorder's
@@ -50,6 +58,33 @@ func newPathManagerAdapter(pm *pathManager, defaults map[string]*conf.Path, log 
 	return &pathManagerAdapter{pm: pm, logger: log, defaultPaths: cp}
 }
 
+// RefreshDefaults replaces the adapter's boot-time snapshot with the
+// paths (and validated PathDefaults template) from a freshly-applied
+// conf. Core calls this on every conf apply so camera paths created
+// after boot participate in later merges.
+func (a *pathManagerAdapter) RefreshDefaults(c *conf.Conf) {
+	if a == nil || c == nil {
+		return
+	}
+	cp := make(map[string]*conf.Path, len(c.Paths))
+	for k, v := range c.Paths {
+		cp[k] = v
+	}
+	tmpl := c.PathDefaults
+	a.mu.Lock()
+	a.defaultPaths = cp
+	a.pathTemplate = &tmpl
+	a.mu.Unlock()
+}
+
+// baseFor returns the merge base for a camera path name plus the
+// defaults template, both under the adapter lock.
+func (a *pathManagerAdapter) baseFor(name string) (*conf.Path, *conf.Path) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.defaultPaths[name], a.pathTemplate
+}
+
 // ReloadFromCameras is the cameras.PathManager seam. It rebuilds the
 // path-conf map = defaultPaths + camera-derived specs and calls
 // pathManager.ReloadPathConfs.
@@ -57,21 +92,25 @@ func (a *pathManagerAdapter) ReloadFromCameras(_ context.Context, specs []camera
 	if a == nil || a.pm == nil {
 		return nil
 	}
-	merged := make(map[string]*conf.Path, len(a.defaultPaths)+len(specs))
-	for k, v := range a.defaultPaths {
+	a.mu.Lock()
+	defaults := a.defaultPaths
+	tmpl := a.pathTemplate
+	a.mu.Unlock()
+	merged := make(map[string]*conf.Path, len(defaults)+len(specs))
+	for k, v := range defaults {
 		merged[k] = v
 	}
 	for _, spec := range specs {
 		if spec.Name == "" {
 			continue
 		}
-		merged[spec.Name] = cameraSpecToConfPath(spec, a.defaultPaths[spec.Name])
+		merged[spec.Name] = cameraSpecToConfPath(spec, defaults[spec.Name], tmpl)
 	}
 	a.pm.ReloadPathConfs(merged)
 	if a.logger != nil {
 		a.logger.Log(logger.Debug,
 			"[cameras.bridge] applied %d paths (defaults=%d, cameras=%d)",
-			len(merged), len(a.defaultPaths), len(specs))
+			len(merged), len(defaults), len(specs))
 	}
 	return nil
 }
@@ -79,12 +118,19 @@ func (a *pathManagerAdapter) ReloadFromCameras(_ context.Context, specs []camera
 // cameraSpecToConfPath builds a conf.Path from a CameraPathSpec. When
 // an existing default conf.Path is supplied for the same name, its
 // recording fields are preserved (operator-customized recordPath /
-// segment / part / retention overrides survive); otherwise the path
-// inherits sensible defaults.
-func cameraSpecToConfPath(spec cameras.CameraPathSpec, base *conf.Path) *conf.Path {
+// segment / part / retention overrides survive). Without a base the
+// path is built from the validated PathDefaults template — never from
+// a zero value, whose empty RTSPUDPSourcePortRange would panic the
+// RTSP dialer (source.go).
+func cameraSpecToConfPath(spec cameras.CameraPathSpec, base *conf.Path, tmpl *conf.Path) *conf.Path {
 	var p conf.Path
-	if base != nil {
+	switch {
+	case base != nil:
 		p = *base
+	case tmpl != nil:
+		p = *tmpl
+	default:
+		p.SetDefaults()
 	}
 	p.Name = spec.Name
 	p.Source = spec.SourceURL

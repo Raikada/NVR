@@ -164,6 +164,7 @@ type Core struct {
 	retentionMgr    *retention.Manager
 	cloudSvc        *cloudbridge.Service
 	pathBridge      *cameras.PathBridge
+	pmAdapter       *pathManagerAdapter
 	credVault       *cameracred.Vault
 	auditEmit       *audit.Emitter
 	// tlsReloader watches tls.crt + tls.key via fsnotify and writes
@@ -775,12 +776,27 @@ func (p *Core) createResources(initial bool) error {
 	// Bootstrap pushes the existing camera set immediately; Run blocks
 	// until the foundation context cancels.
 	if p.pathBridge == nil && p.camerasService != nil && p.pathManager != nil {
-		pmAdapter := newPathManagerAdapter(p.pathManager, pathDefaultsFromConf(p.conf), p)
-		p.pathBridge = cameras.NewPathBridge(p.camerasService, pmAdapter, p)
+		p.pmAdapter = newPathManagerAdapter(p.pathManager, pathDefaultsFromConf(p.conf), p)
+		p.pmAdapter.RefreshDefaults(p.conf)
+		p.pathBridge = cameras.NewPathBridge(p.camerasService, p.pmAdapter, p)
 		if err := p.pathBridge.Bootstrap(p.fndCtx); err != nil {
 			p.Log(logger.Warn, "[cameras.bridge] bootstrap: %v", err)
 		}
 		go p.pathBridge.Run(p.fndCtx)
+	} else if p.pmAdapter != nil {
+		// Every conf apply (API camera create/delete, SIGHUP, file
+		// watch) re-runs createResources; fold the new paths into the
+		// bridge adapter so post-boot cameras merge against their real
+		// conf path instead of a nil base.
+		p.pmAdapter.RefreshDefaults(p.conf)
+		// Re-run the bridge bootstrap so a flush that raced this conf
+		// apply (bus event before the adapter refresh) converges on the
+		// refreshed defaults. Idempotent: list + merge + reload.
+		if p.pathBridge != nil && p.fndCtx != nil {
+			if err := p.pathBridge.Bootstrap(p.fndCtx); err != nil {
+				p.Log(logger.Warn, "[cameras.bridge] re-bootstrap: %v", err)
+			}
+		}
 	}
 
 	if p.conf.RTSP &&
@@ -1525,6 +1541,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.fndCtxCancel = nil
 		p.fndCtx = nil
 		p.pathBridge = nil
+		p.pmAdapter = nil
 		p.notifDispatcher = nil
 		p.retentionMgr = nil
 		p.cloudSvc = nil
