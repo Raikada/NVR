@@ -481,3 +481,21 @@ func TestClipStorePinRefcount(t *testing.T) {
 	require.False(t, store.IsSegmentPathPinned("/p/2"))
 	require.False(t, store.IsSegmentPathPinned("/p/3"))
 }
+
+// Live acceptance (2026-07-02) found event-clip export failing with
+// "mkdir /clips" whenever recordPath is relative (the seeded
+// RecordingPolicy uses "./recordings/..."): filepath.Dir strips "./",
+// so the loop's base==dir break fired before the %-check on the final
+// plain segment and fell through to "/".
+func TestVolumeRootForPathClipRelativePaths(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"./recordings/%path/%Y-%m-%d_%H-%M-%S-%f", "recordings"},
+		{"recordings/%path/%Y-%m-%d_%H-%M-%S-%f", "recordings"},
+		{"/abs/root/%path/%Y-%m-%d_%H-%M-%S-%f", "/abs/root"},
+		{"%path/%Y-%m-%d", "/"},
+	}
+	for _, tc := range cases {
+		got := volumeRootForPathClip(tc.in)
+		require.Equal(t, tc.want, got, "input %q", tc.in)
+	}
+}

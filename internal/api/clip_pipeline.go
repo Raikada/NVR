@@ -128,13 +128,18 @@ func volumeRootForPathClip(recordPath string) string {
 	dir := recordPath
 	for {
 		base := filepath.Base(dir)
-		if base == dir || base == "/" || base == "." {
-			break
-		}
-		if !containsRune(base, '%') {
+		// Check the segment BEFORE the termination test: for relative
+		// record paths filepath.Dir strips "./", so the last plain
+		// segment (e.g. "recordings") satisfies base == dir and must
+		// still count as the volume root.
+		if base != "/" && base != "." && !containsRune(base, '%') {
 			return dir
 		}
-		dir = filepath.Dir(dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return "/"
 }
