@@ -126,17 +126,25 @@ func (s *Source) Run(params defs.StaticSourceRunParams) error {
 		return err
 	}
 
-	c := &gortsplib.Client{
-		Protocol:          params.Conf.RTSPTransport.Protocol,
-		ReadTimeout:       time.Duration(s.ReadTimeout),
-		WriteTimeout:      time.Duration(s.WriteTimeout),
-		UDPReadBufferSize: int(s.UDPReadBufferSize),
-		WriteQueueSize:    s.WriteQueueSize,
-		AnyPortEnable:     params.Conf.RTSPAnyPort,
-		UDPSourcePortRange: [2]uint16{
+	// A conf.Path synthesized at runtime (rather than parsed through
+	// SetDefaults) can carry an empty port range; indexing it blindly
+	// would panic and kill the whole process.
+	udpSourcePortRange := [2]uint16{10000, 65535}
+	if len(params.Conf.RTSPUDPSourcePortRange) >= 2 {
+		udpSourcePortRange = [2]uint16{
 			uint16(params.Conf.RTSPUDPSourcePortRange[0]),
 			uint16(params.Conf.RTSPUDPSourcePortRange[1]),
-		},
+		}
+	}
+
+	c := &gortsplib.Client{
+		Protocol:           params.Conf.RTSPTransport.Protocol,
+		ReadTimeout:        time.Duration(s.ReadTimeout),
+		WriteTimeout:       time.Duration(s.WriteTimeout),
+		UDPReadBufferSize:  int(s.UDPReadBufferSize),
+		WriteQueueSize:     s.WriteQueueSize,
+		AnyPortEnable:      params.Conf.RTSPAnyPort,
+		UDPSourcePortRange: udpSourcePortRange,
 		OnRequest: func(req *base.Request) {
 			s.Log(logger.Debug, "[c->s] %v", req)
 		},
