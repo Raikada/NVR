@@ -27,6 +27,7 @@ type Camera struct {
 	SourceURL             string // template, no userinfo
 	OnvifXAddr            string
 	RecordingPolicyID     string // empty when NULL → resolver falls back to policy_default
+	EventChannel          string // ''|'auto' auto-resolve; 'onvif'|'amcrest'|'none' (SP3)
 	Enabled               bool
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
@@ -75,21 +76,21 @@ func (r *CamerasRepo) Insert(ctx context.Context, c *Camera) error {
 			manufacturer, model, serial_number, firmware_version,
 			mac_address, ip_address, hostname,
 			source_type, source_url, onvif_xaddr,
-			recording_policy_id, enabled,
+			recording_policy_id, event_channel, enabled,
 			created_at, updated_at, paired_at, last_capability_probe_at
 		)
 		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''),
 		        NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''),
 		        NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''),
 		        ?, ?, NULLIF(?, ''),
-		        NULLIF(?, ''), ?,
+		        NULLIF(?, ''), NULLIF(?, ''), ?,
 		        ?, ?, ?, ?)
 	`,
 		c.ID, c.Name, c.DisplayName, c.GroupID,
 		c.Manufacturer, c.Model, c.SerialNumber, c.FirmwareVersion,
 		c.MACAddress, c.IPAddress, c.Hostname,
 		c.SourceType, c.SourceURL, c.OnvifXAddr,
-		c.RecordingPolicyID, boolToInt(c.Enabled),
+		c.RecordingPolicyID, c.EventChannel, boolToInt(c.Enabled),
 		FormatTime(c.CreatedAt), FormatTime(c.UpdatedAt), pairedAt, probeAt,
 	)
 	if err != nil && isConstraintErr(err) {
@@ -177,7 +178,7 @@ func (r *CamerasRepo) Update(ctx context.Context, c *Camera) error {
 			mac_address = NULLIF(?, ''), ip_address = NULLIF(?, ''),
 			hostname = NULLIF(?, ''),
 			source_type = ?, source_url = ?, onvif_xaddr = NULLIF(?, ''),
-			recording_policy_id = NULLIF(?, ''), enabled = ?,
+			recording_policy_id = NULLIF(?, ''), event_channel = NULLIF(?, ''), enabled = ?,
 			updated_at = ?, paired_at = ?, last_capability_probe_at = ?
 		WHERE id = ?
 	`,
@@ -187,7 +188,7 @@ func (r *CamerasRepo) Update(ctx context.Context, c *Camera) error {
 		c.MACAddress, c.IPAddress,
 		c.Hostname,
 		c.SourceType, c.SourceURL, c.OnvifXAddr,
-		c.RecordingPolicyID, boolToInt(c.Enabled),
+		c.RecordingPolicyID, c.EventChannel, boolToInt(c.Enabled),
 		Now(), pairedAt, probeAt,
 		c.ID,
 	)
@@ -301,7 +302,7 @@ SELECT id, name, COALESCE(display_name, ''), COALESCE(group_id, ''),
        COALESCE(mac_address, ''), COALESCE(ip_address, ''),
        COALESCE(hostname, ''),
        source_type, source_url, COALESCE(onvif_xaddr, ''),
-       COALESCE(recording_policy_id, ''), enabled,
+       COALESCE(recording_policy_id, ''), COALESCE(event_channel, ''), enabled,
        created_at, updated_at,
        COALESCE(paired_at, ''), COALESCE(last_capability_probe_at, '')
 FROM cameras
@@ -318,7 +319,7 @@ func scanCamera(row rowScanner) (*Camera, error) {
 		&c.MACAddress, &c.IPAddress,
 		&c.Hostname,
 		&c.SourceType, &c.SourceURL, &c.OnvifXAddr,
-		&c.RecordingPolicyID, &enabled,
+		&c.RecordingPolicyID, &c.EventChannel, &enabled,
 		&createdAt, &updatedAt,
 		&pairedAt, &probeAt,
 	); err != nil {

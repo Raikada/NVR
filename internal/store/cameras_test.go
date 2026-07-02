@@ -257,3 +257,42 @@ func TestCameras_DeleteIdempotent(t *testing.T) {
 		t.Errorf("expected ErrCameraNotFound on second delete; got %v", err)
 	}
 }
+
+func TestCameras_EventChannelRoundTrip(t *testing.T) {
+	s := openTestStore(t)
+
+	c := newCamera("evch")
+	c.EventChannel = "amcrest"
+	mustInsertCamera(t, s, c)
+
+	got, err := s.Cameras.GetByID(context.Background(), c.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.EventChannel != "amcrest" {
+		t.Fatalf("event_channel after insert = %q, want amcrest", got.EventChannel)
+	}
+
+	got.EventChannel = "onvif"
+	if err := s.Cameras.Update(context.Background(), got); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got2, err := s.Cameras.GetByID(context.Background(), c.ID)
+	if err != nil {
+		t.Fatalf("get 2: %v", err)
+	}
+	if got2.EventChannel != "onvif" {
+		t.Fatalf("event_channel after update = %q, want onvif", got2.EventChannel)
+	}
+
+	// Unset stays empty (NULL → "").
+	c2 := newCamera("evch2")
+	mustInsertCamera(t, s, c2)
+	got3, err := s.Cameras.GetByID(context.Background(), c2.ID)
+	if err != nil {
+		t.Fatalf("get 3: %v", err)
+	}
+	if got3.EventChannel != "" {
+		t.Fatalf("default event_channel = %q, want empty", got3.EventChannel)
+	}
+}
