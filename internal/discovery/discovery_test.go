@@ -147,3 +147,19 @@ func TestLookup(t *testing.T) {
 	_, ok = s.Lookup("urn:uuid:zzz")
 	require.False(t, ok)
 }
+
+func TestScopeDialectFallback(t *testing.T) {
+	now := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	p := &fakeProber{devices: []onvif.DiscoveredDevice{{
+		EndpointRef: "urn:uuid:amc",
+		XAddr:       "http://192.168.1.110/onvif/device_service",
+		Name:        "Amcrest",
+		Hardware:    "IP5M-T1277EW-AI",
+	}}}
+	s := newTestService(p, &fakeLister{}, &now)
+	_, err := s.ProbeNow(context.Background())
+	require.NoError(t, err)
+	e := s.Snapshot()[0]
+	require.Equal(t, "Amcrest", e.Manufacturer)
+	require.Equal(t, "IP5M-T1277EW-AI", e.Model)
+}

@@ -106,6 +106,15 @@ func (s *Service) ProbeNow(ctx context.Context) ([]Entry, error) {
 			e = Entry{FirstSeenAt: now}
 		}
 		e.DiscoveredDevice = d
+		// Dahua/Amcrest-family cameras carry vendor in the name/ scope
+		// and model in hardware/; canonicalize so consumers get
+		// Manufacturer/Model regardless of vendor scope dialect.
+		if e.Manufacturer == "" {
+			e.Manufacturer = d.Name
+		}
+		if e.Model == "" {
+			e.Model = d.Hardware
+		}
 		e.LastSeenAt = now
 		s.cache[d.EndpointRef] = e
 	}
