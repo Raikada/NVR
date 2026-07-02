@@ -104,3 +104,32 @@ func scanEventSnapshot(row rowScanner) (*EventSnapshot, error) {
 	e.FetchedAt = t
 	return &e, nil
 }
+
+// ListPathsForExpiredEvents returns the on-disk paths of snapshots whose
+// parent event has expired — collected BEFORE the event rows are
+// deleted (the FK cascade takes the snapshot rows; the files need an
+// explicit unlink pass, SP4).
+func (r *EventSnapshotsRepo) ListPathsForExpiredEvents(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT es.path FROM event_snapshots es
+		JOIN events e ON es.event_id = e.id
+		WHERE e.expires_at < ?
+		LIMIT ?
+	`, Now(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

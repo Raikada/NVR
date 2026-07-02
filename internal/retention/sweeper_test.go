@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -151,3 +152,57 @@ type fakeSweeper struct {
 func (f *fakeSweeper) Name() string                       { return f.name }
 func (f *fakeSweeper) Interval() time.Duration            { return time.Hour }
 func (f *fakeSweeper) Sweep(ctx context.Context) error    { return f.fn(ctx) }
+
+func TestEventsSweeper_UnlinksSnapshotFiles(t *testing.T) {
+	s := openStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	if err := s.Cameras.Insert(ctx, &store.Camera{
+		ID: "cam-snap", Name: "cam-snap", SourceType: "rtsp", SourceURL: "rtsp://x/y",
+		Enabled: true, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed camera: %v", err)
+	}
+
+	now := time.Now().UTC()
+	for _, ev := range []*store.Event{
+		{ID: "ev-snap-old", CameraID: "cam-snap", TypeID: "motion", Source: "test",
+			OccurredAt: now.Add(-48 * time.Hour), ReceivedAt: now.Add(-48 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour)},
+		{ID: "ev-snap-new", CameraID: "cam-snap", TypeID: "motion", Source: "test",
+			OccurredAt: now, ReceivedAt: now, ExpiresAt: now.Add(24 * time.Hour)},
+	} {
+		if err := s.Events.Insert(ctx, ev); err != nil {
+			t.Fatalf("insert %s: %v", ev.ID, err)
+		}
+	}
+
+	oldFile := filepath.Join(dir, "ev-snap-old-full.jpg")
+	newFile := filepath.Join(dir, "ev-snap-new-full.jpg")
+	for _, f := range []string{oldFile, newFile} {
+		if err := os.WriteFile(f, []byte("jpeg"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", f, err)
+		}
+	}
+	for id, f := range map[string]string{"ev-snap-old": oldFile, "ev-snap-new": newFile} {
+		if err := s.EventSnapshots.Insert(ctx, &store.EventSnapshot{
+			EventID: id, Kind: "full", Path: f, FetchedAt: now,
+		}); err != nil {
+			t.Fatalf("insert snapshot %s: %v", id, err)
+		}
+	}
+
+	sw := NewEventsSweeper(s.Events, 100, time.Minute, nil)
+	sw.AttachSnapshots(s.EventSnapshots)
+	if err := sw.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Fatalf("expired event's snapshot file must be unlinked (stat err=%v)", err)
+	}
+	if _, err := os.Stat(newFile); err != nil {
+		t.Fatalf("live event's snapshot file must survive: %v", err)
+	}
+}
