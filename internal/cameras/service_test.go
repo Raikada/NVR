@@ -267,3 +267,39 @@ func lastNames(pm *fakePathManager) []string {
 	sort.Strings(out)
 	return out
 }
+
+func TestService_PlaintextCredentials(t *testing.T) {
+	s := openStore(t)
+	v := openVault(t)
+	svc := NewService(s, v, NewBus(), nil)
+
+	cam := &store.Camera{
+		ID: "cam-pc", Name: "pc", SourceType: "rtsp",
+		SourceURL: "rtsp://192.0.2.1/s", Enabled: true,
+	}
+	if err := svc.Insert(context.Background(), cam, "", ""); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := svc.SetCredentials(context.Background(), "cam-pc", "alice", "hunter2"); err != nil {
+		t.Fatalf("set credentials: %v", err)
+	}
+
+	user, pass, err := svc.PlaintextCredentials(context.Background(), "cam-pc")
+	if err != nil {
+		t.Fatalf("plaintext credentials: %v", err)
+	}
+	if user != "alice" || pass != "hunter2" {
+		t.Fatalf("got %q/%q, want alice/hunter2", user, pass)
+	}
+
+	// No credentials row → typed error, not a decrypt panic.
+	if err := svc.Insert(context.Background(), &store.Camera{
+		ID: "cam-none", Name: "none", SourceType: "rtsp",
+		SourceURL: "rtsp://192.0.2.2/s", Enabled: true,
+	}, "", ""); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+	if _, _, err := svc.PlaintextCredentials(context.Background(), "cam-none"); err == nil {
+		t.Fatal("want error for missing credentials")
+	}
+}

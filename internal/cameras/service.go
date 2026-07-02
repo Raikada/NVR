@@ -134,6 +134,23 @@ func (s *Service) MaterializeRTSPURL(ctx context.Context, cameraID string) (stri
 	return cameracred.MaterializeRTSPURL(cam.SourceURL, creds.Username, string(plain)), nil
 }
 
+// PlaintextCredentials decrypts and returns the camera's stored RTSP
+// credentials for subsystems that must authenticate to the camera
+// directly (capability re-probe, vendor event channels, snapshot
+// fetch). Callers must NEVER log the password. Returns
+// store.ErrCameraCredentialsNotFound when no credentials are stored.
+func (s *Service) PlaintextCredentials(ctx context.Context, cameraID string) (string, string, error) {
+	creds, err := s.store.CameraCredentials.Get(ctx, cameraID)
+	if err != nil {
+		return "", "", err
+	}
+	plain, err := s.vault.Decrypt(creds.PasswordCiphertext, creds.PasswordNonce)
+	if err != nil {
+		return "", "", err
+	}
+	return creds.Username, string(plain), nil
+}
+
 // Health returns the most recent observed health for the camera. Returns
 // nil with no error when no health row has been recorded yet.
 func (s *Service) Health(ctx context.Context, cameraID string) (*HealthSnapshot, error) {
