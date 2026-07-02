@@ -81,6 +81,11 @@ type Camera struct {
 
 	RecordingPolicyID *string `json:"recording_policy_id,omitempty"`
 
+	// EventChannel selects the vendor event channel (SP3):
+	// ''/'auto' auto-resolve, 'onvif', 'amcrest', 'none'. Lives on the
+	// store row, not the conf path; the API overlays it on reads.
+	EventChannel string `json:"event_channel,omitempty"`
+
 	OnDemand         *CameraOnDemand        `json:"on_demand,omitempty"`
 	MaxReaders       *int                   `json:"max_readers,omitempty"`
 	FallbackCameraID *string                `json:"fallback_camera_id,omitempty"`

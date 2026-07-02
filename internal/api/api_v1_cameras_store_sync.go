@@ -25,11 +25,12 @@ import (
 // back to policy_default (see store.Camera).
 func storeCameraFromDefs(cam *defs.Camera) *store.Camera {
 	return &store.Camera{
-		ID:         cam.ID,
-		Name:       cam.Name,
-		SourceType: string(cam.SourceType),
-		SourceURL:  cam.SourceURL,
-		Enabled:    true,
+		ID:           cam.ID,
+		Name:         cam.Name,
+		SourceType:   string(cam.SourceType),
+		SourceURL:    cam.SourceURL,
+		EventChannel: cam.EventChannel,
+		Enabled:      true,
 	}
 }
 
@@ -62,6 +63,10 @@ func (a *API) syncCameraStoreUpdate(ctx context.Context, cam *defs.Camera) error
 	existing.Name = cam.Name
 	existing.SourceType = string(cam.SourceType)
 	existing.SourceURL = cam.SourceURL
+	// event_channel: empty on the wire means "not specified" — preserve.
+	if cam.EventChannel != "" {
+		existing.EventChannel = cam.EventChannel
+	}
 	return a.CamerasService.Update(ctx, existing)
 }
 

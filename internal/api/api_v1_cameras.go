@@ -146,7 +146,22 @@ func (a *API) onV1CamerasGet(ctx *gin.Context) {
 	}
 	p := c.Paths[name]
 	cam := a.cameraFromConfPath(c, p)
+	a.overlayStoreFields(ctx, &cam)
 	ctx.JSON(http.StatusOK, &cam)
+}
+
+// overlayStoreFields folds store-row-only camera fields (event_channel,
+// SP3) onto a conf-path-derived wire object. Best-effort: a missing row
+// leaves the fields zero.
+func (a *API) overlayStoreFields(ctx *gin.Context, cam *defs.Camera) {
+	if a.CamerasService == nil || cam.ID == "" {
+		return
+	}
+	row, err := a.CamerasService.Get(ctx.Request.Context(), cam.ID)
+	if err != nil {
+		return
+	}
+	cam.EventChannel = row.EventChannel
 }
 
 // decodeCamera reads a Camera body for POST/PUT/PATCH. Tenant scoping
@@ -528,9 +543,18 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		storedPath.ID = id
 	}
 
+	// event_channel (SP3) lives on the store row only; validate here
+	// and thread it through the store sync below.
+	if !validEventChannel(patch.EventChannel) {
+		a.writeError(ctx, http.StatusBadRequest,
+			fmt.Errorf("event_channel must be one of auto, onvif, amcrest, none"))
+		return
+	}
+
 	// Mirror the patch onto the canonical store row BEFORE applying the
 	// conf, so credential re-materialization never dials a stale URL.
 	patched := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	patched.EventChannel = patch.EventChannel
 	if err := a.syncCameraStoreUpdate(ctx.Request.Context(), &patched); err != nil {
 		a.writeError(ctx, http.StatusInternalServerError, err)
 		return
@@ -823,4 +847,14 @@ func mergeCameraOntoConfPath(existing conf.Path, patch defs.Camera) defs.Camera 
 	}
 	cam.Runtime = nil
 	return cam
+}
+
+// validEventChannel accepts the SP3 vendor-channel vocabulary. Empty
+// means "not specified" on PATCH (preserve existing).
+func validEventChannel(v string) bool {
+	switch v {
+	case "", "auto", "onvif", "amcrest", "none":
+		return true
+	}
+	return false
 }

@@ -133,3 +133,65 @@ func TestCamerasPatchUpdatesStoreRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "rtsp://192.0.2.9:554/new", row.SourceURL)
 }
+
+// PATCH {"event_channel"} must persist to the store row, echo on GET,
+// and reject unknown values. SP3.
+func TestCamerasPatchEventChannel(t *testing.T) {
+	a, hc, st := startCameraAPI(t)
+	_ = a
+
+	body := `{"name":"evch_cam","source_type":"rtsp","source_url":"rtsp://192.0.2.9:554/s"}`
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://localhost:9997/v1/cameras", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := hc.Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&created))
+
+	patch := func(payload string) *http.Response {
+		preq, _ := http.NewRequest(http.MethodPatch,
+			"http://localhost:9997/v1/cameras/"+created.ID, strings.NewReader(payload))
+		preq.Header.Set("Content-Type", "application/json")
+		pres, err := hc.Do(preq)
+		require.NoError(t, err)
+		return pres
+	}
+
+	pres := patch(`{"event_channel":"onvif"}`)
+	pres.Body.Close()
+	require.Equal(t, http.StatusOK, pres.StatusCode)
+
+	row, err := st.Cameras.GetByID(context.Background(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "onvif", row.EventChannel)
+
+	// GET echoes the stored value.
+	greq, _ := http.NewRequest(http.MethodGet,
+		"http://localhost:9997/v1/cameras/"+created.ID, nil)
+	gres, err := hc.Do(greq)
+	require.NoError(t, err)
+	defer gres.Body.Close()
+	var got struct {
+		EventChannel string `json:"event_channel"`
+	}
+	require.NoError(t, json.NewDecoder(gres.Body).Decode(&got))
+	require.Equal(t, "onvif", got.EventChannel)
+
+	// A PATCH that doesn't mention event_channel must preserve it.
+	pres2 := patch(`{"source_url":"rtsp://192.0.2.9:554/s2"}`)
+	pres2.Body.Close()
+	require.Equal(t, http.StatusOK, pres2.StatusCode)
+	row2, err := st.Cameras.GetByID(context.Background(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "onvif", row2.EventChannel)
+
+	// Unknown values are rejected.
+	pres3 := patch(`{"event_channel":"pigeon"}`)
+	pres3.Body.Close()
+	require.Equal(t, http.StatusBadRequest, pres3.StatusCode)
+}
