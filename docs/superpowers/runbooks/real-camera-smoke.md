@@ -12,9 +12,9 @@ This runbook validates the consumer NVR foundation against your **own LAN camera
    go generate ./internal/core/... ./internal/servers/hls/...   # populates VERSION + hls.min.js
    go build -o /tmp/raikada ./
    ```
-2. **Recorder running** at `https://localhost:9997` (or your configured listen addr):
+2. **Recorder running** at `https://localhost:9997` (or your configured listen addr) — note `confpath` is a positional argument:
    ```bash
-   /tmp/raikada --confpath /tmp/raikada-test.yml
+   /tmp/raikada /tmp/raikada-test.yml
    ```
    (Generate a minimal `raikada-test.yml` — see "Minimal config" at the bottom of this runbook.)
 3. **At least one ONVIF-capable camera** reachable on the LAN with known IP + credentials.
@@ -56,9 +56,14 @@ Discovery + camera-side pairing live in **sub-project 2** (not yet built); found
 5. Within ~10s, the camera card should show **Live** with a working video preview.
 
 **Pass criteria:**
-- `GET /v1/cameras/<id>` returns the camera with `password_set: true` and **no plaintext password** in the response.
-- `GET /v1/cameras/<id>/health` returns `rtsp_state: "connected"`.
+- `PUT /v1/cameras/<id>/credentials` returns `password_set: true` and **no plaintext password** appears in any response, in the persisted `mediamtx.yml`, or in the audit log.
 - The path manager is serving the live stream at `rtsp://localhost:8554/<name>` (you can verify with `ffplay -rtsp_transport tcp rtsp://localhost:8554/front_door`).
+- The recorder log shows `[path <name>] stream is available and online` and no `401 (Unauthorized)` loop.
+
+> **Foundation scope note (smoke finding F4):** `GET /v1/cameras/<id>/health`
+> returns `rtsp_state: "unknown"` in the foundation — nothing writes
+> `camera_health` yet. The health writer ships with sub-project 2; do not
+> use `rtsp_state: "connected"` as a foundation pass criterion.
 
 ---
 
@@ -72,42 +77,43 @@ Discovery + camera-side pairing live in **sub-project 2** (not yet built); found
 
 ---
 
-## Step 4 — Trigger an event manually
+## Step 4 — Events pipeline (foundation scope note)
 
-Sub-project 3 (vendor event channels) and sub-project 4 (snapshot fetch) are not yet built. For foundation, you can trigger an event manually via the API to validate the events pipeline + notification dispatch:
+> **Smoke finding F5:** there is no `POST /v1/events` — the events API is
+> read-only (list / get / acknowledge / SSE) and no foundation component
+> calls `events.Service.Insert` outside tests. Event producers arrive with
+> sub-project 2 (camera health transitions) and sub-project 3 (vendor
+> event channels). Until then the event → subscription → notification path
+> has no end-to-end exercise; its coverage is the unit tests in
+> `internal/events` and `internal/notifications`.
 
-```bash
-curl -k -X POST "https://localhost:9997/v1/events" \
-  -H "Authorization: Bearer <your_jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "camera_id": "<camera_id>",
-    "type_id": "motion",
-    "source": "manual",
-    "severity": "info",
-    "payload_json": "{}"
-  }'
-```
-
-**Pass criteria:** the event appears in `/v1/events` immediately; `expires_at` is materialized to ~90 days from now (motion's seeded retention).
+Skip this step for foundation acceptance. Webhook *delivery* (transport,
+headers, HMAC signing) is still exercised end-to-end via the test endpoint
+in Step 5.
 
 ---
 
 ## Step 5 — Webhook delivery
 
-1. Get a free webhook test URL from `https://webhook.site` (note your unique URL).
-2. Navigate to **Notifications** → **Targets** → **Add Webhook**.
-3. URL = your webhook.site URL. Generate a secret. Save.
-4. Add a **Subscription** with: target × `event_type=motion` × `camera=<your camera>`.
-5. Re-run the manual event-trigger from Step 4 (or wave at the camera if motion detection is wired up to the camera-side and ONVIF events are active — only relevant once sub-project 2 lands).
-6. Within ~10s, the webhook.site URL should receive a POST with:
+1. Stand up a webhook sink. A local listener keeps camera/site metadata
+   off third-party services (preferred); `https://webhook.site` also works
+   if you accept that trade-off.
+2. Navigate to **Notifications** → **Targets** → **Add Webhook** (or
+   `POST /v1/notification-targets` with `kind=webhook`). URL = your sink.
+   Generate a secret. Save.
+3. Fire a synthetic delivery: `POST /v1/notification-targets/<id>/test`.
+   (Subscription-driven dispatch can't fire in the foundation — see the
+   Step 4 note — so the test endpoint is the delivery exercise.)
+4. Within ~10s the sink should receive a POST with:
    - `Content-Type: application/json`
-   - `X-Raikada-Signature: <hex hmac>`
+   - `X-Raikada-Signature: <hex hmac-sha256 of the body with your secret>`
    - `X-Raikada-Delivery: <uuid>`
-   - `X-Raikada-Event: motion`
+   - `X-Raikada-Event: __test__`
    - JSON body matching `raikada.event.v1` schema
 
-**Pass criteria:** webhook.site shows the POST, signature header is present, body validates against the schema.
+**Pass criteria:** the sink shows the POST, the signature verifies against
+the secret, body validates against the schema. Note the dispatch timeout is
+short (~1s); a cold/slow sink can time out the first attempt (finding F9).
 
 ---
 
@@ -120,7 +126,7 @@ curl -k "https://localhost:9997/v1/audit?limit=50" \
   -H "Authorization: Bearer <your_jwt>"
 ```
 
-Expect rows for: `auth.login.success`, `auth.password_changed`, `system.bootstrap_completed`, `camera.created`, `camera.credentials_rotated`, `notification_target.created`, `notification_subscription.created`, `event.acknowledged` (if you ack'd one).
+Expect rows for: `auth.login.success`, `auth.session_started`, `auth.password_changed`, `camera.credentials_rotated`, `notification_target.created`, `notification_target.tested`, and one `config.applied` per camera create/patch/delete (the conf-path camera CRUD emits `config.applied` with a `verb` attribute rather than `camera.created`/`camera.deleted` — smoke finding F6; there is no `system.bootstrap_completed` row).
 
 **Pass criteria:** none of the rows leak passwords, secrets, or RTSP userinfo. The `before_json`/`after_json` may contain `redacted: ["password"]` arrays — that's the redaction marker working.
 
@@ -153,10 +159,10 @@ Open a GitHub issue with these attached, or paste them into the next Claude conv
 ## Minimal config (`/tmp/raikada-test.yml`)
 
 ```yaml
-# Bootstrap-only fields. Cameras / policies / users / events live in DB now.
+# Bootstrap-only fields. Cameras / policies / users / events live in the
+# SQLite DB at <identityDir>/recorder.db (there is no separate
+# databasePath field).
 identityDir: /tmp/raikada-identity
-recordingsDir: /tmp/raikada-recordings
-databasePath: /tmp/raikada-identity/recorder.db
 logLevel: info
 api: yes
 apiAddress: :9997
@@ -165,13 +171,16 @@ apiEncryption: yes  # HTTPS with self-signed default
 # RTSP server stays plaintext on LAN by default; flip to rtspsAddress for TLS.
 rtspAddress: :8554
 
-# Optional TLS overrides; defaults to <identityDir>/tls.crt + tls.key.
-# tls:
-#   cert_path: /etc/raikada/cert.pem
-#   key_path:  /etc/raikada/key.pem
+# Recordings root: there is no recordingsDir field; set the per-path
+# default record pattern instead (cameras inherit it via their policy).
+pathDefaults:
+  recordPath: /tmp/raikada-recordings/%path/%Y-%m-%d_%H-%M-%S-%f
 
 # Optional mDNS advertisement (default on).
 mdns: true
 ```
 
-(Schema field names may differ slightly once Phase 4 lands — check `internal/conf/conf.go` on the `consumer-foundation` branch for the canonical list.)
+Heads-up: the recorder rewrites this file in place with the full persisted
+config (including camera paths) after API mutations — that's expected.
+TLS defaults to `<identityDir>/tls.crt` + `tls.key`; replace via
+`PUT /v1/system/tls`. Canonical field list: `internal/conf/conf.go`.
