@@ -25,6 +25,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/mediasign"
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/retention"
@@ -275,12 +276,16 @@ var (
 // won't surface external links anyway).
 type signURLFn = func(eventID, kind string) string
 
-// makeSignedURL returns a signURLFn pinned to apiAddr. tokenIssuer is
-// invoked per-call to produce a fresh per-URL token; nil disables
-// token issuance and the URL surfaces unauthenticated. Phase 6 wires
-// the localauth-backed issuer.
-func makeSignedURL(apiAddr string, tokenIssuer func(eventID, kind string) string) signURLFn {
+// makeSignedURL returns a signURLFn pinned to apiAddr, minting SP4
+// HMAC-signed media URLs (webhook consumers fetch them without auth
+// headers; 24h TTL — notification links outlive the SPA's 15min ones).
+// A nil signer disables URL surfacing (empty string; the dispatcher
+// tolerates it).
+func makeSignedURL(apiAddr string, signer *mediasign.Signer) signURLFn {
 	return func(eventID, kind string) string {
+		if signer == nil {
+			return ""
+		}
 		host, port, err := net.SplitHostPort(apiAddr)
 		if err != nil {
 			host = ""
@@ -289,17 +294,13 @@ func makeSignedURL(apiAddr string, tokenIssuer func(eventID, kind string) string
 		if host == "" {
 			host = "localhost"
 		}
+		path := fmt.Sprintf("/v1/media/snapshots/%s/%s", eventID, kind)
+		exp, sig := signer.Sign(path, 24*time.Hour)
 		base := url.URL{
-			Scheme: "https",
-			Host:   net.JoinHostPort(host, port),
-			Path:   fmt.Sprintf("/v1/events/%s/snapshot/%s", eventID, kind),
-		}
-		if tokenIssuer != nil {
-			if tok := tokenIssuer(eventID, kind); tok != "" {
-				q := base.Query()
-				q.Set("token", tok)
-				base.RawQuery = q.Encode()
-			}
+			Scheme:   "https",
+			Host:     net.JoinHostPort(host, port),
+			Path:     path,
+			RawQuery: fmt.Sprintf("exp=%d&sig=%s", exp, sig),
 		}
 		return base.String()
 	}

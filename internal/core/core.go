@@ -581,11 +581,9 @@ func (p *Core) createResources(initial bool) error {
 			ID:   p.identity.ID().String(),
 			Name: getSiteName(p.fndCtx, p.localAuthStore),
 		}
-		// Token issuer for signed snapshot URLs. Phase 6 leaves it
-		// nil — adding a per-event short-lived JWT is a follow-up; for
-		// now URLs surface as plain (the SPA opens them with a session
-		// cookie).
-		signURL := makeSignedURL(p.conf.APIAddress, nil)
+		// SP4: webhook snapshot URLs are HMAC-signed media URLs (the
+		// follow-up Phase 6 deferred).
+		signURL := makeSignedURL(p.conf.APIAddress, p.mediaSigner)
 		p.notifDispatcher = notifications.NewDispatcher(
 			p.localAuthStore, p.credVault, p.eventsService,
 			site, signURL, p,
