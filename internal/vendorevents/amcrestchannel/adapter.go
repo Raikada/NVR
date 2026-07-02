@@ -75,7 +75,7 @@ func (a *Adapter) Run(ctx context.Context, emit func(vendorevents.NormalizedEven
 	// The body itself is long-lived (liveness watchdog below).
 	base := &http.Transport{ResponseHeaderTimeout: 15 * time.Second}
 	client := &http.Client{
-		Transport: newDigestTransport(username, password, base),
+		Transport: NewDigestTransport(username, password, base),
 		// No overall timeout: the stream is long-lived. Liveness is
 		// enforced by cancelling the request context below.
 	}

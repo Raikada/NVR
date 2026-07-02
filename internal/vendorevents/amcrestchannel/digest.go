@@ -25,7 +25,9 @@ type digestTransport struct {
 	nc    int
 }
 
-func newDigestTransport(username, password string, base http.RoundTripper) *digestTransport {
+// NewDigestTransport is exported for sibling packages that must speak
+// digest auth to the same cameras (snapshot fetch, SP4).
+func NewDigestTransport(username, password string, base http.RoundTripper) *digestTransport {
 	if base == nil {
 		base = http.DefaultTransport
 	}
