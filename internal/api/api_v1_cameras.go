@@ -359,6 +359,14 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 		storedPath.ID = cam.ID
 	}
 
+	// Insert the canonical store row BEFORE applying the conf so a
+	// store failure aborts the create; the vault / health / PathBridge
+	// surfaces key off this row (smoke finding F1).
+	if err := a.syncCameraStoreCreate(ctx.Request.Context(), cam); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -508,6 +516,14 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		storedPath.ID = id
 	}
 
+	// Mirror the patch onto the canonical store row BEFORE applying the
+	// conf, so credential re-materialization never dials a stale URL.
+	patched := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	if err := a.syncCameraStoreUpdate(ctx.Request.Context(), &patched); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -601,6 +617,13 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 		storedPath.ID = id
 	}
 
+	// Mirror the replacement onto the canonical store row (see PATCH).
+	replaced := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	if err := a.syncCameraStoreUpdate(ctx.Request.Context(), &replaced); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -652,6 +675,14 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	}
 	if err := newConf.Validate(nil); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
+		return
+	}
+
+	// Remove the canonical store row (cascades credentials / health /
+	// events) BEFORE applying the conf so a store failure aborts the
+	// delete instead of orphaning rows (smoke finding F3).
+	if err := a.syncCameraStoreDelete(ctx.Request.Context(), id); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
 		return
 	}
 
