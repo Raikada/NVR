@@ -38,6 +38,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/mediasign"
 	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/motion"
 	"github.com/bluenviron/mediamtx/internal/notifications"
@@ -55,6 +56,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/servers/rtsp"
 	"github.com/bluenviron/mediamtx/internal/servers/srt"
 	"github.com/bluenviron/mediamtx/internal/servers/webrtc"
+	"github.com/bluenviron/mediamtx/internal/snapshots"
 	"github.com/bluenviron/mediamtx/internal/softwareupdate"
 	recstore "github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/vendorevents"
@@ -174,6 +176,8 @@ type Core struct {
 	healthCollector  *camerahealth.Collector
 	vendorEvents     *vendorevents.Manager
 	onvifDispatch    *onvifchannel.Dispatcher
+	snapshotsSvc     *snapshots.Service
+	mediaSigner      *mediasign.Signer
 	pathLister       *pathListerAdapter
 	credVault        *cameracred.Vault
 	auditEmit        *audit.Emitter
@@ -447,6 +451,16 @@ func (p *Core) createResources(initial bool) error {
 		p.identity = id
 		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s",
 			id.ID().String(), idDir)
+
+		// SP4: media URL signing key rides with the identity material.
+		if p.mediaSigner == nil {
+			signer, serr := mediasign.Open(idDir)
+			if serr != nil {
+				p.Log(logger.Warn, "media signer: %v — signed media URLs disabled", serr)
+			} else {
+				p.mediaSigner = signer
+			}
+		}
 	}
 
 	// Recorder-local LocalUser auth (pre-pairing auth slice 2026-05-06).
@@ -593,6 +607,7 @@ func (p *Core) createResources(initial bool) error {
 			0, p,
 		)
 		evs := retention.NewEventsSweeper(p.localAuthStore.Events, 0, 0, p)
+		evs.AttachSnapshots(p.localAuthStore.EventSnapshots)
 		clips := retention.NewClipsSweeper(p.localAuthStore.Clips, 0, 0, p)
 		p.retentionMgr = retention.NewManager(p, segs, evs, clips)
 		go p.retentionMgr.Run(p.fndCtx)
@@ -1120,6 +1135,9 @@ func (p *Core) createResources(initial bool) error {
 			// SP2: discovery cache + capability probe (real prober by
 			// default; tests inject fakes via ProbeCapabilitiesFn).
 			Discovery: p.discoverySvc,
+
+			// SP4: media URL signer (key lives in the identity dir).
+			Signer: p.mediaSigner,
 		}
 		err = i.Initialize()
 		if err != nil {
@@ -1292,6 +1310,22 @@ func (p *Core) createResources(initial bool) error {
 				vendorChannelResolver(p.localAuthStore, p.camerasService), p,
 			)
 			go p.vendorEvents.Run(p.fndCtx)
+		}
+
+		// SP4: on-event snapshot capture. The frame-grab fallback rides
+		// the API's live HLS muxer internals; the media signer was
+		// loaded with the identity and handed to the API above.
+		if p.snapshotsSvc == nil && p.localAuthStore != nil &&
+			p.eventsService != nil && p.camerasService != nil && p.fndCtx != nil {
+			p.snapshotsSvc = snapshots.New(
+				p.localAuthStore,
+				p.eventsService,
+				snapshotCameraResolver(p.localAuthStore, p.camerasService),
+				p.api.GrabLiveJPEG,
+				snapshotRootFn(p.localAuthStore, p.conf.PathDefaults.RecordPath),
+				p,
+			)
+			go p.snapshotsSvc.Run(p.fndCtx)
 		}
 	}
 
@@ -1615,6 +1649,7 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.healthCollector = nil
 		p.vendorEvents = nil
 		p.onvifDispatch = nil
+		p.snapshotsSvc = nil
 		p.pathLister = nil
 		p.notifDispatcher = nil
 		p.retentionMgr = nil

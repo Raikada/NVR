@@ -28,6 +28,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/recordstore"
 	"github.com/bluenviron/mediamtx/internal/retention"
+	"github.com/bluenviron/mediamtx/internal/snapshots"
 	"github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/vendorevents"
 )
@@ -534,5 +535,53 @@ func notImplementedChannelFactory(vendor string) vendorevents.AdapterFactory {
 	return func(_ context.Context, cam vendorevents.ChannelCamera) (vendorevents.Adapter, error) {
 		return nil, fmt.Errorf("%s event channel not implemented (camera %s): %w",
 			vendor, cam.ID, vendorevents.ErrUnsupported)
+	}
+}
+
+// snapshotCameraResolver builds the snapshots.Resolver: camera id →
+// fetch-ladder inputs (vendor host, capability-probe snapshot URI,
+// resolved channel, creds closure).
+func snapshotCameraResolver(st *store.Store, camerasService *cameras.Service) snapshots.Resolver {
+	return func(ctx context.Context, cameraID string) (snapshots.CameraInfo, error) {
+		cam, err := st.Cameras.GetByID(ctx, cameraID)
+		if err != nil {
+			return snapshots.CameraInfo{}, err
+		}
+		info := snapshots.CameraInfo{
+			ID:      cam.ID,
+			Name:    cam.Name,
+			Channel: vendorevents.SelectChannel(cam.EventChannel, cam.Manufacturer, cam.OnvifXAddr),
+		}
+		if u, err := url.Parse(cam.SourceURL); err == nil {
+			info.Host = u.Hostname()
+		}
+		if caps, err := st.CameraCapabilities.Get(ctx, cam.ID); err == nil {
+			var vendor struct {
+				SnapshotURI string `json:"snapshot_uri"`
+			}
+			if json.Unmarshal([]byte(caps.VendorCapabilitiesJSON), &vendor) == nil {
+				info.SnapshotURI = vendor.SnapshotURI
+			}
+		}
+		id := cam.ID
+		info.Credentials = func(cctx context.Context) (string, string, error) {
+			return camerasService.PlaintextCredentials(cctx, id)
+		}
+		return info, nil
+	}
+}
+
+// snapshotRootFn resolves the snapshot storage root: the operator's
+// system_settings value when set, else <recordPath common prefix>/snapshots.
+func snapshotRootFn(st *store.Store, defaultRecordPath string) func() string {
+	fallback := filepath.Join(recordstore.CommonPath(defaultRecordPath), "snapshots")
+	return func() string {
+		if st != nil {
+			if row, err := st.SystemSettings.Get(context.Background(), "snapshot_root"); err == nil &&
+				row != nil && strings.TrimSpace(row.Value) != "" {
+				return row.Value
+			}
+		}
+		return fallback
 	}
 }

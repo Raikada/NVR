@@ -12,6 +12,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -195,4 +196,17 @@ func (a *API) onV1EventClipPost(ctx *gin.Context) {
 		"clip":         clip,
 		"download_url": a.signedMediaURL("/v1/media/clips/" + clip.ID),
 	})
+}
+
+// GrabLiveJPEG captures a JPEG from a camera's live HLS muxer — the
+// snapshots service's ladder fallback (no camera round-trip).
+func (a *API) GrabLiveJPEG(ctx context.Context, pathName string) ([]byte, error) {
+	if a.HLSServer == nil || interfaceIsEmpty(a.HLSServer) {
+		return nil, errors.New("hls server not available")
+	}
+	data, _, err := a.HLSServer.APIMuxerSnapshot(pathName)
+	if err != nil {
+		return nil, err
+	}
+	return snapshotJPEGFromFragment(ctx, data)
 }
