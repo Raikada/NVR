@@ -26,35 +26,37 @@ import (
 	"github.com/bluenviron/mediamtx/internal/auth"
 	"github.com/bluenviron/mediamtx/internal/bootstrap"
 	"github.com/bluenviron/mediamtx/internal/cameracred"
+	"github.com/bluenviron/mediamtx/internal/camerahealth"
 	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/cloudbridge"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
+	"github.com/bluenviron/mediamtx/internal/discovery"
 	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
+	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/motion"
 	"github.com/bluenviron/mediamtx/internal/notifications"
 	"github.com/bluenviron/mediamtx/internal/onvif"
-	"github.com/bluenviron/mediamtx/internal/recordingmeta"
-	"github.com/bluenviron/mediamtx/internal/retention"
-	"github.com/bluenviron/mediamtx/internal/schedule"
-	"github.com/bluenviron/mediamtx/internal/softwareupdate"
-	recstore "github.com/bluenviron/mediamtx/internal/store"
-	"github.com/bluenviron/mediamtx/internal/logger"
-	"github.com/bluenviron/mediamtx/internal/metrics"
 	"github.com/bluenviron/mediamtx/internal/playback"
 	"github.com/bluenviron/mediamtx/internal/pprof"
 	"github.com/bluenviron/mediamtx/internal/recordcleaner"
 	"github.com/bluenviron/mediamtx/internal/recorder"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
+	"github.com/bluenviron/mediamtx/internal/retention"
 	"github.com/bluenviron/mediamtx/internal/rlimit"
+	"github.com/bluenviron/mediamtx/internal/schedule"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
 	"github.com/bluenviron/mediamtx/internal/servers/rtmp"
 	"github.com/bluenviron/mediamtx/internal/servers/rtsp"
 	"github.com/bluenviron/mediamtx/internal/servers/srt"
 	"github.com/bluenviron/mediamtx/internal/servers/webrtc"
+	"github.com/bluenviron/mediamtx/internal/softwareupdate"
+	recstore "github.com/bluenviron/mediamtx/internal/store"
 )
 
 //go:generate go run ./versiongetter
@@ -124,27 +126,27 @@ var cli struct {
 
 // Core is an instance of MediaMTX.
 type Core struct {
-	ctx             context.Context
-	ctxCancel       func()
-	confPath        string
-	conf            *conf.Conf
-	logger          *logger.Logger
-	externalCmdPool *externalcmd.Pool
-	authManager     *auth.Manager
-	metrics         *metrics.Metrics
-	pprof           *pprof.PPROF
-	recordCleaner   *recordcleaner.Cleaner
-	playbackServer  *playback.Server
-	pathManager     *pathManager
-	rtspServer      *rtsp.Server
-	rtspsServer     *rtsp.Server
-	rtmpServer      *rtmp.Server
-	rtmpsServer     *rtmp.Server
-	hlsServer       *hls.Server
-	webRTCServer    *webrtc.Server
-	srtServer       *srt.Server
-	api             *api.API
-	confWatcher     *confwatcher.ConfWatcher
+	ctx              context.Context
+	ctxCancel        func()
+	confPath         string
+	conf             *conf.Conf
+	logger           *logger.Logger
+	externalCmdPool  *externalcmd.Pool
+	authManager      *auth.Manager
+	metrics          *metrics.Metrics
+	pprof            *pprof.PPROF
+	recordCleaner    *recordcleaner.Cleaner
+	playbackServer   *playback.Server
+	pathManager      *pathManager
+	rtspServer       *rtsp.Server
+	rtspsServer      *rtsp.Server
+	rtmpServer       *rtmp.Server
+	rtmpsServer      *rtmp.Server
+	hlsServer        *hls.Server
+	webRTCServer     *webrtc.Server
+	srtServer        *srt.Server
+	api              *api.API
+	confWatcher      *confwatcher.ConfWatcher
 	identity         *identity.Identity
 	localAuth        *localauth.Manager
 	localAuthStore   *recstore.Store
@@ -155,18 +157,21 @@ type Core struct {
 	// Phase 6 foundation services. Constructed once at first
 	// createResources call; the long-lived goroutines run for the
 	// life of Core. Cancelled at shutdown via fndCtxCancel.
-	camerasBus      *cameras.Bus
-	camerasService  *cameras.Service
-	eventsBus       *events.Bus
-	eventsService   *events.Service
+	camerasBus       *cameras.Bus
+	camerasService   *cameras.Service
+	eventsBus        *events.Bus
+	eventsService    *events.Service
 	scheduleResolver *schedule.Resolver
-	notifDispatcher *notifications.Dispatcher
-	retentionMgr    *retention.Manager
-	cloudSvc        *cloudbridge.Service
-	pathBridge      *cameras.PathBridge
-	pmAdapter       *pathManagerAdapter
-	credVault       *cameracred.Vault
-	auditEmit       *audit.Emitter
+	notifDispatcher  *notifications.Dispatcher
+	retentionMgr     *retention.Manager
+	cloudSvc         *cloudbridge.Service
+	pathBridge       *cameras.PathBridge
+	pmAdapter        *pathManagerAdapter
+	discoverySvc     *discovery.Service
+	healthCollector  *camerahealth.Collector
+	pathLister       *pathListerAdapter
+	credVault        *cameracred.Vault
+	auditEmit        *audit.Emitter
 	// tlsReloader watches tls.crt + tls.key via fsnotify and writes
 	// a system.tls_reload_failed audit row on parse failures. The
 	// actual cert swap lives in internal/certloader. Phase 6 Task 6.5.
@@ -799,6 +804,31 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
+	// SP2: LAN discovery cache. Independent of the mdns toggle — the
+	// WS-Discovery probe is how the adopt flow finds cameras.
+	if p.discoverySvc == nil && p.camerasService != nil && p.fndCtx != nil {
+		p.discoverySvc = discovery.New(discoveryProberAdapter{}, p.camerasService, p)
+		go p.discoverySvc.Run(p.fndCtx)
+	}
+
+	// SP2: camera health collector — store rows + camera_online/offline
+	// events off a 5s path-manager poll. The lister adapter is
+	// swappable because some conf reloads recreate the path manager.
+	if p.healthCollector == nil && p.localAuthStore != nil &&
+		p.pathManager != nil && p.eventsService != nil && p.fndCtx != nil {
+		p.pathLister = &pathListerAdapter{}
+		p.pathLister.SetPathManager(p.pathManager)
+		p.healthCollector = camerahealth.New(
+			p.localAuthStore,
+			p.pathLister,
+			p.eventsService,
+			p,
+		)
+		go p.healthCollector.Run(p.fndCtx)
+	} else if p.pathLister != nil && p.pathManager != nil {
+		p.pathLister.SetPathManager(p.pathManager)
+	}
+
 	if p.conf.RTSP &&
 		(p.conf.RTSPEncryption == conf.EncryptionNo ||
 			p.conf.RTSPEncryption == conf.EncryptionOptional) &&
@@ -1081,6 +1111,10 @@ func (p *Core) createResources(initial bool) error {
 			ScheduleResolver: p.scheduleResolver,
 			NotifDispatcher:  p.notifDispatcher,
 			RetentionMgr:     p.retentionMgr,
+
+			// SP2: discovery cache + capability probe (real prober by
+			// default; tests inject fakes via ProbeCapabilitiesFn).
+			Discovery: p.discoverySvc,
 		}
 		err = i.Initialize()
 		if err != nil {
@@ -1542,6 +1576,9 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.fndCtx = nil
 		p.pathBridge = nil
 		p.pmAdapter = nil
+		p.discoverySvc = nil
+		p.healthCollector = nil
+		p.pathLister = nil
 		p.notifDispatcher = nil
 		p.retentionMgr = nil
 		p.cloudSvc = nil

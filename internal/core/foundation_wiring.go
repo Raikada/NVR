@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bluenviron/mediamtx/internal/camerahealth"
 	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/logger"
@@ -250,8 +251,8 @@ func (a *segmentListerAdapter) SweepCamera(ctx context.Context, cameraID string,
 // Compile-time interface satisfaction checks. Catch signature drift at
 // build time rather than wiring time.
 var (
-	_ cameras.PathManager   = (*pathManagerAdapter)(nil)
-	_ cameras.OnvifTeardown = (*onvifTeardownAdapter)(nil)
+	_ cameras.PathManager     = (*pathManagerAdapter)(nil)
+	_ cameras.OnvifTeardown   = (*onvifTeardownAdapter)(nil)
 	_ retention.SegmentLister = (*segmentListerAdapter)(nil)
 )
 
@@ -432,4 +433,59 @@ func defaultRecordingsRoot(c *conf.Conf) string {
 	prefix := rp[:idx]
 	prefix = strings.TrimRight(prefix, "/")
 	return prefix
+}
+
+// discoveryProberAdapter satisfies discovery.Prober with a fresh
+// onvif.Discoverer per round (the Discoverer is single-shot).
+type discoveryProberAdapter struct{}
+
+func (discoveryProberAdapter) Probe(ctx context.Context) ([]onvif.DiscoveredDevice, error) {
+	d := &onvif.Discoverer{}
+	return d.Run(ctx)
+}
+
+// pathListerAdapter satisfies camerahealth.PathLister off the running
+// pathManager. The pointer is swappable (SetPathManager) because core
+// recreates the path manager on some conf reloads — pinning it would
+// leave the health collector polling a closed instance (same stale-
+// snapshot class as the PathBridge F2 bug).
+type pathListerAdapter struct {
+	mu sync.Mutex
+	pm *pathManager
+}
+
+// SetPathManager swaps the polled instance. Called by core whenever the
+// path manager is (re)created.
+func (a *pathListerAdapter) SetPathManager(pm *pathManager) {
+	a.mu.Lock()
+	a.pm = pm
+	a.mu.Unlock()
+}
+
+func (a *pathListerAdapter) ListPaths(_ context.Context) ([]camerahealth.PathSnapshot, error) {
+	if a == nil {
+		return nil, fmt.Errorf("path manager not available")
+	}
+	a.mu.Lock()
+	pm := a.pm
+	a.mu.Unlock()
+	if pm == nil {
+		return nil, fmt.Errorf("path manager not available")
+	}
+	list, err := pm.APIPathsList()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]camerahealth.PathSnapshot, 0, len(list.Items))
+	for _, item := range list.Items {
+		snap := camerahealth.PathSnapshot{Name: item.Name, Online: item.Online}
+		switch {
+		case item.ReadyTime != nil:
+			snap.LastFrameAt = *item.ReadyTime
+		case item.OnlineTime != nil:
+			snap.LastFrameAt = *item.OnlineTime
+		}
+		out = append(out, snap)
+	}
+	return out, nil
 }
