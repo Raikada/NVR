@@ -141,6 +141,13 @@ var canonicalTopicTable = map[string]EventMapping{
 		Severity: defs.EventSeverityInfo,
 		Message:  "global scene change",
 	},
+	// Dahua/Amcrest firmware emits the ImagingService variant of the
+	// same topic (observed on IP5M-T1277EW-AI).
+	"VideoSource/GlobalSceneChange/ImagingService": {
+		Kind:     "camera.scene_change",
+		Severity: defs.EventSeverityInfo,
+		Message:  "global scene change",
+	},
 
 	// Audio
 	"AudioAnalytics/Audio/DetectedSound": {
