@@ -26,6 +26,20 @@ export const COLORS = {
   textMuted: '#404040',
 } as const;
 
+// Camera RTSP-pipeline health mapped to a dot color + short label.
+// Mirrors the recorder's CameraHealth.rtsp_state enum. Used by the
+// Cameras page health badges and the drawer live-status block.
+export const RTSP_STATE_DISPLAY: Record<
+  string,
+  { color: string; label: string }
+> = {
+  connected: { color: '#22C55E', label: 'CONNECTED' },
+  reconnecting: { color: '#EAB308', label: 'RECONNECTING' },
+  failed: { color: '#EF4444', label: 'FAILED' },
+  idle: { color: '#737373', label: 'IDLE' },
+  unknown: { color: '#737373', label: 'UNKNOWN' },
+};
+
 // Clamp a number into [a, b]. Used by the live-data simulators for
 // CPU / bandwidth random walks.
 export function clamp(v: number, a: number, b: number): number {

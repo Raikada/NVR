@@ -1033,6 +1033,112 @@ export const setCameraCredentials = (cameraID: string, creds: CameraCredentials)
 export const listAudit = (filter?: { page?: number; perPage?: number }) =>
   fetchAudit(filter?.page ?? 0, filter?.perPage ?? 100).then((r) => r.items);
 
+/* ---------- /v1/discovery + camera capabilities/health (SP2 camera lifecycle) ---------- */
+//
+// The recorder passively discovers ONVIF cameras on the LAN and holds
+// them in a discovery cache. GET /v1/discovery/cameras reads the
+// cache; POST /v1/discovery/probe forces a fresh WS-Discovery round
+// and returns the refreshed cache. Adopt turns a discovered entry
+// into a canonical Camera + persists its credentials, returning the
+// created Camera alongside the freshly-probed capabilities.
+
+export interface DiscoveredCamera {
+  xaddr: string;
+  endpoint_reference: string;
+  manufacturer: string;
+  model: string;
+  hardware: string;
+  name: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  // Present when the recorder has already matched this network entry
+  // to a managed Camera (same endpoint_reference / xaddr). Adopting is
+  // suppressed for matched entries.
+  matched_camera_id?: string;
+}
+
+export interface DiscoveredCameraList {
+  items: DiscoveredCamera[];
+}
+
+export const getDiscoveredCameras = () =>
+  api.get<DiscoveredCameraList>('/discovery/cameras');
+
+// Forces a fresh probe round and returns the refreshed cache.
+export const probeDiscovery = () =>
+  api.post<DiscoveredCameraList>('/discovery/probe');
+
+export interface AdoptCameraBody {
+  endpoint_reference: string;
+  name: string;
+  rtsp_username: string;
+  rtsp_password: string;
+}
+
+export interface AdoptCameraResponse {
+  camera: Camera;
+  capabilities: CameraCapabilities;
+}
+
+// POST /v1/discovery/adopt → 201. Errors surface via ApiError with
+// the parsed {error} message: 400 (bad credentials / invalid name),
+// 404 (entry aged out of the cache), 502 (camera unreachable).
+export const adoptCamera = (body: AdoptCameraBody) =>
+  api.post<AdoptCameraResponse>('/discovery/adopt', body);
+
+export interface CameraCapabilityProfile {
+  token: string;
+  name: string;
+  video_codec: string;
+  width: number;
+  height: number;
+  has_audio: boolean;
+}
+
+export interface CameraCapabilities {
+  camera_id: string;
+  profiles: CameraCapabilityProfile[];
+  selected_profile_token: string;
+  has_audio: boolean;
+  has_ptz: boolean;
+  has_motion: boolean;
+  has_io: boolean;
+  has_imaging: boolean;
+  vendor: string;
+  probed_at: string;
+}
+
+// GET returns 404 when the camera has never been probed; callers treat
+// that as "no capability data yet" rather than an error.
+export const getCameraCapabilities = (id: string) =>
+  api.get<CameraCapabilities>(`/cameras/${id}/capabilities`);
+
+// Re-probe the camera's ONVIF capabilities. Returns the same shape as
+// the capabilities GET.
+export const probeCameraCapabilities = (id: string) =>
+  api.post<CameraCapabilities>(`/cameras/${id}/probe`);
+
+export type CameraRTSPState =
+  | 'connected'
+  | 'reconnecting'
+  | 'failed'
+  | 'idle'
+  | 'unknown';
+
+export interface CameraHealth {
+  camera_id: string;
+  rtsp_state: CameraRTSPState;
+  last_keyframe_at?: string;
+  last_event_at?: string;
+  last_seen_at?: string;
+  consecutive_failures: number;
+  last_error?: string;
+  updated_at: string;
+}
+
+export const getCameraHealth = (id: string) =>
+  api.get<CameraHealth>(`/cameras/${id}/health`);
+
 /* ---------- Events SSE stream (foundation) ---------- */
 
 export interface EventStreamFilter {

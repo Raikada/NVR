@@ -46,6 +46,12 @@ import {
   fetchMotionConfig,
   patchMotionConfig,
   triggerMotionTest,
+  getDiscoveredCameras,
+  probeDiscovery,
+  adoptCamera,
+  getCameraCapabilities,
+  probeCameraCapabilities,
+  getCameraHealth,
 } from '../lib/api';
 import type {
   OnvifSubscription,
@@ -53,7 +59,11 @@ import type {
   Event as ApiEvent,
   MotionConfig as MotionConfigShape,
   MotionConfigPatchBody,
+  DiscoveredCamera,
+  CameraHealth,
+  CameraCapabilities,
 } from '../lib/api';
+import { RTSP_STATE_DISPLAY, hex2rgb } from '../lib/colors';
 import type {
   Camera as ApiCamera,
   CameraSourceType,
@@ -164,6 +174,12 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
   // come and go.
   const list = useFetch(() => fetchCameras(0, 100), []);
   const streams = usePoll(fetchStreams, 5000, []);
+
+  // Per-camera RTSP-pipeline health, swept sequentially so N cameras
+  // never fan out into N concurrent requests. Keyed off the camera-id
+  // set so a changing stream poll doesn't re-arm it.
+  const cameraIds = list.status === 'ready' ? list.data.items.map((c) => c.id) : [];
+  const healthByCamera = useCameraHealth(cameraIds);
 
   const lockedDown = false;
 
@@ -426,7 +442,14 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
         {mode === 'manual' && !lockedDown && (
           <ManualAddWizard onCancel={() => setMode('list')} onSubmit={singleAdd} addToast={addToast} />
         )}
-        <CameraList cameras={cameras} onConfig={lockedDown ? undefined : setConfigCam} />
+        {!lockedDown && (
+          <DiscoverySection onAdopted={() => list.refetch()} addToast={addToast} />
+        )}
+        <CameraList
+          cameras={cameras}
+          health={healthByCamera}
+          onConfig={lockedDown ? undefined : setConfigCam}
+        />
       </div>
       {configCam && (
         <CameraConfigDrawer
@@ -438,6 +461,460 @@ export function Cameras({ state, setState, addToast }: CamerasProps) {
         />
       )}
     </div>
+  );
+}
+
+/* ================================================================
+   PER-CAMERA HEALTH (list badges + drawer live status)
+================================================================ */
+
+// Sweep RTSP-pipeline health for every visible camera on a 15s cadence,
+// sequentially. Sequential (not Promise.all) so a large roster never
+// fans out into a burst of parallel sockets against the recorder; each
+// result lands as it arrives. Failed lookups keep any prior value.
+function useCameraHealth(ids: string[]): Record<string, CameraHealth> {
+  const [map, setMap] = useState<Record<string, CameraHealth>>({});
+  const idsKey = ids.join(',');
+  useEffect(() => {
+    const idList = idsKey ? idsKey.split(',') : [];
+    if (idList.length === 0) return;
+    let cancelled = false;
+    async function sweep() {
+      for (const id of idList) {
+        if (cancelled) return;
+        try {
+          const h = await getCameraHealth(id);
+          if (!cancelled) setMap((m) => ({ ...m, [id]: h }));
+        } catch {
+          // best-effort — leave the prior value in place
+        }
+      }
+    }
+    void sweep();
+    const t = window.setInterval(() => void sweep(), 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [idsKey]);
+  return map;
+}
+
+function HealthBadge({ state }: { state?: CameraHealth['rtsp_state'] }) {
+  const d = RTSP_STATE_DISPLAY[state ?? 'unknown'] ?? RTSP_STATE_DISPLAY.unknown;
+  return (
+    <span
+      title={`RTSP pipeline: ${d.label.toLowerCase()}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 9,
+        letterSpacing: 0.5,
+        textTransform: 'uppercase',
+        color: d.color,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: '50%',
+          background: d.color,
+          boxShadow: `0 0 6px ${d.color}`,
+        }}
+      />
+      {d.label}
+    </span>
+  );
+}
+
+/* ================================================================
+   DISCOVERY (passive network scan → adopt)
+================================================================ */
+
+function xaddrHost(xaddr: string): string {
+  try {
+    return new URL(xaddr).host;
+  } catch {
+    return xaddr;
+  }
+}
+
+interface DiscoverySectionProps {
+  onAdopted: () => void;
+  addToast: (t: ToastInput) => void;
+}
+
+function DiscoverySection({ onAdopted, addToast }: DiscoverySectionProps) {
+  const [entries, setEntries] = useState<DiscoveredCamera[] | null>(null);
+  // false once a GET /v1/discovery/cameras fails — an older recorder
+  // (404) or an unreachable one. The whole section hides rather than
+  // crashing the page.
+  const [supported, setSupported] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [adopting, setAdopting] = useState<DiscoveredCamera | null>(null);
+
+  async function load() {
+    try {
+      const resp = await getDiscoveredCameras();
+      setEntries(resp.items ?? []);
+      setSupported(true);
+    } catch {
+      setSupported(false);
+    }
+  }
+
+  useEffect(() => {
+    void load();
+    const t = window.setInterval(() => void load(), 30_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function scan() {
+    setScanning(true);
+    try {
+      const resp = await probeDiscovery();
+      setEntries(resp.items ?? []);
+      setSupported(true);
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'SCAN FAILED', body: (e as Error).message, icon: 'x' });
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  // Hidden until the first successful fetch; hidden permanently if the
+  // endpoint isn't there.
+  if (!supported || entries === null) return null;
+
+  return (
+    <Card style={{ padding: 0 }}>
+      <div
+        style={{
+          padding: '14px 16px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+        }}
+      >
+        <SectionHeader style={{ margin: 0 }}>
+          DISCOVERED ON YOUR NETWORK · {entries.length}
+        </SectionHeader>
+        <Btn kind="tactical" size="sm" icon="radar" onClick={scan} disabled={scanning}>
+          {scanning ? 'Scanning…' : 'Scan again'}
+        </Btn>
+      </div>
+
+      {entries.length === 0 && (
+        <div
+          style={{
+            padding: 24,
+            textAlign: 'center',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            letterSpacing: 1,
+            color: 'var(--text-muted)',
+            textTransform: 'uppercase',
+          }}
+        >
+          No cameras discovered yet · Scan again to probe the network
+        </div>
+      )}
+
+      {entries.map((e, i) => {
+        const matched = Boolean(e.matched_camera_id);
+        const title = [e.manufacturer, e.model].filter(Boolean).join(' ') || e.name || 'ONVIF Device';
+        return (
+          <div
+            key={e.endpoint_reference || e.xaddr}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr auto auto',
+              gap: 14,
+              padding: 12,
+              alignItems: 'center',
+              borderTop: i === 0 ? 'none' : '1px solid var(--border)',
+              opacity: matched ? 0.55 : 1,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {title}
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--text-muted)',
+                  marginTop: 4,
+                  letterSpacing: 0.5,
+                }}
+              >
+                {xaddrHost(e.xaddr)}
+                {e.hardware ? ' · ' + e.hardware : ''}
+              </div>
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                letterSpacing: 0.5,
+              }}
+            >
+              Last seen {new Date(e.last_seen_at).toLocaleString()}
+            </div>
+            {matched ? (
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 9,
+                  letterSpacing: 1,
+                  color: 'var(--text-muted)',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Already managed
+              </span>
+            ) : (
+              <span />
+            )}
+            {matched ? (
+              <span />
+            ) : (
+              <Btn kind="primary" size="sm" icon="plus" onClick={() => setAdopting(e)}>
+                Adopt
+              </Btn>
+            )}
+          </div>
+        );
+      })}
+
+      {adopting && (
+        <AdoptModal
+          entry={adopting}
+          onClose={() => setAdopting(null)}
+          onAdopted={(camName) => {
+            setAdopting(null);
+            addToast({
+              kind: 'success',
+              title: 'CAMERA ADOPTED',
+              body: `${camName} added`,
+              icon: 'check-circle',
+            });
+            onAdopted();
+            void load();
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+interface AdoptModalProps {
+  entry: DiscoveredCamera;
+  onClose: () => void;
+  onAdopted: (cameraName: string) => void;
+}
+
+function AdoptModal({ entry, onClose, onAdopted }: AdoptModalProps) {
+  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [nameErr, setNameErr] = useState<string | null>(null);
+
+  const title =
+    [entry.manufacturer, entry.model].filter(Boolean).join(' ') || entry.name || 'ONVIF Device';
+
+  async function submit() {
+    setErr(null);
+    // Name: lowercase alphanumeric + underscore, required.
+    if (!/^[a-z0-9_]+$/.test(name)) {
+      setNameErr('lowercase letters, digits and _ only');
+      return;
+    }
+    setNameErr(null);
+    if (!username.trim()) {
+      setErr('Username is required');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await adoptCamera({
+        endpoint_reference: entry.endpoint_reference,
+        name,
+        rtsp_username: username,
+        rtsp_password: password,
+      });
+      onAdopted(res.camera.name || name);
+    } catch (e) {
+      // Surface the recorder's message verbatim — the 400
+      // "camera rejected credentials" case must read legibly here.
+      setErr(e instanceof ApiError ? e.message : (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div
+        onClick={busy ? undefined : onClose}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.6)',
+          backdropFilter: 'blur(2px)',
+          zIndex: 100,
+        }}
+      />
+      <div
+        style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%,-50%)',
+          width: 460,
+          maxWidth: '94vw',
+          maxHeight: '92vh',
+          background: 'var(--bg-secondary)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          boxShadow: '0 24px 48px rgba(0,0,0,0.55)',
+          zIndex: 101,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: '14px 18px',
+            borderBottom: '1px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <div>
+            <div
+              style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                color: 'var(--text-muted)',
+                letterSpacing: 1,
+                textTransform: 'uppercase',
+              }}
+            >
+              ADOPT CAMERA · {xaddrHost(entry.xaddr)}
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--font-sans)',
+                fontSize: 16,
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                marginTop: 2,
+              }}
+            >
+              {title}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              width: 28,
+              height: 28,
+              cursor: busy ? 'not-allowed' : 'pointer',
+              color: 'var(--text-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Icon name="x" style={{ width: 12, height: 12 }} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Input
+            label="CAMERA NAME"
+            value={name}
+            onChange={(v) => {
+              setName(v);
+              if (nameErr) setNameErr(null);
+            }}
+            placeholder="front_door"
+            error={nameErr ?? undefined}
+            mono
+            autoFocus
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Input label="RTSP USERNAME" value={username} onChange={setUsername} mono />
+            <Input
+              label="RTSP PASSWORD"
+              value={password}
+              onChange={setPassword}
+              type="password"
+            />
+          </div>
+          {err && (
+            <div
+              style={{
+                padding: '10px 12px',
+                background: 'rgba(239,68,68,0.07)',
+                border: '1px solid rgba(239,68,68,0.27)',
+                borderRadius: 4,
+                fontFamily: 'var(--font-mono)',
+                fontSize: 11,
+                color: '#EF4444',
+                letterSpacing: 0.3,
+              }}
+            >
+              {err}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div
+          style={{
+            padding: '12px 18px',
+            borderTop: '1px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 8,
+          }}
+        >
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Btn>
+          <Btn kind="primary" icon="check" onClick={submit} disabled={busy}>
+            {busy ? 'Adopting…' : 'Adopt Camera'}
+          </Btn>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1808,9 +2285,11 @@ function ManualAddWizard({ onCancel, onSubmit, addToast }: ManualAddProps) {
 
 function CameraList({
   cameras,
+  health,
   onConfig,
 }: {
   cameras: UICamera[];
+  health?: Record<string, CameraHealth>;
   onConfig?: (c: UICamera) => void;
 }) {
   // Slice 4-B: when canonical_source = "ms" the parent passes
@@ -1863,6 +2342,7 @@ function CameraList({
                 {c.name}
               </span>
               <StatusBadge kind={c.status} size="sm" />
+              <HealthBadge state={health?.[c.id]?.rtsp_state} />
             </div>
             <div
               style={{
@@ -2148,7 +2628,7 @@ function CameraConfigDrawer({ camera, onClose, onSave, onRemove, addToast }: Dra
 
         {/* Tab body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
-          {tab === 'stream' && <StreamTab c={c} patch={patch} />}
+          {tab === 'stream' && <StreamTab c={c} patch={patch} addToast={addToast} />}
           {tab === 'recording' && (
             <RecordingTab
               c={c}
@@ -2196,7 +2676,199 @@ interface TabProps {
   patch: (p: Partial<CameraConfig>) => void;
 }
 
-function StreamTab({ c, patch }: TabProps) {
+function fmtTs(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+function CapabilityChip({ label, on }: { label: string; on: boolean }) {
+  const color = on ? '#22C55E' : '#737373';
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        padding: '3px 8px',
+        borderRadius: 3,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 9,
+        letterSpacing: 0.5,
+        textTransform: 'uppercase',
+        background: `rgba(${hex2rgb(color)},0.07)`,
+        border: `1px solid rgba(${hex2rgb(color)},0.27)`,
+        color,
+        opacity: on ? 1 : 0.55,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <span style={{ width: 5, height: 5, borderRadius: '50%', background: color }} />
+      {label}
+    </span>
+  );
+}
+
+// Live-status block at the top of the drawer's STREAM tab. Wires the
+// canonical CameraHealth fields (rtsp_state, last keyframe, consecutive
+// failures, last error), the ONVIF capability chips from GET
+// /v1/cameras/:id/capabilities (hidden on 404 / never-probed), and a
+// Re-probe button hitting POST /v1/cameras/:id/probe.
+function DrawerLiveStatus({
+  cameraId,
+  addToast,
+}: {
+  cameraId: string;
+  addToast: (t: ToastInput) => void;
+}) {
+  const [health, setHealth] = useState<CameraHealth | null>(null);
+  const [caps, setCaps] = useState<CameraCapabilities | null>(null);
+  const [reprobing, setReprobing] = useState(false);
+
+  async function loadHealth() {
+    try {
+      setHealth(await getCameraHealth(cameraId));
+    } catch {
+      // best-effort
+    }
+  }
+  async function loadCaps() {
+    try {
+      setCaps(await getCameraCapabilities(cameraId));
+    } catch {
+      // 404 → never probed; leave chips hidden.
+      setCaps(null);
+    }
+  }
+
+  useEffect(() => {
+    void loadHealth();
+    void loadCaps();
+    const t = window.setInterval(() => void loadHealth(), 10_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraId]);
+
+  async function reprobe() {
+    setReprobing(true);
+    try {
+      const fresh = await probeCameraCapabilities(cameraId);
+      setCaps(fresh);
+      addToast({
+        kind: 'success',
+        title: 'RE-PROBED',
+        body: 'Capabilities refreshed',
+        icon: 'check-circle',
+      });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'PROBE FAILED', body: (e as Error).message, icon: 'x' });
+    } finally {
+      setReprobing(false);
+    }
+  }
+
+  const d = RTSP_STATE_DISPLAY[health?.rtsp_state ?? 'unknown'] ?? RTSP_STATE_DISPLAY.unknown;
+  const chips = caps
+    ? [
+        { label: 'AUDIO', on: caps.has_audio },
+        { label: 'PTZ', on: caps.has_ptz },
+        { label: 'MOTION', on: caps.has_motion },
+        { label: 'IO', on: caps.has_io },
+        { label: 'IMAGING', on: caps.has_imaging },
+      ]
+    : [];
+
+  return (
+    <div
+      style={{
+        padding: 12,
+        background: 'var(--bg-tertiary)',
+        border: '1px solid var(--border)',
+        borderRadius: 4,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+      }}
+    >
+      <SectionHeader
+        style={{ margin: 0 }}
+        right={
+          <Btn kind="ghost" size="sm" icon="refresh-cw" onClick={reprobe} disabled={reprobing}>
+            {reprobing ? 'Probing…' : 'Re-probe'}
+          </Btn>
+        }
+      >
+        LIVE STATUS
+      </SectionHeader>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: d.color,
+            boxShadow: `0 0 6px ${d.color}`,
+          }}
+        />
+        <span
+          style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 11,
+            letterSpacing: 0.5,
+            color: d.color,
+          }}
+        >
+          {d.label}
+        </span>
+        {health && health.consecutive_failures > 0 && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+            · {health.consecutive_failures} consecutive failure
+            {health.consecutive_failures === 1 ? '' : 's'}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
+        <KV k="LAST KEYFRAME" v={fmtTs(health?.last_keyframe_at)} />
+        <KV k="LAST EVENT" v={fmtTs(health?.last_event_at)} />
+        <KV k="LAST SEEN" v={fmtTs(health?.last_seen_at)} />
+        <KV k="UPDATED" v={fmtTs(health?.updated_at)} />
+      </div>
+
+      {health?.last_error && (
+        <div
+          style={{
+            padding: '8px 10px',
+            background: 'rgba(239,68,68,0.07)',
+            border: '1px solid rgba(239,68,68,0.27)',
+            borderRadius: 3,
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            color: '#EF4444',
+            wordBreak: 'break-word',
+          }}
+        >
+          {health.last_error}
+        </div>
+      )}
+
+      {chips.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {chips.map((ch) => (
+            <CapabilityChip key={ch.label} label={ch.label} on={ch.on} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface StreamTabProps extends TabProps {
+  addToast: (t: ToastInput) => void;
+}
+
+function StreamTab({ c, patch, addToast }: StreamTabProps) {
   const [testing, setTesting] = useState<'busy' | 'ok' | 'fail' | null>(null);
   function test() {
     setTesting('busy');
@@ -2204,6 +2876,9 @@ function StreamTab({ c, patch }: TabProps) {
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* Live RTSP-pipeline health + ONVIF capability chips + re-probe */}
+      <DrawerLiveStatus cameraId={c.id} addToast={addToast} />
+
       {/* Live preview */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         <HLSPreview
