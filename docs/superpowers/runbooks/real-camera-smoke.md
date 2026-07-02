@@ -37,9 +37,14 @@ This runbook validates the consumer NVR foundation against your **own LAN camera
 
 ---
 
-## Step 2 — Add a camera (manual path)
+## Step 2 — Add a camera
 
-Discovery + camera-side pairing live in **sub-project 2** (not yet built); foundation only supports manual camera addition.
+SP2 shipped discover → review → adopt: the Cameras page lists cameras
+found on the LAN (WS-Discovery); click **Adopt**, enter a name +
+credentials, and the recorder probes ONVIF capabilities, picks the
+vendor's blessed RTSP URL, stores credentials in the vault, and starts
+recording. Use that path first; the manual form below stays as the
+fallback for non-ONVIF sources.
 
 1. Navigate to **Cameras** → **Add Camera**.
 2. Enter:
@@ -60,10 +65,8 @@ Discovery + camera-side pairing live in **sub-project 2** (not yet built); found
 - The path manager is serving the live stream at `rtsp://localhost:8554/<name>` (you can verify with `ffplay -rtsp_transport tcp rtsp://localhost:8554/front_door`).
 - The recorder log shows `[path <name>] stream is available and online` and no `401 (Unauthorized)` loop.
 
-> **Foundation scope note (smoke finding F4):** `GET /v1/cameras/<id>/health`
-> returns `rtsp_state: "unknown"` in the foundation — nothing writes
-> `camera_health` yet. The health writer ships with sub-project 2; do not
-> use `rtsp_state: "connected"` as a foundation pass criterion.
+`GET /v1/cameras/<id>/health` returns `rtsp_state: "connected"` within
+~15s of the stream coming up (SP2 health collector; finding F4 closed).
 
 ---
 
@@ -77,19 +80,20 @@ Discovery + camera-side pairing live in **sub-project 2** (not yet built); found
 
 ---
 
-## Step 4 — Events pipeline (foundation scope note)
+## Step 4 — Events pipeline (SP3)
 
-> **Smoke finding F5:** there is no `POST /v1/events` — the events API is
-> read-only (list / get / acknowledge / SSE) and no foundation component
-> calls `events.Service.Insert` outside tests. Event producers arrive with
-> sub-project 2 (camera health transitions) and sub-project 3 (vendor
-> event channels). Until then the event → subscription → notification path
-> has no end-to-end exercise; its coverage is the unit tests in
-> `internal/events` and `internal/notifications`.
+Vendor event channels are live: Amcrest cameras stream events over the
+CGI attach channel, everything else with an ONVIF XAddr uses PullPoint
+(per-camera override via the camera's `event_channel` field / drawer
+selector). Walk in front of a camera (or press the doorbell):
 
-Skip this step for foundation acceptance. Webhook *delivery* (transport,
-headers, HMAC signing) is still exercised end-to-end via the test endpoint
-in Step 5.
+**Pass criteria:** a `motion` (and `person`/`vehicle` if the camera's
+SmartMotion is enabled) event appears in `GET /v1/events` within ~5s,
+carrying `snapshot_url`/`thumbnail_url` (SP4 signed URLs) that serve
+real JPEGs; the doorbell press arrives as `doorbell`;
+`camera_health.last_event_at` advances. Unplugging a camera produces
+`camera_offline` (warning) after ~30s; recovery produces
+`camera_online`.
 
 ---
 
@@ -101,9 +105,10 @@ in Step 5.
 2. Navigate to **Notifications** → **Targets** → **Add Webhook** (or
    `POST /v1/notification-targets` with `kind=webhook`). URL = your sink.
    Generate a secret. Save.
-3. Fire a synthetic delivery: `POST /v1/notification-targets/<id>/test`.
-   (Subscription-driven dispatch can't fire in the foundation — see the
-   Step 4 note — so the test endpoint is the delivery exercise.)
+3. Add subscriptions (target × motion/doorbell) and trigger a real
+   event per Step 4 — subscription-driven dispatch is live since SP3.
+   `POST /v1/notification-targets/<id>/test` remains for a quick
+   synthetic delivery check.
 4. Within ~10s the sink should receive a POST with:
    - `Content-Type: application/json`
    - `X-Raikada-Signature: <hex hmac-sha256 of the body with your secret>`
@@ -184,3 +189,20 @@ Heads-up: the recorder rewrites this file in place with the full persisted
 config (including camera paths) after API mutations — that's expected.
 TLS defaults to `<identityDir>/tls.crt` + `tls.key`; replace via
 `PUT /v1/system/tls`. Canonical field list: `internal/conf/conf.go`.
+
+---
+
+## Step 7 — Snapshots + clips (SP4)
+
+1. After a Step 4 event: `ls <snapshot_root>/<camera>/<date>/` shows
+   `<event_id>-full.jpg` + `-thumb.jpg`; the event's `snapshot_url`
+   fetches without auth (HMAC-signed, 15 min TTL).
+2. `POST /v1/events/<id>/clip` → 201 with a signed `download_url`; the
+   MP4 plays and spans occurred_at ±5s (per-request pre/post-roll
+   override supported). A second POST returns the same clip (200).
+3. Events page in the SPA lists the event with thumbnail, ack, and
+   export-clip actions.
+
+**Pass criteria:** JPEG pair on disk + rows in `event_snapshots`; webhook
+payload `snapshot_url` fetches; clip downloads and plays; expired events
+take their snapshot files with them (retention file pass).
