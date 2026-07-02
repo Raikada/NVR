@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/mediasign"
 	"github.com/bluenviron/mediamtx/internal/notifications"
 	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
@@ -117,6 +119,10 @@ type API struct {
 	// tests inject fakes.
 	Discovery           *discovery.Service
 	ProbeCapabilitiesFn func(ctx context.Context, xaddr, username, password string) (*onvif.CapabilityReport, error)
+
+	// SP4 wiring: HMAC signer for short-TTL media URLs (snapshots,
+	// clip downloads).
+	Signer *mediasign.Signer
 
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
@@ -225,6 +231,9 @@ func (a *API) Initialize() error {
 
 	// SP2: LAN discovery + adopt + capability probe.
 	a.registerV1Discovery(group)
+
+	// SP4: signed media fetch + event-to-clip.
+	a.registerV1Media(group)
 
 	// Phase 5 Task 5.3: camera groups CRUD.
 	a.registerV1CameraGroups(group)
@@ -507,6 +516,11 @@ func isPreAuthBypassPath(method, path string) bool {
 	}
 	// Anonymous /v1/info, /v1/system/setup-status, /v1/system/info — the
 	// operator-UI liveness/setup probes used pre-login per Phase 5.
+	// SP4 signed media URLs authenticate via HMAC signature, not JWT
+	// (img tags / webhook consumers can't send headers).
+	if strings.HasPrefix(path, "/v1/media/") {
+		return true
+	}
 	if path == "/v1/info" || path == "/v1/system/setup-status" || path == "/v1/system/info" {
 		return true
 	}
