@@ -104,12 +104,14 @@ func TestCameraHealth_NoRowReturnsStub(t *testing.T) {
 	require.Equal(t, "unknown", out.RTSPState)
 }
 
-func TestCameraProbe_Returns501(t *testing.T) {
+func TestCameraProbe_UnknownCameraReturns404(t *testing.T) {
+	// SP2 replaced the foundation 501 stub with a real capability
+	// re-probe; an unmanaged camera id is now a 404.
 	_, hc, _ := startCameraAPI(t)
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://localhost:9997/v1/cameras/"+uuid.NewString()+"/probe", nil)
 	res, err := hc.Do(req)
 	require.NoError(t, err)
 	defer res.Body.Close()
-	require.Equal(t, http.StatusNotImplemented, res.StatusCode)
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }

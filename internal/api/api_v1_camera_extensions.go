@@ -86,12 +86,6 @@ func (a *API) onV1CameraCredentialsPut(ctx *gin.Context) {
 	})
 }
 
-// onV1CameraProbe is a foundation-phase stub: real RTSP/ONVIF probing
-// lands in sub-project 2. Returns 501.
-func (a *API) onV1CameraProbe(ctx *gin.Context) {
-	a.writeError(ctx, http.StatusNotImplemented, errors.New("camera probe is not implemented yet"))
-}
-
 type cameraHealthResponse struct {
 	CameraID            string    `json:"camera_id"`
 	RTSPState           string    `json:"rtsp_state"`

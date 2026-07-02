@@ -272,9 +272,21 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !ok {
 		return
 	}
+	created, ok := a.createCameraCommon(ctx, cam)
+	if !ok {
+		return
+	}
+	ctx.JSON(http.StatusCreated, created)
+}
+
+// createCameraCommon is the shared camera-create flow behind both
+// POST /v1/cameras and POST /v1/discovery/adopt: conf-path build with
+// policy application, store-row sync, conf apply, events + audit. On
+// failure it writes the HTTP error itself and returns ok=false.
+func (a *API) createCameraCommon(ctx *gin.Context, cam *defs.Camera) (*defs.Camera, bool) {
 	if cam.Name == "" {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("camera name is required"))
-		return
+		return nil, false
 	}
 
 	a.mutex.Lock()
@@ -283,7 +295,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	newConf := a.Conf.Clone()
 	if _, exists := newConf.OptionalPaths[cam.Name]; exists {
 		a.writeError(ctx, http.StatusConflict, fmt.Errorf("camera with name '%s' already exists", cam.Name))
-		return
+		return nil, false
 	}
 
 	// Resolve the RecordingPolicy linkage. If the body provided one,
@@ -300,7 +312,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !policyOK || policyCfg == nil {
 		a.writeError(ctx, http.StatusBadRequest,
 			fmt.Errorf("recording_policy_id '%s' does not reference an existing policy", policyID))
-		return
+		return nil, false
 	}
 
 	// Server issues the UUID per ADR 0009 §D4. For consistency with the
@@ -318,7 +330,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	p, err := defs.PathFromCamera(*cam)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	// Apply the resolved RecordingPolicy onto the path so the per-path
@@ -338,16 +350,16 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	op, err := optionalPathFromConfPath(p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	if err := newConf.AddPath(cam.Name, op); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 	if err := newConf.Validate(nil); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	// ID is genuinely derived (cameraIDFromPathName); we re-stamp it
@@ -364,7 +376,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	// surfaces key off this row (smoke finding F1).
 	if err := a.syncCameraStoreCreate(ctx.Request.Context(), cam); err != nil {
 		a.writeError(ctx, http.StatusInternalServerError, err)
-		return
+		return nil, false
 	}
 
 	a.Conf = newConf
@@ -384,7 +396,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	a.emitConfigAppliedLocked("camera", cam.ID, "create", map[string]string{"camera_id": cam.ID})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
-	ctx.JSON(http.StatusCreated, &cam2)
+	return &cam2, true
 }
 
 func (a *API) onV1CamerasPatch(ctx *gin.Context) {

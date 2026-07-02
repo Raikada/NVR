@@ -2,6 +2,7 @@
 package api //nolint:revive
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,12 +18,14 @@ import (
 	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/discovery"
 	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
 	"github.com/bluenviron/mediamtx/internal/notifications"
+	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
 	"github.com/bluenviron/mediamtx/internal/rbac"
 	"github.com/bluenviron/mediamtx/internal/retention"
@@ -108,6 +111,12 @@ type API struct {
 	NotifDispatcher *notifications.Dispatcher
 	RetentionMgr    *retention.Manager
 	Vault           *cameracred.Vault
+
+	// SP2 wiring: LAN discovery cache + ONVIF capability probe.
+	// ProbeCapabilitiesFn defaults to onvif.ProbeCapabilities when nil;
+	// tests inject fakes.
+	Discovery           *discovery.Service
+	ProbeCapabilitiesFn func(ctx context.Context, xaddr, username, password string) (*onvif.CapabilityReport, error)
 
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
@@ -213,6 +222,9 @@ func (a *API) Initialize() error {
 	// recording-state. Additive surfaces alongside the existing /v1/cameras
 	// CRUD which remains rooted in the path manager.
 	a.registerV1CameraExtensions(group)
+
+	// SP2: LAN discovery + adopt + capability probe.
+	a.registerV1Discovery(group)
 
 	// Phase 5 Task 5.3: camera groups CRUD.
 	a.registerV1CameraGroups(group)
