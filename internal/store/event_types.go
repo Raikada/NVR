@@ -13,6 +13,9 @@ type EventType struct {
 	DisplayName string
 	Vendor      string // onvif|amcrest|hikvision|reolink|internal|custom
 	Description string
+	// CaptureSnapshot: capture a JPEG when an event of this type
+	// arrives (SP4). Defaults on; connectivity events opt out.
+	CaptureSnapshot bool
 }
 
 // EventTypesRepo provides CRUD over event_types.
@@ -33,9 +36,9 @@ var ErrEventTypeProtected = errors.New("event type is protected (built-in)")
 // Insert adds a new event type.
 func (r *EventTypesRepo) Insert(ctx context.Context, e *EventType) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO event_types (id, display_name, vendor, description)
-		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''))
-	`, e.ID, e.DisplayName, e.Vendor, e.Description)
+		INSERT INTO event_types (id, display_name, vendor, description, capture_snapshot)
+		VALUES (?, ?, NULLIF(?, ''), NULLIF(?, ''), ?)
+	`, e.ID, e.DisplayName, e.Vendor, e.Description, boolToInt(e.CaptureSnapshot))
 	if err != nil && isConstraintErr(err) {
 		return ErrEventTypeExists
 	}
@@ -69,9 +72,10 @@ func (r *EventTypesRepo) List(ctx context.Context) ([]*EventType, error) {
 // Update changes only DisplayName + Description; vendor is immutable.
 func (r *EventTypesRepo) Update(ctx context.Context, e *EventType) error {
 	res, err := r.db.ExecContext(ctx, `
-		UPDATE event_types SET display_name = ?, description = NULLIF(?, '')
+		UPDATE event_types SET display_name = ?, description = NULLIF(?, ''),
+			capture_snapshot = ?
 		WHERE id = ?
-	`, e.DisplayName, e.Description, e.ID)
+	`, e.DisplayName, e.Description, boolToInt(e.CaptureSnapshot), e.ID)
 	if err != nil {
 		return err
 	}
@@ -106,14 +110,17 @@ func (r *EventTypesRepo) Delete(ctx context.Context, id string) error {
 }
 
 const eventTypeSelect = `
-SELECT id, display_name, COALESCE(vendor, ''), COALESCE(description, '')
+SELECT id, display_name, COALESCE(vendor, ''), COALESCE(description, ''),
+       capture_snapshot
 FROM event_types
 `
 
 func scanEventType(row rowScanner) (*EventType, error) {
 	var e EventType
-	if err := row.Scan(&e.ID, &e.DisplayName, &e.Vendor, &e.Description); err != nil {
+	var capture int
+	if err := row.Scan(&e.ID, &e.DisplayName, &e.Vendor, &e.Description, &capture); err != nil {
 		return nil, err
 	}
+	e.CaptureSnapshot = capture != 0
 	return &e, nil
 }

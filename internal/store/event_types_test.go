@@ -85,3 +85,36 @@ func TestEventTypes_DeleteSeededRejected(t *testing.T) {
 		t.Errorf("expected ErrEventTypeProtected; got %v", err)
 	}
 }
+
+func TestEventTypes_CaptureSnapshotFlag(t *testing.T) {
+	s := openTestStore(t)
+
+	// Seeded rows: connectivity events don't capture, motion does.
+	motion, err := s.EventTypes.GetByID(context.Background(), "motion")
+	if err != nil {
+		t.Fatalf("get motion: %v", err)
+	}
+	if !motion.CaptureSnapshot {
+		t.Fatal("motion must default to capture_snapshot=1")
+	}
+	offline, err := s.EventTypes.GetByID(context.Background(), "camera_offline")
+	if err != nil {
+		t.Fatalf("get camera_offline: %v", err)
+	}
+	if offline.CaptureSnapshot {
+		t.Fatal("camera_offline must not capture snapshots")
+	}
+
+	// Round-trip on custom types.
+	custom := &EventType{ID: "custom_x", DisplayName: "X", Vendor: "custom", CaptureSnapshot: false}
+	if err := s.EventTypes.Insert(context.Background(), custom); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := s.EventTypes.GetByID(context.Background(), "custom_x")
+	if err != nil {
+		t.Fatalf("get custom: %v", err)
+	}
+	if got.CaptureSnapshot {
+		t.Fatal("custom capture_snapshot=false must persist")
+	}
+}
