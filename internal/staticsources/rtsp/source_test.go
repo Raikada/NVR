@@ -606,3 +606,30 @@ func TestOnlyBackChannelsError(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no media")
 }
+
+// A conf.Path that never went through SetDefaults (e.g. one synthesized
+// at runtime rather than parsed from mediamtx.yml) must produce a
+// connection error, not a process-killing panic, when its
+// RTSPUDPSourcePortRange is empty.
+func TestZeroValuePathConfDoesNotPanic(t *testing.T) {
+	p := &test.StaticSourceParent{}
+	p.Initialize()
+
+	so := &Source{
+		ReadTimeout:    conf.Duration(2 * time.Second),
+		WriteTimeout:   conf.Duration(2 * time.Second),
+		WriteQueueSize: 2048,
+		Parent:         p,
+	}
+
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	defer ctxCancel()
+
+	err := so.Run(defs.StaticSourceRunParams{
+		Context:        ctx,
+		ResolvedSource: "rtsp://127.0.0.1:1/nothing-listens-here",
+		Conf:           &conf.Path{},
+	})
+
+	require.Error(t, err)
+}

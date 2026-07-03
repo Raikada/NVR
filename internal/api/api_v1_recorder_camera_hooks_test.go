@@ -47,7 +47,7 @@ func TestV1RecorderCameraHooksGet(t *testing.T) {
 	var out CameraHooks
 	require.NoError(t, json.Unmarshal(body, &out))
 	require.Equal(t, "/bin/echo init", out.RunOnInit)
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", out.TenantID)
+	require.Equal(t, "", out.TenantID)
 }
 
 func TestV1RecorderCameraHooksGetUnknown(t *testing.T) {

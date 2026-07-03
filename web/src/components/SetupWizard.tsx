@@ -1,23 +1,20 @@
-// First-run setup wizard. Auto-opens on first load, dismissable via
-// the X or "Skip setup", restartable from Overview.
+// First-run setup wizard for the consumer NVR foundation. Walks
+// the operator through site name + timezone + language + optional
+// TLS + optional SMTP. No pairing — this is a single-site appliance.
 //
-// Five steps: Welcome → Network preflight → Pair with MS → Add cameras
-// → Finish. Faithful port of the design's wizard.jsx.
+// Mounts when getSetupStatus() reports setup_required:true. The
+// "Skip setup" affordance dismisses the overlay without flipping
+// the backend flag; clicking "Done" persists the setup_complete
+// system_settings flag via patchSystemSettings.
 
 import { useEffect, useState } from 'react';
-import { Btn, Bracket, Input, Stat, StatusBadge } from './primitives';
+import { Btn, Bracket, Input } from './primitives';
 import { Icon } from './Icon';
-import type { IconName } from './Icon';
 import {
-  diagPing,
-  fetchDiscoveredManagement,
-  fetchPairStatus,
-  startPairing,
-  type DiscoveredManagement,
-  type PairStatus,
-  type PingResponse,
+  patchSystemSettings,
+  putSystemTLS,
 } from '../lib/api';
-import type { AppState, ToastInput, UICamera, BadgeKind } from '../lib/types';
+import type { AppState, ToastInput } from '../lib/types';
 
 interface SetupWizardProps {
   state: AppState;
@@ -27,18 +24,114 @@ interface SetupWizardProps {
   onDismiss: () => void;
 }
 
-const STEPS = ['WELCOME', 'NETWORK', 'PAIR WITH MS', 'ADD CAMERAS', 'FINISH'] as const;
-
+const STEPS = ['SITE', 'TIME', 'LANGUAGE', 'TLS', 'SMTP', 'DONE'] as const;
 const STEP_TITLES = [
-  'Welcome to Raikada',
-  'Network Check',
-  'Pair with Management Server',
-  'Add Cameras',
-  'Setup Complete',
+  'Name this recorder',
+  'Confirm timezone',
+  'Choose language',
+  'Optional: upload TLS certificate',
+  'Optional: configure SMTP',
+  'Setup complete',
 ] as const;
 
-export function SetupWizard({ onDone, onDismiss, state, setState, addToast }: SetupWizardProps) {
+function detectTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+export function SetupWizard({ onDone, onDismiss, addToast }: SetupWizardProps) {
   const [step, setStep] = useState(0);
+
+  const [siteName, setSiteName] = useState('Home');
+  const [timezone, setTimezone] = useState<string>(detectTimezone());
+  const [language, setLanguage] = useState<string>('en');
+
+  const [tlsCert, setTlsCert] = useState('');
+  const [tlsKey, setTlsKey] = useState('');
+  const [tlsSubmitting, setTlsSubmitting] = useState(false);
+
+  const [smtpHost, setSmtpHost] = useState('');
+  const [smtpPort, setSmtpPort] = useState('587');
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+  const [smtpFrom, setSmtpFrom] = useState('');
+
+  const [finishing, setFinishing] = useState(false);
+
+  async function saveSite() {
+    try {
+      await patchSystemSettings({ site_name: siteName });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'SAVE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+  }
+
+  async function saveTimezone() {
+    try {
+      await patchSystemSettings({ timezone });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'SAVE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+  }
+
+  async function saveLanguage() {
+    try {
+      await patchSystemSettings({ language });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'SAVE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+  }
+
+  async function saveTLS() {
+    if (!tlsCert.trim() || !tlsKey.trim()) return;
+    setTlsSubmitting(true);
+    try {
+      await putSystemTLS(tlsCert, tlsKey);
+      addToast({ kind: 'success', title: 'TLS UPLOADED', icon: 'check-circle' });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'TLS UPLOAD FAILED', body: (e as Error).message, icon: 'x' });
+    }
+    setTlsSubmitting(false);
+  }
+
+  async function saveSMTP() {
+    if (!smtpHost.trim()) return;
+    try {
+      await patchSystemSettings({
+        smtp_host: smtpHost,
+        smtp_port: smtpPort,
+        smtp_username: smtpUser,
+        smtp_password: smtpPass,
+        smtp_from: smtpFrom,
+      });
+      addToast({ kind: 'success', title: 'SMTP SAVED', icon: 'check-circle' });
+    } catch (e) {
+      addToast({ kind: 'danger', title: 'SMTP SAVE FAILED', body: (e as Error).message, icon: 'x' });
+    }
+  }
+
+  async function finish() {
+    setFinishing(true);
+    try {
+      await patchSystemSettings({ setup_complete: 'true' });
+    } catch {
+      // Best-effort; the overlay still closes so the operator isn't stranded.
+    }
+    setFinishing(false);
+    onDone();
+  }
+
+  // When entering specific steps, persist the previous step's data
+  // automatically so the operator's choices survive a "Skip setup".
+  useEffect(() => {
+    if (step === 1) void saveSite();
+    if (step === 2) void saveTimezone();
+    if (step === 3) void saveLanguage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   return (
     <div
@@ -66,23 +159,10 @@ export function SetupWizard({ onDone, onDismiss, state, setState, addToast }: Se
           overflow: 'hidden',
         }}
       >
-        {/* Header */}
-        <div
-          style={{
-            position: 'relative',
-            padding: '20px 24px',
-            borderBottom: '1px solid var(--border)',
-          }}
-        >
+        <div style={{ position: 'relative', padding: '20px 24px', borderBottom: '1px solid var(--border)' }}>
           <Bracket pos="tl" />
           <Bracket pos="tr" />
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'flex-start',
-            }}
-          >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div>
               <div
                 style={{
@@ -96,14 +176,7 @@ export function SetupWizard({ onDone, onDismiss, state, setState, addToast }: Se
               >
                 FIRST-RUN SETUP — STEP {step + 1}/{STEPS.length}
               </div>
-              <div
-                style={{
-                  fontFamily: 'var(--font-sans)',
-                  fontSize: 20,
-                  fontWeight: 600,
-                  color: 'var(--text-primary)',
-                }}
-              >
+              <div style={{ fontFamily: 'var(--font-sans)', fontSize: 20, fontWeight: 600, color: 'var(--text-primary)' }}>
                 {STEP_TITLES[step]}
               </div>
             </div>
@@ -125,7 +198,6 @@ export function SetupWizard({ onDone, onDismiss, state, setState, addToast }: Se
               <Icon name="x" style={{ width: 14, height: 14 }} />
             </button>
           </div>
-          {/* Step progress bars */}
           <div style={{ display: 'flex', gap: 4, marginTop: 16 }}>
             {STEPS.map((s, i) => (
               <div
@@ -141,914 +213,168 @@ export function SetupWizard({ onDone, onDismiss, state, setState, addToast }: Se
               />
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
-            {STEPS.map((s, i) => (
-              <span
-                key={s}
+        </div>
+
+        <div style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+          {step === 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Pick a friendly name for this recorder. It will appear in the topbar
+                and notifications.
+              </p>
+              <Input label="SITE NAME" value={siteName} onChange={setSiteName} />
+            </div>
+          )}
+          {step === 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Detected from this browser. Override if the recorder is in a different timezone.
+              </p>
+              <Input label="TIMEZONE (IANA)" value={timezone} onChange={setTimezone} mono />
+            </div>
+          )}
+          {step === 2 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Default UI language for this recorder.
+              </p>
+              <Input label="LANGUAGE (BCP47)" value={language} onChange={setLanguage} mono />
+            </div>
+          )}
+          {step === 3 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Optional. Paste your PEM-encoded certificate and key. Leave blank to
+                continue using the recorder's self-signed certificate.
+              </p>
+              <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+                CERTIFICATE (PEM)
+              </label>
+              <textarea
+                value={tlsCert}
+                onChange={(e) => setTlsCert(e.target.value)}
+                rows={6}
                 style={{
-                  flex: 1,
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  padding: 10,
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 9,
-                  letterSpacing: 1,
-                  color:
-                    i === step
-                      ? '#F97316'
-                      : i < step
-                        ? 'var(--text-secondary)'
-                        : 'var(--text-muted)',
-                  textTransform: 'uppercase',
+                  fontSize: 11,
+                  color: 'var(--text-primary)',
+                }}
+              />
+              <label style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+                PRIVATE KEY (PEM)
+              </label>
+              <textarea
+                value={tlsKey}
+                onChange={(e) => setTlsKey(e.target.value)}
+                rows={6}
+                style={{
+                  background: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 4,
+                  padding: 10,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  color: 'var(--text-primary)',
+                }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Btn kind="secondary" disabled={tlsSubmitting || !tlsCert || !tlsKey} onClick={saveTLS}>
+                  {tlsSubmitting ? 'Uploading…' : 'Upload TLS'}
+                </Btn>
+              </div>
+            </div>
+          )}
+          {step === 4 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
+                Optional. Configure outgoing email for notifications. Leave blank to skip.
+              </p>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
+                <Input label="SMTP HOST" value={smtpHost} onChange={setSmtpHost} mono />
+                <Input label="PORT" value={smtpPort} onChange={setSmtpPort} mono />
+              </div>
+              <Input label="USERNAME" value={smtpUser} onChange={setSmtpUser} />
+              <Input label="PASSWORD" value={smtpPass} onChange={setSmtpPass} />
+              <Input label="FROM ADDRESS" value={smtpFrom} onChange={setSmtpFrom} />
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Btn kind="secondary" disabled={!smtpHost} onClick={saveSMTP}>
+                  Save SMTP
+                </Btn>
+              </div>
+            </div>
+          )}
+          {step === 5 && (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 16,
+                alignItems: 'center',
+                textAlign: 'center',
+                padding: '20px 0',
+              }}
+            >
+              <div
+                style={{
+                  width: 64,
+                  height: 64,
+                  borderRadius: '50%',
+                  background: 'rgba(249,115,22,0.13)',
+                  border: '2px solid #F97316',
+                  boxShadow: '0 0 24px rgba(249,115,22,0.45)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                {s}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '24px' }}>
-          {step === 0 && <WizWelcome />}
-          {step === 1 && <WizNetwork state={state} />}
-          {step === 2 && <WizPair state={state} setState={setState} addToast={addToast} />}
-          {step === 3 && <WizCameras state={state} />}
-          {step === 4 && <WizFinish state={state} />}
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: '14px 24px',
-            borderTop: '1px solid var(--border)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <Btn kind="ghostQuiet" onClick={onDismiss}>
-            Skip setup
-          </Btn>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {step > 0 && step < 4 && (
-              <Btn kind="secondary" onClick={() => setStep(step - 1)} icon="chevron-left">
-                Back
-              </Btn>
-            )}
-            {step < 4 && (
-              <Btn
-                kind="primary"
-                disabled={step === 2 && !state.paired}
-                onClick={() => setStep(step + 1)}
-              >
-                {step === 0 ? 'Begin Setup' : 'Continue'}
-                <Icon name="chevron-right" style={{ width: 14, height: 14 }} />
-              </Btn>
-            )}
-            {step === 4 && (
-              <Btn kind="primary" onClick={onDone} icon="check">
-                Enter Dashboard
-              </Btn>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WizWelcome() {
-  const items: { k: string; v: string; i: IconName }[] = [
-    { k: 'NETWORK', v: 'Verify LAN reachability and DNS', i: 'network' },
-    { k: 'PAIR', v: 'Link recorder with management server', i: 'link' },
-    { k: 'CAMERAS', v: 'Discover and add devices', i: 'cctv' },
-    { k: 'RECORDING', v: 'Rules inherit from MS automatically', i: 'circle-dot' },
-  ];
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <p
-        style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: 14,
-          color: 'var(--text-secondary)',
-          lineHeight: 1.6,
-          margin: 0,
-        }}
-      >
-        This recording server is online but has not been configured. Follow these four steps to connect
-        it to your management server and bring cameras online.
-      </p>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2,1fr)',
-          gap: 10,
-          marginTop: 8,
-        }}
-      >
-        {items.map((x) => (
-          <div
-            key={x.k}
-            style={{
-              padding: 12,
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              display: 'flex',
-              gap: 10,
-              alignItems: 'flex-start',
-            }}
-          >
-            <Icon name={x.i} style={{ width: 16, height: 16, color: '#F97316', marginTop: 2 }} />
-            <div>
+                <Icon name="check" style={{ width: 28, height: 28, color: '#F97316', strokeWidth: 3 }} />
+              </div>
               <div
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  letterSpacing: 1,
+                  fontSize: 11,
+                  letterSpacing: 2,
                   color: '#F97316',
                   textTransform: 'uppercase',
                 }}
               >
-                {x.k}
+                READY
               </div>
-              <div
-                style={{
-                  fontFamily: 'var(--font-sans)',
-                  fontSize: 12,
-                  color: 'var(--text-secondary)',
-                  marginTop: 2,
-                }}
-              >
-                {x.v}
-              </div>
+              <p style={{ margin: 0, fontFamily: 'var(--font-sans)', fontSize: 14, color: 'var(--text-secondary)', maxWidth: 420, lineHeight: 1.5 }}>
+                Site "{siteName}" configured. Add cameras from the Cameras page to begin
+                recording.
+              </p>
             </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+          )}
+        </div>
 
-type WizNetworkProbeStatus = 'idle' | 'running' | 'ok' | 'fail';
-
-interface WizNetworkProbe {
-  key: string;
-  label: string;
-  target: string;
-  description: string; // e.g. "Cloudflare DNS"
-  status: WizNetworkProbeStatus;
-  result?: PingResponse;
-  error?: string;
-}
-
-function WizNetwork({ state }: { state: AppState }) {
-  // Real /v1/diagnostics/ping preflight. The recorder's ping handler
-  // is a TCP-handshake probe (port 443 by default) — works on every
-  // OS without raw sockets. Two anycast DNS targets cover the
-  // "internet egress" question; the LAN gateway covers the "local
-  // routing" question. The recorder doesn't surface a default-route
-  // query yet, so the gateway target falls back to state.gateway
-  // (App's bootstrap default) when network-info doesn't resolve a
-  // candidate. Each probe runs once on mount and again whenever the
-  // operator clicks RE-RUN.
-  const initialProbes: WizNetworkProbe[] = [
-    {
-      key: 'cloudflare',
-      label: 'CLOUDFLARE',
-      target: '1.1.1.1',
-      description: '1.1.1.1 — TCP/443 handshake',
-      status: 'idle',
-    },
-    {
-      key: 'google',
-      label: 'GOOGLE DNS',
-      target: '8.8.8.8',
-      description: '8.8.8.8 — TCP/443 handshake',
-      status: 'idle',
-    },
-    {
-      key: 'gateway',
-      label: 'LAN GATEWAY',
-      target: state.gateway,
-      description: `${state.gateway} — TCP/443 handshake`,
-      status: 'idle',
-    },
-  ];
-  const [probes, setProbes] = useState<WizNetworkProbe[]>(initialProbes);
-  const [running, setRunning] = useState(false);
-
-  async function runOne(idx: number) {
-    setProbes((ps) =>
-      ps.map((p, i) => (i === idx ? { ...p, status: 'running', error: undefined, result: undefined } : p)),
-    );
-    try {
-      const r = await diagPing(probes[idx].target, 4);
-      const ok = r.loss_pct < 100;
-      setProbes((ps) =>
-        ps.map((p, i) =>
-          i === idx ? { ...p, status: ok ? 'ok' : 'fail', result: r } : p,
-        ),
-      );
-    } catch (e) {
-      setProbes((ps) =>
-        ps.map((p, i) =>
-          i === idx
-            ? { ...p, status: 'fail', error: (e as Error).message }
-            : p,
-        ),
-      );
-    }
-  }
-
-  async function runAll() {
-    if (running) return;
-    setRunning(true);
-    // Sequential so the recorder's ping handler doesn't fan out four
-    // concurrent dial attempts (each 4 samples × 200ms inter-probe);
-    // total wall time ≈ 4 × ~3s = 12s. Acceptable for a one-shot
-    // preflight that runs once on wizard step entry.
-    try {
-      for (let i = 0; i < probes.length; i++) {
-        await runOne(i);
-      }
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  // Auto-run once on mount. The operator can re-run via the button.
-  useEffect(() => {
-    void runAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  function badge(s: WizNetworkProbeStatus): { kind: BadgeKind; label: string } {
-    if (s === 'ok') return { kind: 'online', label: 'OK' };
-    if (s === 'fail') return { kind: 'error', label: 'FAIL' };
-    if (s === 'running') return { kind: 'degraded', label: 'TESTING' };
-    return { kind: 'offline', label: 'IDLE' };
-  }
-
-  function detailLine(p: WizNetworkProbe): string {
-    if (p.status === 'idle') return p.description;
-    if (p.status === 'running') return `${p.description} · running…`;
-    if (p.error) return `${p.description} · ${p.error}`;
-    if (p.result) {
-      const loss = p.result.loss_pct;
-      const avg = p.result.avg_ms;
-      if (loss === 0) return `${p.description} · ${avg.toFixed(1)} ms avg, no loss`;
-      if (loss === 100) return `${p.description} · all 4 samples timed out`;
-      return `${p.description} · ${avg.toFixed(1)} ms avg, ${loss.toFixed(0)}% loss`;
-    }
-    return p.description;
-  }
-
-  const allOk = probes.every((p) => p.status === 'ok');
-  const anyFail = probes.some((p) => p.status === 'fail');
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <p
-        style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: 13,
-          color: 'var(--text-secondary)',
-          margin: 0,
-          lineHeight: 1.5,
-        }}
-      >
-        Running preflight checks against your LAN. All items green means the recorder can reach a management server.
-      </p>
-      <div
-        style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          overflow: 'hidden',
-        }}
-      >
-        {probes.map((p, i) => {
-          const b = badge(p.status);
-          return (
-            <div
-              key={p.key}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '120px 1fr auto',
-                gap: 12,
-                alignItems: 'center',
-                padding: '10px 14px',
-                borderTop: i === 0 ? 'none' : '1px solid var(--border)',
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  letterSpacing: 1,
-                  color: 'var(--text-muted)',
-                  textTransform: 'uppercase',
-                }}
-              >
-                {p.label}
-              </span>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-primary)' }}>
-                {detailLine(p)}
-              </span>
-              <StatusBadge kind={b.kind} label={b.label} />
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-        <span
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            letterSpacing: 0.5,
-            color: allOk
-              ? 'var(--accent-success, #4ade80)'
-              : anyFail
-                ? '#EF4444'
-                : 'var(--text-muted)',
-            textTransform: 'uppercase',
-          }}
-        >
-          {running
-            ? 'PROBES RUNNING…'
-            : allOk
-              ? 'ALL PROBES PASSED'
-              : anyFail
-                ? 'ONE OR MORE PROBES FAILED — CONTINUE IF EXPECTED'
-                : '—'}
-        </span>
-        <Btn kind="secondary" size="sm" icon="refresh-cw" onClick={runAll} disabled={running}>
-          {running ? 'Running…' : 'Re-run'}
-        </Btn>
-      </div>
-    </div>
-  );
-}
-
-interface WizPairProps {
-  state: AppState;
-  setState: React.Dispatch<React.SetStateAction<AppState>>;
-  addToast: (t: ToastInput) => void;
-}
-
-function WizPair({ state, setState, addToast }: WizPairProps) {
-  const [scanning, setScanning] = useState(!state.paired);
-  const [discovered, setDiscovered] = useState<DiscoveredManagement[]>([]);
-  const [serverAddr, setServerAddr] = useState('');
-  const [token, setToken] = useState('');
-  const [pairStatus, setPairStatus] = useState<PairStatus | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Real mDNS-discovered list, refreshed every 5s while unpaired.
-  async function rescan() {
-    setScanning(true);
-    try {
-      const res = await fetchDiscoveredManagement();
-      setDiscovered(res.items);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setScanning(false);
-    }
-  }
-
-  useEffect(() => {
-    if (state.paired) return;
-    void rescan();
-    const id = window.setInterval(rescan, 5000);
-    return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.paired]);
-
-  // On mount, fetch current pair status so refreshing the wizard
-  // mid-flow keeps in-progress visible.
-  useEffect(() => {
-    void fetchPairStatus()
-      .then((s) => setPairStatus(s))
-      .catch(() => {
-        /* no pair flow active = idle, fine */
-      });
-  }, []);
-
-  // Poll status while a pairing is in_progress.
-  useEffect(() => {
-    if (pairStatus?.state !== 'in_progress') return;
-    let cancelled = false;
-    const tick = async () => {
-      if (cancelled) return;
-      try {
-        const s = await fetchPairStatus();
-        if (cancelled) return;
-        setPairStatus(s);
-        if (s.state === 'approved') {
-          setState((prev) => ({
-            ...prev,
-            paired: true,
-            managementServer: {
-              host: s.ms_url ?? 'paired',
-              ip: '',
-              mac: '',
-              cameras: 0,
-              ver: '',
-              trust: 'SIGNED',
-            },
-          }));
-          addToast({
-            kind: 'success',
-            title: 'PAIRED',
-            body: `Linked to ${s.ms_url ?? 'management server'}`,
-            icon: 'check-circle',
-          });
-        } else if (s.state !== 'in_progress') {
-          addToast({
-            kind: 'warning',
-            title: s.state.replace(/_/g, ' ').toUpperCase(),
-            body: s.detail ?? 'pairing did not complete',
-            icon: 'alert-triangle',
-          });
-        }
-      } catch (e) {
-        if (cancelled) return;
-        setError((e as Error).message);
-      }
-    };
-    const id = window.setInterval(tick, 1500);
-    void tick();
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [pairStatus?.state, addToast, setState]);
-
-  function useDiscoveredAddress(d: DiscoveredManagement) {
-    setServerAddr(d.url);
-    addToast({
-      kind: 'info',
-      title: 'ADDRESS FILLED',
-      body: `Enter the pairing token from the MS to pair.`,
-      icon: 'info',
-    });
-  }
-
-  async function doPair() {
-    setError(null);
-    if (!serverAddr.startsWith('https://')) {
-      setError('Server address must start with https://');
-      return;
-    }
-    if (!token.trim()) {
-      setError('Pairing token is required.');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const r = await startPairing({ ms_url: serverAddr.trim(), token: token.trim() });
-      setPairStatus({ state: r.state, updated_at: new Date().toISOString(), detail: r.detail });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (state.paired && state.managementServer) {
-    const ms = state.managementServer;
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div
-          style={{
-            padding: 16,
-            background: 'rgba(34,197,94,0.07)',
-            border: '1px solid rgba(34,197,94,0.27)',
-            borderRadius: 4,
-            display: 'flex',
-            gap: 12,
-            alignItems: 'center',
-          }}
-        >
-          <Icon name="check-circle" style={{ width: 20, height: 20, color: '#22C55E' }} />
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                letterSpacing: 1,
-                color: '#22C55E',
-                textTransform: 'uppercase',
-              }}
-            >
-              PAIRED
-            </div>
-            <div
-              style={{
-                fontFamily: 'var(--font-sans)',
-                fontSize: 13,
-                color: 'var(--text-primary)',
-                marginTop: 2,
-              }}
-            >
-              {ms.host} ({ms.ip})
-            </div>
-          </div>
-          <Btn kind="ghost" onClick={() => setState((s) => ({ ...s, paired: false }))}>
-            Unpair
+        <div style={{ padding: '14px 24px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Btn kind="ghostQuiet" onClick={onDismiss}>
+            Skip setup
           </Btn>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {step > 0 && step < STEPS.length - 1 && (
+              <Btn kind="secondary" onClick={() => setStep(step - 1)} icon="chevron-left">
+                Back
+              </Btn>
+            )}
+            {step < STEPS.length - 1 && (
+              <Btn kind="primary" onClick={() => setStep(step + 1)}>
+                Continue
+                <Icon name="chevron-right" style={{ width: 14, height: 14 }} />
+              </Btn>
+            )}
+            {step === STEPS.length - 1 && (
+              <Btn kind="primary" onClick={finish} icon="check" disabled={finishing}>
+                {finishing ? 'Finishing…' : 'Enter Dashboard'}
+              </Btn>
+            )}
+          </div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontFamily: 'var(--font-sans)', fontSize: 13, color: 'var(--text-secondary)' }}>
-          Scanning LAN for management servers on ports 443, 7443…
-        </span>
-        {scanning ? (
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 10,
-              letterSpacing: 1,
-              color: '#F97316',
-              textTransform: 'uppercase',
-            }}
-          >
-            <span
-              className="pulse-dot"
-              style={{
-                width: 6,
-                height: 6,
-                background: '#F97316',
-                borderRadius: '50%',
-                boxShadow: '0 0 6px #F97316',
-              }}
-            />
-            SCANNING
-          </span>
-        ) : (
-          <Btn kind="tactical" onClick={rescan}>
-            <Icon name="refresh-cw" style={{ width: 12, height: 12 }} /> RESCAN
-          </Btn>
-        )}
-      </div>
-
-      <div
-        style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          minHeight: 150,
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
-        {discovered.length === 0 && !scanning && (
-          <div
-            style={{
-              padding: 24,
-              textAlign: 'center',
-              fontFamily: 'var(--font-sans)',
-              fontSize: 12,
-              color: 'var(--text-muted)',
-            }}
-          >
-            No management servers found on this network.
-          </div>
-        )}
-        {discovered.map((d, i) => (
-          <div
-            key={d.ms_id ?? d.hostname}
-            style={{
-              padding: '12px 14px',
-              borderTop: i === 0 ? 'none' : '1px solid var(--border)',
-              display: 'grid',
-              gridTemplateColumns: '1fr auto',
-              gap: 12,
-              alignItems: 'center',
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Icon name="server" style={{ width: 14, height: 14, color: '#F97316' }} />
-                <span
-                  style={{
-                    fontFamily: 'var(--font-sans)',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: 'var(--text-primary)',
-                  }}
-                >
-                  {d.hostname}
-                </span>
-                <StatusBadge kind="online" label="REACHABLE" size="sm" />
-              </div>
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 14,
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 10,
-                  color: 'var(--text-secondary)',
-                  letterSpacing: 0.5,
-                }}
-              >
-                <span>{d.url}</span>
-                {d.version && <span>{d.version}</span>}
-                {d.ms_id && <span>id:{d.ms_id.slice(0, 8)}</span>}
-              </div>
-            </div>
-            <Btn kind="secondary" size="sm" onClick={() => useDiscoveredAddress(d)}>
-              Use This
-            </Btn>
-          </div>
-        ))}
-        {scanning && discovered.length === 0 && (
-          <div
-            style={{
-              padding: '12px 14px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 10,
-              letterSpacing: 1,
-              color: 'var(--text-muted)',
-              textTransform: 'uppercase',
-            }}
-          >
-            <div
-              className="scanline"
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: 2,
-                background: '#F97316',
-                opacity: 0.6,
-              }}
-            />
-            Listening for mDNS announcements…
-          </div>
-        )}
-      </div>
-
-      <div
-        style={{
-          paddingTop: 8,
-          borderTop: '1px solid var(--border)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 10,
-        }}
-      >
-        <div
-          style={{
-            fontFamily: 'var(--font-sans)',
-            fontSize: 12,
-            color: 'var(--text-secondary)',
-            lineHeight: 1.5,
-          }}
-        >
-          Issue a pairing token in the MS UI under "Pair a recorder", then enter the MS address
-          and the token below. The MS operator must approve the recorder before pairing
-          completes.
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 10 }}>
-          <Input
-            label="SERVER ADDRESS"
-            value={serverAddr}
-            onChange={setServerAddr}
-            placeholder="https://ms.example.com:8443"
-            mono
-            disabled={pairStatus?.state === 'in_progress'}
-          />
-          <Input
-            label="PAIRING TOKEN"
-            value={token}
-            onChange={setToken}
-            placeholder="XXXX-XXXX-XXXX-XXXX-…"
-            mono
-            disabled={pairStatus?.state === 'in_progress'}
-          />
-        </div>
-        {error && (
-          <div
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              color: '#EF4444',
-            }}
-          >
-            {error}
-          </div>
-        )}
-        {pairStatus && pairStatus.state !== 'idle' && (
-          <div
-            style={{
-              padding: '10px 12px',
-              background: 'rgba(249,115,22,0.06)',
-              border: '1px solid rgba(249,115,22,0.27)',
-              borderRadius: 4,
-              fontFamily: 'var(--font-mono)',
-              fontSize: 11,
-              color: 'var(--text-primary)',
-            }}
-          >
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                letterSpacing: 1,
-                color: '#F97316',
-                textTransform: 'uppercase',
-                marginBottom: 4,
-              }}
-            >
-              STATE: {pairStatus.state.replace(/_/g, ' ')}
-            </div>
-            {pairStatus.detail && <div>{pairStatus.detail}</div>}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Btn
-            kind="primary"
-            icon="link"
-            onClick={doPair}
-            disabled={submitting || pairStatus?.state === 'in_progress'}
-          >
-            {submitting || pairStatus?.state === 'in_progress' ? 'Pairing…' : 'Pair'}
-          </Btn>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WizCameras({ state }: { state: AppState }) {
-  const onlineCount = state.cameras.filter((c) => c.status === 'online').length;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <p
-        style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: 13,
-          color: 'var(--text-secondary)',
-          margin: 0,
-          lineHeight: 1.5,
-        }}
-      >
-        Cameras discovered via ONVIF will appear here. You can skip this step and add cameras from the Cameras
-        page later.
-      </p>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
-        <Stat label="DISCOVERED" value={state.cameras.length} unit="" tone="accent" />
-        <Stat label="ONLINE" value={onlineCount} unit="" tone="success" />
-        <Stat label="CONFIGURED" value={onlineCount} unit="" tone="accent" />
-        <Stat label="RECORDING" value={onlineCount} unit="" tone="danger" />
-      </div>
-      <div
-        style={{
-          background: 'var(--bg-tertiary)',
-          border: '1px solid var(--border)',
-          borderRadius: 4,
-          overflow: 'hidden',
-          maxHeight: 220,
-          overflowY: 'auto',
-        }}
-      >
-        {state.cameras.slice(0, 5).map((c: UICamera, i) => (
-          <div
-            key={c.id}
-            style={{
-              padding: '8px 12px',
-              borderTop: i === 0 ? 'none' : '1px solid var(--border)',
-              display: 'grid',
-              gridTemplateColumns: '64px 1fr auto auto',
-              gap: 12,
-              alignItems: 'center',
-            }}
-          >
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{c.id}</span>
-            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-primary)' }}>{c.name}</span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-secondary)' }}>{c.ip}</span>
-            <StatusBadge kind={c.status} size="sm" />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WizFinish({ state }: { state: AppState }) {
-  const onlineCount = state.cameras.filter((c) => c.status === 'online').length;
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 16,
-        alignItems: 'center',
-        textAlign: 'center',
-        padding: '20px 0',
-      }}
-    >
-      <div
-        style={{
-          width: 64,
-          height: 64,
-          borderRadius: '50%',
-          background: 'rgba(249,115,22,0.13)',
-          border: '2px solid #F97316',
-          boxShadow: '0 0 24px rgba(249,115,22,0.45)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Icon name="check" style={{ width: 28, height: 28, color: '#F97316', strokeWidth: 3 }} />
-      </div>
-      <div
-        style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 11,
-          letterSpacing: 2,
-          color: '#F97316',
-          textTransform: 'uppercase',
-        }}
-      >
-        READY
-      </div>
-      <p
-        style={{
-          fontFamily: 'var(--font-sans)',
-          fontSize: 14,
-          color: 'var(--text-secondary)',
-          margin: 0,
-          maxWidth: 420,
-          lineHeight: 1.5,
-        }}
-      >
-        {onlineCount} cameras online, paired with {state.managementServer?.host || 'management server'}. Recording
-        rules will sync from the management server within 30 seconds.
-      </p>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3,1fr)',
-          gap: 10,
-          width: '100%',
-          maxWidth: 460,
-          marginTop: 8,
-        }}
-      >
-        {[
-          { k: 'PAIRED', v: state.managementServer?.host || '—' },
-          { k: 'CAMERAS', v: `${onlineCount}/${state.cameras.length}` },
-          { k: 'STORAGE', v: '256 GB / 2 TB' },
-        ].map((x) => (
-          <div
-            key={x.k}
-            style={{
-              padding: 10,
-              background: 'var(--bg-tertiary)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-            }}
-          >
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 9,
-                letterSpacing: 1,
-                color: 'var(--text-muted)',
-                textTransform: 'uppercase',
-              }}
-            >
-              {x.k}
-            </div>
-            <div
-              style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: 12,
-                color: '#F97316',
-                marginTop: 4,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {x.v}
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );

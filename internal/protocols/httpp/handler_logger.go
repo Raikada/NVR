@@ -32,6 +32,17 @@ func (w *loggerWriter) WriteHeader(statusCode int) {
 	w.w.WriteHeader(statusCode)
 }
 
+// Flush forwards to the underlying writer's Flush method when present.
+// Required for SSE (/v1/events/stream) so chunked-encoded responses
+// reach the client as soon as the handler writes; without it,
+// gin's responseWriter type-asserts http.Flusher on this wrapper, fails,
+// and the client blocks waiting for data still buffered server-side.
+func (w *loggerWriter) Flush() {
+	if f, ok := w.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func (w *loggerWriter) dump() string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "%s %d %s\n", "HTTP/1.1", w.status, http.StatusText(w.status))

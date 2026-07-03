@@ -32,35 +32,16 @@ import (
 )
 
 type v1RecorderIdentity struct {
-	ID                     string   `json:"id"`
-	TenantID               string   `json:"tenant_id"`
-	Hostname               string   `json:"hostname"`
-	Location               string   `json:"location"`
-	Timezone               string   `json:"timezone"`
-	FirmwareVersion        string   `json:"firmware_version"`
-	Paired                 bool     `json:"paired"`
-	PublicKeyFingerprint   string   `json:"public_key_fingerprint"`
-	PinnedRootFingerprints []string `json:"pinned_root_fingerprints"`
-	// CanonicalSource is `recorder` pre-slice-4-B-import or `ms` once
-	// the recorder has accepted its first MS-source Camera mutation per
-	// ADR 0016 D3. Used by the recorder's local SPA to grey out
-	// Add/Edit/Delete on the Cameras page when MS-canonical.
-	CanonicalSource string `json:"canonical_source"`
-	// PolicyCanonicalSource is the slice-4-C analogue per ADR 0017 D3:
-	// `recorder` pre-import or `ms` once the recorder has accepted its
-	// first MS-source RecordingPolicy mutation. Independent of
-	// CanonicalSource (Camera) — a recorder may be at canonical_source
-	// = ms AND policy_canonical_source = recorder during the
-	// 4-B → 4-C migration. Used by the local SPA to grey out
-	// Add/Edit/Delete on the Policies page when MS-canonical.
-	PolicyCanonicalSource string `json:"policy_canonical_source"`
+	ID                   string `json:"id"`
+	Hostname             string `json:"hostname"`
+	Location             string `json:"location"`
+	Timezone             string `json:"timezone"`
+	FirmwareVersion      string `json:"firmware_version"`
+	PublicKeyFingerprint string `json:"public_key_fingerprint"`
 
-	// PendingSoftwareUpdate (Wave A2) is the most-recent MS-approved
-	// software-update lifecycle row this recorder has discovered via
-	// the updatepoll goroutine. nil when no update is approved (or
-	// the poller hasn't completed its first cycle yet, or the
-	// recorder is unpaired). The recorder SPA renders a "Software
-	// update available" badge when this is non-nil.
+	// PendingSoftwareUpdate is the most-recent approved
+	// software-update lifecycle row this recorder has discovered.
+	// nil when no update is approved.
 	PendingSoftwareUpdate *PendingSoftwareUpdate `json:"pending_software_update,omitempty"`
 
 	// PendingSoftwareUpdatePolledAt is the wall-clock timestamp of the
@@ -72,10 +53,8 @@ type v1RecorderIdentity struct {
 func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 	a.mutex.RLock()
 	c := a.Conf
-	tenant := ""
 	location := ""
 	if c != nil {
-		tenant = c.TenantID
 		location = c.ServerLocation
 	}
 	a.mutex.RUnlock()
@@ -84,29 +63,19 @@ func (a *API) onV1RecorderIdentityGet(ctx *gin.Context) {
 	tzName, _ := time.Now().Zone()
 
 	resp := &v1RecorderIdentity{
-		TenantID:               tenant,
-		Hostname:               hostname,
-		Location:               location,
-		Timezone:               tzName,
-		FirmwareVersion:        a.Version,
-		PinnedRootFingerprints: []string{},
-		CanonicalSource:        "recorder",
-		PolicyCanonicalSource:  "recorder",
+		Hostname:        hostname,
+		Location:        location,
+		Timezone:        tzName,
+		FirmwareVersion: a.Version,
 	}
 
 	// Identity is set in production by Core.createResources; absent
 	// in some lightweight test harnesses. Defensive nil-check.
 	if a.Identity != nil {
 		resp.ID = a.Identity.ID().String()
-		resp.Paired = a.Identity.IsPaired()
 		if fp, err := a.Identity.PublicKeyFingerprint(); err == nil {
 			resp.PublicKeyFingerprint = fp
 		}
-		for _, r := range a.Identity.PinnedRoots() {
-			resp.PinnedRootFingerprints = append(resp.PinnedRootFingerprints, r.FingerprintSHA256)
-		}
-		resp.CanonicalSource = a.Identity.CanonicalSource()
-		resp.PolicyCanonicalSource = a.Identity.PolicyCanonicalSource()
 	}
 
 	a.mutex.RLock()
@@ -135,16 +104,10 @@ func (a *API) onV1RecorderIdentityPatch(ctx *gin.Context) {
 	}
 
 	var meta struct {
-		TenantID *string `json:"tenant_id"`
 		Location *string `json:"location"`
 	}
 	if jerr := json.Unmarshal(body, &meta); jerr != nil {
 		a.writeError(ctx, http.StatusBadRequest, jerr)
-		return
-	}
-	if meta.TenantID != nil && *meta.TenantID != a.tenantID() {
-		a.writeError(ctx, http.StatusForbidden,
-			fmt.Errorf("tenant_id mismatch: recorder is bound to a different tenant"))
 		return
 	}
 	if meta.Location == nil {

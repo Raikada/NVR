@@ -2,25 +2,37 @@
 package api //nolint:revive
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
+	"github.com/bluenviron/mediamtx/internal/cameracred"
+	"github.com/bluenviron/mediamtx/internal/cameras"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/discovery"
+	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
 	"github.com/bluenviron/mediamtx/internal/logger"
 	"github.com/bluenviron/mediamtx/internal/mdns"
-	"github.com/bluenviron/mediamtx/internal/pairing"
+	"github.com/bluenviron/mediamtx/internal/mediasign"
+	"github.com/bluenviron/mediamtx/internal/notifications"
+	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/protocols/httpp"
+	"github.com/bluenviron/mediamtx/internal/rbac"
+	"github.com/bluenviron/mediamtx/internal/retention"
+	"github.com/bluenviron/mediamtx/internal/schedule"
+	"github.com/bluenviron/mediamtx/internal/store"
 	"github.com/bluenviron/mediamtx/internal/web"
 )
 
@@ -56,7 +68,6 @@ func paramName(ctx *gin.Context) (string, bool) {
 type apiAuthManager interface {
 	Authenticate(req *auth.Request) (string, *auth.Error)
 	AuthenticateWithClaims(req *auth.Request) (string, auth.Claims, *auth.Error)
-	RefreshJWTJWKS()
 }
 
 type apiParent interface {
@@ -81,7 +92,6 @@ type API struct {
 	AuthManager    apiAuthManager
 	Identity       *identity.Identity
 	LocalAuth      *localauth.Manager
-	Pairing        *pairing.Manager
 	MDNS           *mdns.Service
 	PathManager    defs.APIPathManager
 	RTSPServer     defs.APIRTSPServer
@@ -93,29 +103,39 @@ type API struct {
 	SRTServer      defs.APISRTServer
 	Parent         apiParent
 
+	// Phase 5 wiring: foundation services. Set by Core (Phase 6) via direct
+	// struct initialization. May be nil during early bootstrap or in tests
+	// — handlers must defensively check before use.
+	Store           *store.Store
+	CamerasService  *cameras.Service
+	EventsService   *events.Service
+	ScheduleResolver *schedule.Resolver
+	NotifDispatcher *notifications.Dispatcher
+	RetentionMgr    *retention.Manager
+	Vault           *cameracred.Vault
+
+	// SP2 wiring: LAN discovery cache + ONVIF capability probe.
+	// ProbeCapabilitiesFn defaults to onvif.ProbeCapabilities when nil;
+	// tests inject fakes.
+	Discovery           *discovery.Service
+	ProbeCapabilitiesFn func(ctx context.Context, xaddr, username, password string) (*onvif.CapabilityReport, error)
+
+	// SP4 wiring: HMAC signer for short-TTL media URLs (snapshots,
+	// clip downloads).
+	Signer *mediasign.Signer
+
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
 	networkProbe *networkProbe
-
-	// cameraAppliedVersions tracks the most recent MS-issued version
-	// applied per camera id (slice 4-B per ADR 0016 D4). Populated by
-	// the camerasync apply path; read by the apply diff. Guarded by
-	// a.mutex (write-locked during apply, read-locked otherwise).
-	// Transient — recovered on the next poll if the recorder restarts.
-	cameraAppliedVersions map[string]int64
-	// policyAppliedVersions is the slice-4-C analogue per ADR 0017 D4.
-	// Populated by the policysync apply path. Same locking convention.
-	policyAppliedVersions map[string]int64
 
 	// Wave 6: software-update applier. Wired by Core at startup when a
 	// pinned Raikada release public key is configured. Guarded by
 	// a.mutex.
 	softwareUpdateApplier softwareUpdateApplierField
 
-	// Wave A2: process-wide cache of MS-approved update lifecycle rows
-	// for this recorder. Read-only access from the
-	// /v1/recorder/identity handler; populated by internal/updatepoll's
-	// goroutine. Wired lazily via SetUpdatePollState.
+	// updatePollState is a process-wide cache of approved update
+	// lifecycle rows for this recorder. Read-only access from the
+	// /v1/recorder/identity handler.
 	updatePollState UpdatePollSnapshot
 }
 
@@ -150,6 +170,26 @@ func (a *API) SetUpdatePollState(s UpdatePollSnapshot) {
 }
 
 // Initialize initializes API.
+//
+// Authentication / authorization model (Phase 5 Task 5.9):
+//
+//   - middlewareAuth runs before every request. It honors the
+//     isPreAuthBypassPath list (login, /v1/info, /v1/system/setup-status,
+//     /v1/system/info, the SPA static assets) by stashing an
+//     unauthenticated principal and letting the handler proceed. All
+//     other routes require the auth manager to validate the JWT (or
+//     legacy internal/HTTP credentials). On success, the per-request
+//     Principal AND an rbac.Claims projection are stored on
+//     gin.Context — the latter is what rbac.RequirePerm reads.
+//
+//   - Existing /v1/* handlers continue to gate via a.requirePermission(...)
+//     which reads the legacy Principal.Scope. Phase 5 NEW handlers gate
+//     via rbac.RequirePerm(rbac.Perm*, a.auditEmitter()) which reads
+//     rbac.Claims.Role. The two coexist; both write the same
+//     auth.permission_denied audit row on denial.
+//
+//   - /v1/health is authenticated but un-gated (no permission required)
+//     since it's the standard liveness probe operators run.
 func (a *API) Initialize() error {
 	router := gin.New()
 	router.SetTrustedProxies(a.TrustedProxies.ToTrustedProxies()) //nolint:errcheck
@@ -174,6 +214,46 @@ func (a *API) Initialize() error {
 	// still rotate.
 	group.POST("/recorder/login", a.onV1RecorderLogin)
 	group.POST("/recorder/local-users/me/password", a.onV1RecorderLocalUsersMePasswordPost)
+
+	// Phase 5: consumer-friendly auth endpoints. Login/me/password are
+	// aliases over the recorder-local authentication path. Logout is new.
+	// Login is anonymous (pre-auth bypass list above); the others gate
+	// on the standard authenticated principal.
+	group.POST("/auth/login", a.onV1AuthLogin)
+	group.POST("/auth/logout", a.onV1AuthLogout)
+	group.POST("/auth/password", a.onV1AuthPassword)
+	group.GET("/auth/me", a.onV1AuthMe)
+
+	// Phase 5 Task 5.2: per-camera credentials, probe, health,
+	// recording-state. Additive surfaces alongside the existing /v1/cameras
+	// CRUD which remains rooted in the path manager.
+	a.registerV1CameraExtensions(group)
+
+	// SP2: LAN discovery + adopt + capability probe.
+	a.registerV1Discovery(group)
+
+	// SP4: signed media fetch + event-to-clip.
+	a.registerV1Media(group)
+
+	// Phase 5 Task 5.3: camera groups CRUD.
+	a.registerV1CameraGroups(group)
+
+	// Phase 5 Task 5.4: recording policy schedule windows.
+	a.registerV1RecordingSchedules(group)
+
+	// Phase 5 Task 5.5: events ack + SSE stream + event-types + event-retention.
+	a.registerV1EventsExtensions(group)
+
+	// Phase 5 Task 5.6: notification targets/subs/outbox + test endpoint.
+	a.registerV1Notifications(group)
+
+	// Phase 5 Task 5.7: system settings/TLS/retention sweep + anonymous
+	// setup-status/info probes.
+	a.registerV1SystemEndpoints(group)
+
+	// Phase 5 Task 5.8: audit log export/purge + user management.
+	a.registerV1AuditExtensions(group)
+	a.registerV1Users(group)
 
 	// Auth endpoint renamed mechanism-neutrally per ADR 0009 §D7.
 	// ADR 0011 picked JWT/JWKS for user-facing flows and mTLS X.509
@@ -275,23 +355,12 @@ func (a *API) Initialize() error {
 	group.GET("/recorder/config-backup", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigBackup)
 	group.POST("/recorder/config-restore", a.requirePermission("recorder_config.manage"), a.onV1RecorderConfigRestore)
 	group.GET("/recorder/network-info", a.requirePermission("health.read"), a.onV1RecorderNetworkInfo)
-	// Pairing — recorder-side trigger + status for the MS pairing
-	// flow. Operator drives this from the Setup Wizard. ADR 0015
-	// device_lifecycle.manage covers pair/unpair/discover.
-	group.POST("/recorder/pair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairPost)
-	group.GET("/recorder/pair/status", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairStatusGet)
-	group.POST("/recorder/pair/reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderPairResetPost)
-	group.POST("/recorder/unpair", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderUnpairPost)
 	// Wave 7 / ADR 0015 device-lifecycle:
-	//   - config-reset    (D7)  preserves identity + recordings + audit
 	//   - factory-wipe    (D8)  destructive, two-stage confirmation
 	//   - recovery-bundle (D19) signed manifest, no private keys
-	group.POST("/recorder/config-reset", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderConfigResetPost)
 	group.POST("/recorder/factory-wipe", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderFactoryWipePost)
 	group.POST("/recorder/recovery-bundle", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderRecoveryBundleExport)
-	group.GET("/recorder/discovered-management", a.requirePermission("device_lifecycle.manage"), a.onV1RecorderDiscoveredManagementGet)
-	// Wave 6: software-update apply endpoint. The MS pushes here with
-	// scope ["software_update.manage"] in its service JWT.
+	// Wave 6: software-update apply endpoint.
 	group.POST("/recorder/software-updates/apply", a.requirePermission("software_update.manage"), a.onV1RecorderSoftwareUpdateApplyPost)
 	// Diagnostics suite (cross-platform; no shell-outs). ping + ntp
 	// are recorder-config-manage; rtsp-probe targets a camera and
@@ -432,7 +501,7 @@ func (a *API) middlewarePreflightRequests(ctx *gin.Context) {
 // Anything else falls through to authentication. The list is path-
 // prefix matched; route-shape changes must update this list explicitly.
 func isPreAuthBypassPath(method, path string) bool {
-	if method == http.MethodPost && path == "/v1/recorder/login" {
+	if method == http.MethodPost && (path == "/v1/recorder/login" || path == "/v1/auth/login") {
 		return true
 	}
 	if method != http.MethodGet {
@@ -445,8 +514,14 @@ func isPreAuthBypassPath(method, path string) bool {
 	if len(path) >= len("/assets/") && path[:len("/assets/")] == "/assets/" {
 		return true
 	}
-	// Anonymous /v1/info — the operator-UI liveness probe used pre-login.
-	if path == "/v1/info" {
+	// Anonymous /v1/info, /v1/system/setup-status, /v1/system/info — the
+	// operator-UI liveness/setup probes used pre-login per Phase 5.
+	// SP4 signed media URLs authenticate via HMAC signature, not JWT
+	// (img tags / webhook consumers can't send headers).
+	if strings.HasPrefix(path, "/v1/media/") {
+		return true
+	}
+	if path == "/v1/info" || path == "/v1/system/setup-status" || path == "/v1/system/info" {
 		return true
 	}
 	return false
@@ -571,6 +646,12 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	}
 
 	setPrincipalOnContext(ctx, principal)
+	// Phase 5 wiring: also stash the rbac.Claims projection so the new
+	// rbac.RequirePerm middleware can consume it directly. Roles are
+	// derived from the principal's Scope per claimsFromPrincipal; bootstrap
+	// admins read RoleAdmin, MediaMTX internal/HTTP auth callers read
+	// RoleAdmin (legacy compat), everything else falls back to Viewer.
+	ctx.Set(rbac.ClaimsContextKey, claimsFromPrincipal(principal))
 
 	// Successful authentication: emit an audit entry per ADR 0006 D1.
 	// Now that ADR 0011 is Accepted, the resolved Principal carries
@@ -630,13 +711,9 @@ func (a *API) onInfo(ctx *gin.Context) {
 }
 
 // onV1AuthRefreshIssuerMaterial handles POST /v1/auth/refresh-issuer-material.
-// Renamed from /v3/auth/jwks/refresh per ADR 0009 §D7 to be mechanism-neutral.
-// ADR 0011 picked JWT/JWKS for user flows and mTLS for service-to-service;
-// the mechanism-neutral name was retained so additional issuer-material
-// kinds (e.g., mTLS trust roots) can flow through this endpoint without a
-// rename. Today the body refreshes the JWKS cache.
+// Consumer NVR no longer pulls remote JWKS; the endpoint is preserved as a
+// no-op so existing clients can call it without 404'ing.
 func (a *API) onV1AuthRefreshIssuerMaterial(ctx *gin.Context) {
-	a.AuthManager.RefreshJWTJWKS()
 	a.writeOK(ctx)
 }
 

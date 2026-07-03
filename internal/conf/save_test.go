@@ -20,8 +20,7 @@ func TestSaveToFileRoundTrips(t *testing.T) {
 	// recording policy. RecordingPolicyID must round-trip to disk per
 	// the persistence work; ID is derive-on-load (not persisted).
 	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
-			"paths:\n"+
+		"paths:\n"+
 			"  cam1:\n"+
 			"    source: rtsp://example.com:554/stream\n"+
 			"    sourceOnDemand: true\n"+
@@ -47,7 +46,6 @@ func TestSaveToFileRoundTrips(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, reloaded.Paths["cam1"])
 	require.Equal(t, DefaultRecordingPolicyID, reloaded.Paths["cam1"].RecordingPolicyID)
-	require.Equal(t, original.TenantID, reloaded.TenantID)
 	require.Equal(t, original.Paths["cam1"].Source, reloaded.Paths["cam1"].Source)
 }
 
@@ -56,8 +54,7 @@ func TestSaveToFileRoundTrips(t *testing.T) {
 func TestSaveToFilePreservesPermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	existing := filepath.Join(tmpDir, "existing.yml")
-	require.NoError(t, os.WriteFile(existing, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o600))
+	require.NoError(t, os.WriteFile(existing, []byte(""), 0o600))
 
 	cnf, _, err := Load(existing, nil, nil)
 	require.NoError(t, err)
@@ -84,8 +81,7 @@ func TestSaveToFilePreservesPermissions(t *testing.T) {
 func TestSaveToFileAtomicityNoLeftoverTemps(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "mediamtx.yml")
-	require.NoError(t, os.WriteFile(path, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+	require.NoError(t, os.WriteFile(path, []byte(""), 0o644))
 
 	cnf, _, err := Load(path, nil, nil)
 	require.NoError(t, err)
@@ -106,8 +102,7 @@ func TestSaveToFileAtomicityNoLeftoverTemps(t *testing.T) {
 func TestSaveToFileFailureLeavesOriginalIntact(t *testing.T) {
 	tmpDir := t.TempDir()
 	source := filepath.Join(tmpDir, "src.yml")
-	originalContent := []byte("tenantId: 00000000-0000-0000-0000-000000000000\n" +
-		"paths:\n" +
+	originalContent := []byte("paths:\n" +
 		"  cam1:\n" +
 		"    source: rtsp://example.com/s\n" +
 		"    sourceOnDemand: true\n")
@@ -133,8 +128,7 @@ func TestSaveToFileFailureLeavesOriginalIntact(t *testing.T) {
 func TestSaveLoadCameraAddDeleteRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
-	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+	require.NoError(t, os.WriteFile(confPath, []byte(""), 0o644))
 
 	cnf, _, err := Load(confPath, nil, nil)
 	require.NoError(t, err)
@@ -174,8 +168,7 @@ func TestSaveLoadCameraAddDeleteRoundTrip(t *testing.T) {
 func TestSaveLoadRecordingPolicyRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
-	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+	require.NoError(t, os.WriteFile(confPath, []byte(""), 0o644))
 
 	cnf, _, err := Load(confPath, nil, nil)
 	require.NoError(t, err)
@@ -219,9 +212,8 @@ func TestSaveLoadRecordingPolicyRoundTrip(t *testing.T) {
 func TestBootFromEmptyYAMLSeedsDefaultPolicy(t *testing.T) {
 	tmpDir := t.TempDir()
 	confPath := filepath.Join(tmpDir, "mediamtx.yml")
-	// Minimal: just tenant id, no paths, no policies.
-	require.NoError(t, os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"), 0o644))
+	// Minimal: empty file, no paths, no policies.
+	require.NoError(t, os.WriteFile(confPath, []byte(""), 0o644))
 
 	cnf, _, err := Load(confPath, nil, nil)
 	require.NoError(t, err)

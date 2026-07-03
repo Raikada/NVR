@@ -40,6 +40,26 @@ type Store struct {
 
 	LocalUsers         *LocalUsersRepo
 	OnvifSubscriptions *OnvifSubscriptionsRepo
+	Roles              *RolesRepo
+	CameraGroups       *CameraGroupsRepo
+	Cameras            *CamerasRepo
+	CameraCredentials  *CameraCredentialsRepo
+	CameraCapabilities *CameraCapabilitiesRepo
+	CameraHealth       *CameraHealthRepo
+	RecordingPolicies  *RecordingPoliciesRepo
+	RecordingSchedules *RecordingSchedulesRepo
+	EventTypes         *EventTypesRepo
+	EventRetention     *EventRetentionRepo
+	Events             *EventsRepo
+	EventSnapshots     *EventSnapshotsRepo
+	Clips               *ClipsRepo
+	ClipSegments        *ClipSegmentsRepo
+	NotificationTargets       *NotificationTargetsRepo
+	NotificationSubscriptions *NotificationSubscriptionsRepo
+	NotificationOutbox        *NotificationOutboxRepo
+	AuditLog                  *AuditLogRepo
+	CloudOutbox               *CloudOutboxRepo
+	SystemSettings            *SystemSettingsRepo
 }
 
 // Open opens (or creates) the SQLite database at path, applies all
@@ -75,6 +95,26 @@ func Open(path string) (*Store, error) {
 	s := &Store{DB: db}
 	s.LocalUsers = &LocalUsersRepo{db: db}
 	s.OnvifSubscriptions = &OnvifSubscriptionsRepo{db: db}
+	s.Roles = &RolesRepo{db: db}
+	s.CameraGroups = &CameraGroupsRepo{db: db}
+	s.Cameras = &CamerasRepo{db: db}
+	s.CameraCredentials = &CameraCredentialsRepo{db: db}
+	s.CameraCapabilities = &CameraCapabilitiesRepo{db: db}
+	s.CameraHealth = &CameraHealthRepo{db: db}
+	s.RecordingPolicies = &RecordingPoliciesRepo{db: db}
+	s.RecordingSchedules = &RecordingSchedulesRepo{db: db}
+	s.EventTypes = &EventTypesRepo{db: db}
+	s.EventRetention = &EventRetentionRepo{db: db}
+	s.Events = &EventsRepo{db: db}
+	s.EventSnapshots = &EventSnapshotsRepo{db: db}
+	s.Clips = &ClipsRepo{db: db}
+	s.ClipSegments = &ClipSegmentsRepo{db: db}
+	s.NotificationTargets = &NotificationTargetsRepo{db: db}
+	s.NotificationSubscriptions = &NotificationSubscriptionsRepo{db: db}
+	s.NotificationOutbox = &NotificationOutboxRepo{db: db}
+	s.AuditLog = &AuditLogRepo{db: db}
+	s.CloudOutbox = &CloudOutboxRepo{db: db}
+	s.SystemSettings = &SystemSettingsRepo{db: db}
 	return s, nil
 }
 
@@ -125,9 +165,16 @@ func FormatTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
-// ParseTime parses a stored timestamp.
+// ParseTime parses a stored timestamp. Rows the store writes itself
+// carry FormatTime's exact .000 form, but migrations (strftime) and
+// external writers use other RFC3339 variants — accept them all (F8,
+// 2026-07-02 smoke).
 func ParseTime(s string) (time.Time, error) {
-	return time.Parse("2006-01-02T15:04:05.000Z07:00", s)
+	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", s)
+	if err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339Nano, s)
 }
 
 // rowScanner abstracts *sql.Row and *sql.Rows so per-row scan helpers

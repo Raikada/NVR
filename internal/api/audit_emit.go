@@ -52,25 +52,20 @@ func defaultAuditChain() *AuditChain {
 }
 
 // emitAudit is the unlocked-caller variant: callers that do NOT hold
-// a.mutex use this, e.g. the auth middleware. Acquires a.mutex
-// through a.tenantID().
+// a.mutex use this, e.g. the auth middleware.
+//
+// Phase 5 simplification: the consumer NVR is single-tenant by
+// construction so we no longer thread tenant_id through. The chain
+// machinery still accepts a tenant string but always receives "".
 func (a *API) emitAudit(in defs.AuditLogEntryInput) {
-	tenantID := ""
-	if a != nil {
-		tenantID = a.tenantID()
-	}
-	_, _ = defaultAuditChain().Append(in, tenantID, "")
+	_, _ = defaultAuditChain().Append(in, "", "")
 }
 
-// emitAuditLocked is for callers that already hold a.mutex (write or
-// read). Reads a.Conf.TenantID directly without re-acquiring the
-// mutex, matching publishEventLocked's pattern.
+// emitAuditLocked is for callers that already hold a.mutex.
+// Identical to emitAudit now that tenant scoping is removed; preserved
+// as a separate name to avoid touching every existing call site.
 func (a *API) emitAuditLocked(in defs.AuditLogEntryInput) {
-	tenantID := ""
-	if a != nil && a.Conf != nil {
-		tenantID = a.Conf.TenantID
-	}
-	_, _ = defaultAuditChain().Append(in, tenantID, "")
+	_, _ = defaultAuditChain().Append(in, "", "")
 }
 
 // emitConfigAppliedLocked is the convenience wrapper config-write

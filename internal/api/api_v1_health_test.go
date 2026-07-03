@@ -44,8 +44,9 @@ func TestV1HealthGetSnapshotShape(t *testing.T) {
 	_, err = uuid.Parse(got.ID)
 	require.NoError(t, err, "snapshot id must be a UUID")
 
-	// tenant_id propagates from conf.
-	require.Equal(t, cnf.TenantID, got.TenantID)
+	// tenant_id is empty in the consumer NVR (single-tenant by construction).
+	_ = cnf
+	require.Equal(t, "", got.TenantID)
 
 	// uptime > 0 (we set Started two minutes in the past).
 	require.Greater(t, got.Uptime, time.Duration(0))

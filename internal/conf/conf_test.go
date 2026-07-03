@@ -1,7 +1,6 @@
 package conf
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"io"
@@ -16,32 +15,8 @@ import (
 	"github.com/bluenviron/mediamtx/internal/logger"
 )
 
-// TestMain sets a sentinel MTX_TENANT_ID for the whole package. Conf.Validate
-// now requires tenantId per D1 in canonical-divergences.md, and tests that
-// load from defaults-only or from env-only paths bypass the file fixture
-// helper below; setting the env var globally lets those tests still load a
-// valid Conf without each one having to opt in.
-func TestMain(m *testing.M) {
-	const sentinel = "00000000-0000-0000-0000-000000000000"
-	if err := os.Setenv("MTX_TENANTID", sentinel); err != nil {
-		panic(err)
-	}
-	os.Exit(m.Run())
-}
-
-// createTempFile writes test config bytes to a temp file. It injects a
-// sentinel tenantId for YAML configs that don't already specify one,
-// because Conf.Validate now requires the field per D1 in
-// canonical-divergences.md. JSON-encoded configs, binary fixtures, and
-// configs that already include tenantId pass through unchanged.
+// createTempFile writes test config bytes to a temp file.
 func createTempFile(byts []byte) (string, error) {
-	trimmed := bytes.TrimSpace(byts)
-	looksLikeYAMLConfig := !bytes.HasPrefix(trimmed, []byte("{")) &&
-		bytes.ContainsAny(byts, ":#") // YAML configs always contain ':' or '#'
-	if looksLikeYAMLConfig && !bytes.Contains(byts, []byte("tenantId:")) {
-		byts = append([]byte("tenantId: 00000000-0000-0000-0000-000000000000\n"), byts...)
-	}
-
 	tmpf, err := os.CreateTemp(os.TempDir(), "rtsp-")
 	if err != nil {
 		return "", err
@@ -298,8 +273,7 @@ func TestConfErrors(t *testing.T) {
 			"duplicate parameter",
 			"paths:\n" +
 				"paths:\n",
-			// line numbers reflect the prepended tenantId line from createTempFile (D1).
-			"[3:1] mapping key \"paths\" already defined at [2:1]\n   2 |  null\n>  3 | paths:\n       ^\n",
+			"[2:1] mapping key \"paths\" already defined at [1:1]\n   1 |  null\n>  2 | paths:\n       ^\n",
 		},
 		{
 			"non existent parameter",
@@ -394,23 +368,8 @@ func TestConfErrors(t *testing.T) {
 			`all_others, all and '~^.*$' are aliases`,
 		},
 		{
-			"jwt jwks empty",
-			"authMethod: jwt\n" +
-				"authJWTJWKS: \"\"\n" +
-				"authJWTClaimKey: test",
-			"'authJWTJWKS' is empty",
-		},
-		{
-			"invalid jwt jwks url",
-			"authMethod: jwt\n" +
-				"authJWTJWKS: ftp://invalid\n" +
-				"authJWTClaimKey: test",
-			"'authJWTJWKS' must be a HTTP URL",
-		},
-		{
 			"jwt claim key empty",
 			"authMethod: jwt\n" +
-				"authJWTJWKS: https://not-real.com\n" +
 				"authJWTClaimKey: \"\"",
 			"'authJWTClaimKey' is empty",
 		},
@@ -847,7 +806,7 @@ func TestClone(t *testing.T) {
 // under DefaultRecordingPolicyID. The seed survives subsequent
 // Validate() calls (idempotent — re-Validate doesn't duplicate it).
 func TestDefaultRecordingPolicySeededOnEmptyMap(t *testing.T) {
-	tmpf, err := createTempFile([]byte("tenantId: 00000000-0000-0000-0000-000000000000\n"))
+	tmpf, err := createTempFile([]byte(""))
 	require.NoError(t, err)
 	defer os.Remove(tmpf)
 
@@ -877,8 +836,7 @@ func TestDefaultRecordingPolicySeededOnEmptyMap(t *testing.T) {
 // previous-session-persisted) preserves the operator's edits exactly.
 func TestDefaultRecordingPolicyNotDuplicatedWhenAlreadyPresent(t *testing.T) {
 	tmpf, err := createTempFile([]byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n" +
-			"recordingPolicies:\n" +
+		"recordingPolicies:\n" +
 			"  00000000-0000-0000-0000-000000000001:\n" +
 			"    name: \"Default (Edited)\"\n" +
 			"    mode: continuous\n" +

@@ -353,7 +353,9 @@ func TestPermGate_ServiceAccountWithRBACEnforced(t *testing.T) {
 }
 
 // TestPermGate_ScopeKindTenantMatching verifies scope_kind=tenant +
-// matching scope_target_id passes scope_kind validation.
+// matching scope_target_id passes scope_kind validation. Consumer NVR
+// is single-tenant by construction (tenant_id=""), so a JWT carrying
+// scope_target_id="" matches.
 func TestPermGate_ScopeKindTenantMatching(t *testing.T) {
 	f := newPermGatingFixture(t, auth.Claims{
 		Method:        conf.AuthMethodJWT,
@@ -361,8 +363,8 @@ func TestPermGate_ScopeKindTenantMatching(t *testing.T) {
 		PrincipalKind: "cloud_user",
 		Scope:         adr0010ViewerScope,
 		ScopeKind:     "tenant",
-		// tenant_id matches the recorder's bound tenant (sentinel from tempConf).
-		ScopeTargetID: "00000000-0000-0000-0000-000000000000",
+		// tenant_id matches the recorder's empty tenant binding.
+		ScopeTargetID: "",
 	})
 
 	require.NotEqual(t, http.StatusForbidden,
@@ -370,21 +372,23 @@ func TestPermGate_ScopeKindTenantMatching(t *testing.T) {
 		"scope_kind=tenant + matching tenant_id must pass")
 }
 
-// TestPermGate_ScopeKindTenantMismatch verifies scope_kind=tenant +
-// non-matching scope_target_id is rejected with 403.
-func TestPermGate_ScopeKindTenantMismatch(t *testing.T) {
+// TestPermGate_ScopeKindTenantMismatchAcceptedSingleTenant verifies that
+// the consumer NVR (single-tenant by construction; tenant_id="") accepts
+// any scope_kind=tenant scope_target_id. This is a relaxation from the
+// MS-coupled behaviour; downstream scope-name gating still applies.
+func TestPermGate_ScopeKindTenantMismatchAcceptedSingleTenant(t *testing.T) {
 	f := newPermGatingFixture(t, auth.Claims{
 		Method:        conf.AuthMethodJWT,
 		Subject:       "user-uuid",
 		PrincipalKind: "cloud_user",
 		Scope:         adr0010ViewerScope,
 		ScopeKind:     "tenant",
-		ScopeTargetID: "ffffffff-ffff-ffff-ffff-ffffffffffff", // wrong tenant
+		ScopeTargetID: "ffffffff-ffff-ffff-ffff-ffffffffffff",
 	})
 
-	require.Equal(t, http.StatusForbidden,
+	require.NotEqual(t, http.StatusForbidden,
 		f.makeReq(t, http.MethodGet, "/v1/cameras"),
-		"scope_kind=tenant + wrong tenant_id must fail")
+		"scope_kind=tenant on a single-tenant recorder accepts any scope_target_id")
 }
 
 // TestPermGate_ScopeKindRecordingServerMatching verifies scope_kind=

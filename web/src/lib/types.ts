@@ -38,17 +38,6 @@ export interface UICamera {
   recording_policy_id?: string;
 }
 
-/* ---------- Management server pairing ---------- */
-
-export interface ManagementServer {
-  host: string;
-  ip: string;
-  mac: string;
-  cameras: number;
-  ver: string;
-  trust?: 'SIGNED' | 'SELF';
-}
-
 /* ---------- App-level state ---------- */
 
 export interface AppState {
@@ -59,8 +48,6 @@ export interface AppState {
   gateway: string;
   cameraCount: number;
   recordingCount: number;
-  paired: boolean;
-  managementServer: ManagementServer | null;
   cameras: UICamera[];
 }
 
@@ -69,13 +56,15 @@ export interface AppState {
 export const ROUTES = [
   'overview',
   'cameras',
+  'events',
   'policies',
-  'pairing',
   'storage',
   'network',
   'logs',
   'diagnostics',
   'settings',
+  'users',
+  'notifications',
 ] as const;
 
 export type Route = (typeof ROUTES)[number];
@@ -101,3 +90,71 @@ export interface Toast extends ToastInput {
 
 /* Helper to map design's status-badge "kind" string to a typed value. */
 export type BadgeKind = StatusBadgeKind;
+
+/* ---------- Foundation entities ---------- */
+
+export type Role = 'admin' | 'viewer';
+
+export interface User {
+  id: string;
+  username: string;
+  display_name?: string;
+  role: Role;
+  email?: string;
+  language?: string;
+  is_active: boolean;
+  must_change_password: boolean;
+  last_login_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CameraGroup {
+  id: string;
+  name: string;
+  display_order: number;
+}
+
+export interface RecordingSchedule {
+  id?: string;
+  policy_id?: string;
+  day_of_week: number; // 0=Sun..6=Sat
+  start: string; // 'HH:MM'
+  end: string;
+}
+
+export interface EventType {
+  id: string;
+  display_name: string;
+  vendor?: string;
+  description?: string;
+}
+
+export type NotificationTargetKind = 'webhook' | 'email';
+
+export interface NotificationTarget {
+  id: string;
+  kind: NotificationTargetKind;
+  name: string;
+  webhook_url?: string;
+  email_address?: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export type NotificationSeverity = 'info' | 'warning' | 'critical';
+
+export interface NotificationSubscription {
+  id: string;
+  target_id: string;
+  event_type_id?: string;
+  camera_id?: string;
+  min_severity?: NotificationSeverity;
+  quiet_hours_start_minute?: number;
+  quiet_hours_end_minute?: number;
+}
+
+export interface MeResponse {
+  user: User;
+  permissions: string[];
+}

@@ -100,12 +100,62 @@ func (a *API) onV1ClipsPost(ctx *gin.Context) {
 		return
 	}
 
+	clip, err := a.createClip(clipCreateParams{
+		CameraID:       req.CameraID,
+		RequestedBy:    req.RequestedBy,
+		Label:          req.Label,
+		Description:    req.Description,
+		RangeStartedAt: req.RangeStartedAt,
+		RangeEndedAt:   req.RangeEndedAt,
+		ExpiresAt:      req.ExpiresAt,
+	})
+	if err != nil {
+		var nseg *clipNoSegmentsError
+		switch {
+		case errors.As(err, &nseg):
+			a.writeError(ctx, http.StatusBadRequest, errors.New("no recording segments overlap the requested range"))
+		case errors.Is(err, errClipCameraNotFound):
+			a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
+		default:
+			a.writeError(ctx, http.StatusInternalServerError, err)
+		}
+		return
+	}
+
+	resp := v1ClipResponse{Clip: *clip}
+	ctx.JSON(http.StatusCreated, &resp)
+}
+
+// clipCreateParams is the shared input for ad-hoc (POST /v1/clips) and
+// event-derived (POST /v1/events/:id/clip) clip creation.
+type clipCreateParams struct {
+	CameraID       string
+	RequestedBy    string
+	Label          string
+	Description    *string
+	RangeStartedAt time.Time
+	RangeEndedAt   time.Time
+	ExpiresAt      *time.Time
+	EventID        string
+}
+
+// clipNoSegmentsError marks a window with no recorded segments.
+type clipNoSegmentsError struct{}
+
+func (*clipNoSegmentsError) Error() string { return "no overlapping segments" }
+
+// errClipCameraNotFound marks an unresolvable camera id.
+var errClipCameraNotFound = errors.New("camera not found")
+
+// createClip is the shared clip-creation flow: resolve path name, find
+// segments, register with the in-memory clip store, spawn the async
+// preparer.
+func (a *API) createClip(params clipCreateParams) (*defs.Clip, error) {
 	a.mutex.RLock()
 	c := a.Conf
 	a.mutex.RUnlock()
 	if c == nil {
-		a.writeError(ctx, http.StatusInternalServerError, errors.New("recorder configuration not loaded"))
-		return
+		return nil, errors.New("recorder configuration not loaded")
 	}
 
 	// Resolve camera_id → on-disk path-name. The path table may
@@ -120,30 +170,24 @@ func (a *API) onV1ClipsPost(ctx *gin.Context) {
 	reg := a.recordingRegistry()
 	reg.mu.Lock()
 	if reg.pathNameByCameraID != nil {
-		pathName = reg.pathNameByCameraID[req.CameraID]
+		pathName = reg.pathNameByCameraID[params.CameraID]
 	}
 	reg.mu.Unlock()
 	if pathName == "" {
-		if name, ok := pathNameFromCameraID(c.Paths, req.CameraID); ok {
+		if name, ok := pathNameFromCameraID(c.Paths, params.CameraID); ok {
 			pathName = name
 		}
 	}
 	if pathName == "" {
-		a.writeError(ctx, http.StatusNotFound, fmt.Errorf("camera not found"))
-		return
+		return nil, errClipCameraNotFound
 	}
 
-	// Resolve the source segments up-front so we can populate
-	// SourceSegmentIDs and pin the right paths immediately. If no
-	// segments overlap the range, fail fast with 400.
-	segs, err := findSegmentsForClip(c.Paths, pathName, req.CameraID, req.RangeStartedAt, req.RangeEndedAt)
+	segs, err := findSegmentsForClip(c.Paths, pathName, params.CameraID, params.RangeStartedAt, params.RangeEndedAt)
 	if err != nil && !errors.Is(err, recordstore.ErrNoSegmentsFound) {
-		a.writeError(ctx, http.StatusInternalServerError, fmt.Errorf("segment lookup: %w", err))
-		return
+		return nil, fmt.Errorf("segment lookup: %w", err)
 	}
 	if len(segs) == 0 {
-		a.writeError(ctx, http.StatusBadRequest, errors.New("no recording segments overlap the requested range"))
-		return
+		return nil, &clipNoSegmentsError{}
 	}
 
 	now := nowUTC()
@@ -161,15 +205,16 @@ func (a *API) onV1ClipsPost(ctx *gin.Context) {
 		TenantID:          a.tenantID(),
 		SiteID:            "",
 		RecordingServerID: "",
-		CameraID:          req.CameraID,
-		RequestedBy:       req.RequestedBy,
-		Label:             req.Label,
-		Description:       req.Description,
-		RangeStartedAt:    req.RangeStartedAt.UTC(),
-		RangeEndedAt:      req.RangeEndedAt.UTC(),
-		Duration:          req.RangeEndedAt.Sub(req.RangeStartedAt),
+		CameraID:          params.CameraID,
+		EventID:           params.EventID,
+		RequestedBy:       params.RequestedBy,
+		Label:             params.Label,
+		Description:       params.Description,
+		RangeStartedAt:    params.RangeStartedAt.UTC(),
+		RangeEndedAt:      params.RangeEndedAt.UTC(),
+		Duration:          params.RangeEndedAt.Sub(params.RangeStartedAt),
 		RequestedAt:       now,
-		ExpiresAt:         req.ExpiresAt,
+		ExpiresAt:         params.ExpiresAt,
 		State:             defs.ClipStateRequested,
 		Container:         defs.ClipContainerMP4,
 		SourceSegmentIDs:  segIDs,
@@ -189,8 +234,7 @@ func (a *API) onV1ClipsPost(ctx *gin.Context) {
 		pathConfs: c.Paths,
 	})
 
-	resp := v1ClipResponse{Clip: *clip}
-	ctx.JSON(http.StatusCreated, &resp)
+	return clip, nil
 }
 
 func (a *API) onV1ClipsList(ctx *gin.Context) {

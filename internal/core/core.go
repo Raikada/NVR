@@ -3,7 +3,6 @@ package core
 
 import (
 	"context"
-	"crypto/x509"
 	_ "embed"
 	"fmt"
 	"net"
@@ -23,35 +22,46 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/bluenviron/mediamtx/internal/api"
+	"github.com/bluenviron/mediamtx/internal/audit"
 	"github.com/bluenviron/mediamtx/internal/auth"
-	"github.com/bluenviron/mediamtx/internal/camerasync"
+	"github.com/bluenviron/mediamtx/internal/bootstrap"
+	"github.com/bluenviron/mediamtx/internal/cameracred"
+	"github.com/bluenviron/mediamtx/internal/camerahealth"
+	"github.com/bluenviron/mediamtx/internal/cameras"
+	"github.com/bluenviron/mediamtx/internal/cloudbridge"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/confwatcher"
-	"github.com/bluenviron/mediamtx/internal/crl"
+	"github.com/bluenviron/mediamtx/internal/discovery"
+	"github.com/bluenviron/mediamtx/internal/events"
 	"github.com/bluenviron/mediamtx/internal/externalcmd"
 	"github.com/bluenviron/mediamtx/internal/identity"
 	"github.com/bluenviron/mediamtx/internal/localauth"
-	"github.com/bluenviron/mediamtx/internal/mdns"
-	"github.com/bluenviron/mediamtx/internal/motion"
-	"github.com/bluenviron/mediamtx/internal/onvif"
-	mspairing "github.com/bluenviron/mediamtx/internal/pairing"
-	"github.com/bluenviron/mediamtx/internal/policysync"
-	"github.com/bluenviron/mediamtx/internal/recordingmeta"
-	"github.com/bluenviron/mediamtx/internal/softwareupdate"
-	recstore "github.com/bluenviron/mediamtx/internal/store"
-	"github.com/bluenviron/mediamtx/internal/updatepoll"
 	"github.com/bluenviron/mediamtx/internal/logger"
+	"github.com/bluenviron/mediamtx/internal/mdns"
+	"github.com/bluenviron/mediamtx/internal/mediasign"
 	"github.com/bluenviron/mediamtx/internal/metrics"
+	"github.com/bluenviron/mediamtx/internal/motion"
+	"github.com/bluenviron/mediamtx/internal/notifications"
+	"github.com/bluenviron/mediamtx/internal/onvif"
 	"github.com/bluenviron/mediamtx/internal/playback"
 	"github.com/bluenviron/mediamtx/internal/pprof"
 	"github.com/bluenviron/mediamtx/internal/recordcleaner"
 	"github.com/bluenviron/mediamtx/internal/recorder"
+	"github.com/bluenviron/mediamtx/internal/recordingmeta"
+	"github.com/bluenviron/mediamtx/internal/retention"
 	"github.com/bluenviron/mediamtx/internal/rlimit"
+	"github.com/bluenviron/mediamtx/internal/schedule"
 	"github.com/bluenviron/mediamtx/internal/servers/hls"
 	"github.com/bluenviron/mediamtx/internal/servers/rtmp"
 	"github.com/bluenviron/mediamtx/internal/servers/rtsp"
 	"github.com/bluenviron/mediamtx/internal/servers/srt"
 	"github.com/bluenviron/mediamtx/internal/servers/webrtc"
+	"github.com/bluenviron/mediamtx/internal/snapshots"
+	"github.com/bluenviron/mediamtx/internal/softwareupdate"
+	recstore "github.com/bluenviron/mediamtx/internal/store"
+	"github.com/bluenviron/mediamtx/internal/vendorevents"
+	"github.com/bluenviron/mediamtx/internal/vendorevents/amcrestchannel"
+	"github.com/bluenviron/mediamtx/internal/vendorevents/onvifchannel"
 )
 
 //go:generate go run ./versiongetter
@@ -121,39 +131,69 @@ var cli struct {
 
 // Core is an instance of MediaMTX.
 type Core struct {
-	ctx             context.Context
-	ctxCancel       func()
-	confPath        string
-	conf            *conf.Conf
-	logger          *logger.Logger
-	externalCmdPool *externalcmd.Pool
-	authManager     *auth.Manager
-	metrics         *metrics.Metrics
-	pprof           *pprof.PPROF
-	recordCleaner   *recordcleaner.Cleaner
-	playbackServer  *playback.Server
-	pathManager     *pathManager
-	rtspServer      *rtsp.Server
-	rtspsServer     *rtsp.Server
-	rtmpServer      *rtmp.Server
-	rtmpsServer     *rtmp.Server
-	hlsServer       *hls.Server
-	webRTCServer    *webrtc.Server
-	srtServer       *srt.Server
-	api             *api.API
-	confWatcher     *confwatcher.ConfWatcher
-	identity        *identity.Identity
+	ctx              context.Context
+	ctxCancel        func()
+	confPath         string
+	conf             *conf.Conf
+	logger           *logger.Logger
+	externalCmdPool  *externalcmd.Pool
+	authManager      *auth.Manager
+	metrics          *metrics.Metrics
+	pprof            *pprof.PPROF
+	recordCleaner    *recordcleaner.Cleaner
+	playbackServer   *playback.Server
+	pathManager      *pathManager
+	rtspServer       *rtsp.Server
+	rtspsServer      *rtsp.Server
+	rtmpServer       *rtmp.Server
+	rtmpsServer      *rtmp.Server
+	hlsServer        *hls.Server
+	webRTCServer     *webrtc.Server
+	srtServer        *srt.Server
+	api              *api.API
+	confWatcher      *confwatcher.ConfWatcher
+	identity         *identity.Identity
 	localAuth        *localauth.Manager
 	localAuthStore   *recstore.Store
-	pairingManager   *mspairing.Manager
 	mdnsService      *mdns.Service
-	crlPoller        *crl.Poller
-	cameraSyncPoller *camerasync.Poller
-	policySyncPoller *policysync.Poller
-	updatePollState  *updatepoll.State
-	updatePoller     *updatepoll.Poller
 	onvifManager     *onvif.Manager
 	motionController *motion.Controller
+
+	// Phase 6 foundation services. Constructed once at first
+	// createResources call; the long-lived goroutines run for the
+	// life of Core. Cancelled at shutdown via fndCtxCancel.
+	camerasBus       *cameras.Bus
+	camerasService   *cameras.Service
+	eventsBus        *events.Bus
+	eventsService    *events.Service
+	scheduleResolver *schedule.Resolver
+	notifDispatcher  *notifications.Dispatcher
+	retentionMgr     *retention.Manager
+	cloudSvc         *cloudbridge.Service
+	pathBridge       *cameras.PathBridge
+	pmAdapter        *pathManagerAdapter
+	discoverySvc     *discovery.Service
+	healthCollector  *camerahealth.Collector
+	vendorEvents     *vendorevents.Manager
+	onvifDispatch    *onvifchannel.Dispatcher
+	snapshotsSvc     *snapshots.Service
+	mediaSigner      *mediasign.Signer
+	pathLister       *pathListerAdapter
+	credVault        *cameracred.Vault
+	auditEmit        *audit.Emitter
+	// tlsReloader watches tls.crt + tls.key via fsnotify and writes
+	// a system.tls_reload_failed audit row on parse failures. The
+	// actual cert swap lives in internal/certloader. Phase 6 Task 6.5.
+	tlsReloader *tlsReloader
+	// mdnsRefresher polls setup-status every 30s and re-publishes the
+	// mDNS TXT records when state flips. Phase 6 Task 6.6.
+	mdnsRefresher *mdnsRefresher
+
+	// fndCtx + fndCtxCancel scope every Phase 6 goroutine so a
+	// graceful shutdown stops them deterministically. Initialized at
+	// the bottom of the foundation-services block in createResources.
+	fndCtx       context.Context
+	fndCtxCancel func()
 
 	// in
 	chAPIConfigSet chan *conf.Conf
@@ -255,6 +295,9 @@ func (p *Core) Wait() {
 
 // Log implements logger.Writer.
 func (p *Core) Log(level logger.Level, format string, args ...any) {
+	if p == nil || p.logger == nil {
+		return
+	}
 	p.logger.Log(level, format, args...)
 }
 
@@ -406,15 +449,25 @@ func (p *Core) createResources(initial bool) error {
 			return fmt.Errorf("identity open: %w", err)
 		}
 		p.identity = id
-		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s paired=%v",
-			id.ID().String(), idDir, id.IsPaired())
+		p.Log(logger.Info, "recorder identity loaded: id=%s dir=%s",
+			id.ID().String(), idDir)
+
+		// SP4: media URL signing key rides with the identity material.
+		if p.mediaSigner == nil {
+			signer, serr := mediasign.Open(idDir)
+			if serr != nil {
+				p.Log(logger.Warn, "media signer: %v — signed media URLs disabled", serr)
+			} else {
+				p.mediaSigner = signer
+			}
+		}
 	}
 
 	// Recorder-local LocalUser auth (pre-pairing auth slice 2026-05-06).
 	// Stores LocalUser rows + recorder-local JWT signing key alongside
-	// the device identity. On first boot, generates a bootstrap admin
-	// password (printed to logs + written to identity/initial-admin-password.txt
-	// mode 0600).
+	// the device identity. The bootstrap admin is now seeded by the
+	// canonical internal/bootstrap package (Phase 6); the localauth.New
+	// constructor is the runtime token issuer + login flow only.
 	if p.localAuth == nil {
 		idDir := p.conf.IdentityDir
 		if idDir == "" {
@@ -433,25 +486,143 @@ func (p *Core) createResources(initial bool) error {
 		if err != nil {
 			return fmt.Errorf("local auth signing key: %w", err)
 		}
-		la := localauth.New(s, signingKey, idDir, p.conf.TenantID, p.identity.ID().String())
-		// Bootstrap admin if local_users is empty. Logs the initial
-		// password as a loud banner so an integrator who runs the
-		// recorder in the foreground for the first time can copy it
-		// out without grep'ing the logs.
-		initialPW, err := la.BootstrapIfEmpty(p.ctx)
+
+		// Phase 6 Task 6.2 + 6.3: bootstrap admin + system-settings
+		// runtime defaults. The bootstrap package is idempotent so a
+		// re-Open of an existing recorder is a no-op.
+		bootRes, err := bootstrap.Run(p.ctx, s, idDir, bootstrap.Options{
+			RecordingsRoot: defaultRecordingsRoot(p.conf),
+		})
 		if err != nil {
-			return fmt.Errorf("local auth bootstrap: %w", err)
+			return fmt.Errorf("bootstrap: %w", err)
 		}
-		if initialPW != "" {
+		if bootRes.AdminCreated && bootRes.InitialPassword != "" {
 			banner := strings.Repeat("=", 72)
-			p.Log(logger.Info, "\n%s\nRECORDER BOOTSTRAP ADMIN CREATED\n  username:        admin\n  initial password: %s\n  must_change_password: yes (forced rotation on first login)\n  also written to: %s/%s (mode 0600)\nLog in at https://<this-host>:9997/ to complete setup.\n%s",
-				banner, initialPW, idDir, "initial-admin-password.txt", banner)
+			p.Log(logger.Info,
+				"\n%s\nRECORDER BOOTSTRAP ADMIN CREATED\n  username:        admin\n  initial password: %s\n  must_change_password: %t (forced rotation on first login)\n  also written to: %s/%s (mode 0600)\nLog in at https://<this-host>:9997/ to complete setup.\n%s",
+				banner, bootRes.InitialPassword, bootRes.MustChangePassword,
+				idDir, "initial-admin-password.txt", banner)
+		} else if bootRes.AdminCreated {
+			p.Log(logger.Info,
+				"recorder bootstrap admin created using RAIKADA_BOOTSTRAP_PASSWORD env var")
 		}
-		p.localAuth = la
+
+		p.localAuth = localauth.New(s, signingKey, idDir, "", p.identity.ID().String())
 	}
 
-	if p.pairingManager == nil {
-		p.pairingManager = mspairing.New(p.identity, p, string(version))
+	// Phase 6 Task 6.4: foundation services wiring. Construct once,
+	// re-use across conf reloads. Uses the recorder's localAuthStore
+	// (the same SQLite handle the API surface depends on) so all
+	// foundation packages share one backing store.
+	if p.fndCtxCancel == nil {
+		p.fndCtx, p.fndCtxCancel = context.WithCancel(context.Background())
+	}
+	if p.credVault == nil {
+		idDir := p.conf.IdentityDir
+		if idDir == "" {
+			if p.confPath != "" {
+				idDir = filepath.Join(filepath.Dir(p.confPath), "identity")
+			} else {
+				idDir = "identity"
+			}
+		}
+		v, err := cameracred.Open(idDir)
+		if err != nil {
+			return fmt.Errorf("cameracred open: %w", err)
+		}
+		p.credVault = v
+	}
+	if p.auditEmit == nil && p.localAuthStore != nil {
+		p.auditEmit = audit.New(p.localAuthStore.AuditLog)
+	}
+
+	if p.camerasBus == nil {
+		p.camerasBus = cameras.NewBus()
+	}
+	if p.eventsBus == nil {
+		p.eventsBus = events.NewBus()
+	}
+
+	// Camera service. Onvif teardown is wired below once the onvif
+	// manager exists; until then the service uses a nil teardown which
+	// is benign (Delete logs a debug warning instead of unsubscribing).
+	if p.camerasService == nil && p.localAuthStore != nil {
+		p.camerasService = cameras.NewService(p.localAuthStore, p.credVault, p.camerasBus, nil)
+	}
+
+	// Events service. Cloud outbox enqueuer is the foundation
+	// CloudOutboxRepo (a one-method interface).
+	if p.eventsService == nil && p.localAuthStore != nil {
+		p.eventsService = events.NewService(
+			p.localAuthStore.Events,
+			p.localAuthStore.EventRetention,
+			p.localAuthStore.CloudOutbox,
+			p.eventsBus,
+		)
+	}
+
+	// Schedule resolver — motion controller is wired later in this
+	// function (Wave 4 motion controller block); we pass nil here
+	// because the resolver's New tolerates nil and the foundation
+	// motion controller is not currently feeding the resolver.
+	if p.scheduleResolver == nil && p.localAuthStore != nil {
+		p.scheduleResolver = schedule.New(
+			p.localAuthStore.Cameras,
+			p.localAuthStore.RecordingPolicies,
+			p.localAuthStore.RecordingSchedules,
+			p.localAuthStore.SystemSettings,
+			nil, // motion controller (set up later in this fn)
+		)
+	}
+
+	// Notifications dispatcher.
+	if p.notifDispatcher == nil && p.eventsService != nil {
+		site := notifications.SitePayload{
+			ID:   p.identity.ID().String(),
+			Name: getSiteName(p.fndCtx, p.localAuthStore),
+		}
+		// SP4: webhook snapshot URLs are HMAC-signed media URLs (the
+		// follow-up Phase 6 deferred).
+		signURL := makeSignedURL(p.conf.APIAddress, p.mediaSigner)
+		p.notifDispatcher = notifications.NewDispatcher(
+			p.localAuthStore, p.credVault, p.eventsService,
+			site, signURL, p,
+		)
+		go p.notifDispatcher.Run(p.fndCtx)
+	}
+
+	// Retention manager: segments + events + clips sweepers.
+	if p.retentionMgr == nil && p.localAuthStore != nil {
+		segLister := newSegmentListerAdapter(
+			func() map[string]*conf.Path { return snapshotPathConfs(p.pathManager) },
+			resolveCameraName(p.localAuthStore.Cameras),
+			p,
+		)
+		segs := retention.NewSegmentsSweeper(
+			p.localAuthStore.Cameras,
+			p.localAuthStore.RecordingPolicies,
+			segLister,
+			0, p,
+		)
+		evs := retention.NewEventsSweeper(p.localAuthStore.Events, 0, 0, p)
+		evs.AttachSnapshots(p.localAuthStore.EventSnapshots)
+		clips := retention.NewClipsSweeper(p.localAuthStore.Clips, 0, 0, p)
+		p.retentionMgr = retention.NewManager(p, segs, evs, clips)
+		go p.retentionMgr.Run(p.fndCtx)
+	}
+
+	// Cloud bridge: foundation ships a nop processor + horizon sweeper.
+	if p.cloudSvc == nil && p.localAuthStore != nil {
+		hSweeper := cloudbridge.NewHorizonSweeper(
+			p.localAuthStore.CloudOutbox,
+			func(ctx context.Context) int {
+				n, _ := p.localAuthStore.SystemSettings.GetInt(ctx, "cloud_outbox_horizon_hours", 168)
+				return n
+			},
+			0, p,
+		)
+		p.cloudSvc = cloudbridge.NewService(cloudbridge.NewNopProcessor(), hSweeper, p)
+		go p.cloudSvc.Run(p.fndCtx)
 	}
 
 	if p.mdnsService == nil && p.conf.MDNS != nil && *p.conf.MDNS && p.conf.API {
@@ -467,32 +638,43 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
-	if p.crlPoller == nil {
-		p.crlPoller = crl.New(p.identity, p, time.Duration(p.conf.CRLPollInterval), func(reason string) error {
-			return p.handleCRLRevocation(reason)
-		})
-		// Start now if already paired (recorder restart with valid
-		// identity); the pairing-completed callback below also calls
-		// Start() for the post-pairing transition.
-		p.crlPoller.Start()
+	// Phase 6 Task 6.5: TLS reload audit watcher. The actual cert swap
+	// lives in internal/certloader (already wired through httpp.Server);
+	// this watcher writes the system.tls_reload_failed audit row on
+	// parse failures so the operator-visible chain records the event.
+	if p.tlsReloader == nil && p.identity != nil && p.auditEmit != nil {
+		certPath, keyPath := p.identity.TLSPaths()
+		p.tlsReloader = newTLSReloader(certPath, keyPath, p.auditEmit, p)
+		go p.tlsReloader.Run(p.fndCtx)
 	}
+
+	// Phase 6 Task 6.6: mDNS TXT-record refresher. Polls setup state
+	// every 30s and republishes when state flips (setup-required ↔
+	// setup-complete). Only runs when the mDNS broadcaster is up.
+	if p.mdnsRefresher == nil && p.mdnsService != nil && p.localAuthStore != nil {
+		p.mdnsRefresher = newMDNSRefresher(
+			p.mdnsService, p.localAuthStore,
+			string(version), p.identity.ID().String(), p,
+		)
+		go p.mdnsRefresher.Run(p.fndCtx)
+	}
+
+	// TODO(phase6): wire CRL poller for cert revocation watch.
 
 	if p.authManager == nil {
 		la := p.localAuth
 		p.authManager = &auth.Manager{
-			Method:             p.conf.AuthMethod,
-			InternalUsers:      p.conf.AuthInternalUsers,
-			HTTPAddress:        p.conf.AuthHTTPAddress,
-			HTTPFingerprint:    p.conf.AuthHTTPFingerprint,
-			HTTPExclude:        p.conf.AuthHTTPExclude,
-			JWTJWKS:            p.conf.AuthJWTJWKS,
-			JWTJWKSFingerprint: p.conf.AuthJWTJWKSFingerprint,
-			JWTClaimKey:        p.conf.AuthJWTClaimKey,
-			JWTExclude:         p.conf.AuthJWTExclude,
-			JWTInHTTPQuery:     p.conf.AuthJWTInHTTPQuery,
-			JWTIssuer:          p.conf.AuthJWTIssuer,
-			JWTAudience:        p.conf.AuthJWTAudience,
-			ReadTimeout:        time.Duration(p.conf.ReadTimeout),
+			Method:          p.conf.AuthMethod,
+			InternalUsers:   p.conf.AuthInternalUsers,
+			HTTPAddress:     p.conf.AuthHTTPAddress,
+			HTTPFingerprint: p.conf.AuthHTTPFingerprint,
+			HTTPExclude:     p.conf.AuthHTTPExclude,
+			JWTClaimKey:     p.conf.AuthJWTClaimKey,
+			JWTExclude:      p.conf.AuthJWTExclude,
+			JWTInHTTPQuery:  p.conf.AuthJWTInHTTPQuery,
+			JWTIssuer:       p.conf.AuthJWTIssuer,
+			JWTAudience:     p.conf.AuthJWTAudience,
+			ReadTimeout:     time.Duration(p.conf.ReadTimeout),
 			// Recorder-local JWT validation hook. Lets the auth
 			// manager accept JWTs minted by /v1/recorder/login even
 			// when authMethod=internal in mediamtx.yml. Pre-pairing
@@ -510,23 +692,8 @@ func (p *Core) createResources(initial bool) error {
 		}
 	}
 
-	// Pairing-aware auth wiring per pairing-flows §4: when the
-	// recorder boots paired, override the auth method to JWT using
-	// the bound MS's published JWKS / issuer / audience and chain-
-	// pin the JWKS fetch against the recorder's pinned MS root CA
-	// per ADR 0012 D5. The override is in-process only; mediamtx.yml
-	// stays unchanged, so unpairing reverts to the static config on
-	// next restart.
-	//
-	// URL drift (e.g. MS hostname changed since pairing) is recovered
-	// at runtime by consulting the live mDNS broadcast whose
-	// advertised root_fp matches the pinned root — that broadcast's
-	// URL supersedes the pinned URL and is written back to
-	// ms-metadata.json so subsequent restarts use the fresh URL even
-	// if mDNS isn't immediately available.
-	if p.identity.IsPaired() {
-		p.applyPairingAwareAuth()
-	}
+	// TODO(phase6): re-add pairing-aware auth wiring (override to JWT
+	// using bound MS JWKS) once the new pairing module lands.
 
 	if p.conf.Metrics &&
 		p.metrics == nil {
@@ -625,6 +792,59 @@ func (p *Core) createResources(initial bool) error {
 			parent:            p,
 		}
 		p.pathManager.initialize()
+	}
+
+	// Phase 6 Task 6.4: cameras → path-manager bridge. Built after the
+	// path manager exists so the adapter can dispatch ReloadFromCameras.
+	// Bootstrap pushes the existing camera set immediately; Run blocks
+	// until the foundation context cancels.
+	if p.pathBridge == nil && p.camerasService != nil && p.pathManager != nil {
+		p.pmAdapter = newPathManagerAdapter(p.pathManager, pathDefaultsFromConf(p.conf), p)
+		p.pmAdapter.RefreshDefaults(p.conf)
+		p.pathBridge = cameras.NewPathBridge(p.camerasService, p.pmAdapter, p)
+		if err := p.pathBridge.Bootstrap(p.fndCtx); err != nil {
+			p.Log(logger.Warn, "[cameras.bridge] bootstrap: %v", err)
+		}
+		go p.pathBridge.Run(p.fndCtx)
+	} else if p.pmAdapter != nil {
+		// Every conf apply (API camera create/delete, SIGHUP, file
+		// watch) re-runs createResources; fold the new paths into the
+		// bridge adapter so post-boot cameras merge against their real
+		// conf path instead of a nil base.
+		p.pmAdapter.RefreshDefaults(p.conf)
+		// Re-run the bridge bootstrap so a flush that raced this conf
+		// apply (bus event before the adapter refresh) converges on the
+		// refreshed defaults. Idempotent: list + merge + reload.
+		if p.pathBridge != nil && p.fndCtx != nil {
+			if err := p.pathBridge.Bootstrap(p.fndCtx); err != nil {
+				p.Log(logger.Warn, "[cameras.bridge] re-bootstrap: %v", err)
+			}
+		}
+	}
+
+	// SP2: LAN discovery cache. Independent of the mdns toggle — the
+	// WS-Discovery probe is how the adopt flow finds cameras.
+	if p.discoverySvc == nil && p.camerasService != nil && p.fndCtx != nil {
+		p.discoverySvc = discovery.New(discoveryProberAdapter{}, p.camerasService, p)
+		go p.discoverySvc.Run(p.fndCtx)
+	}
+
+	// SP2: camera health collector — store rows + camera_online/offline
+	// events off a 5s path-manager poll. The lister adapter is
+	// swappable because some conf reloads recreate the path manager.
+	if p.healthCollector == nil && p.localAuthStore != nil &&
+		p.pathManager != nil && p.eventsService != nil && p.fndCtx != nil {
+		p.pathLister = &pathListerAdapter{}
+		p.pathLister.SetPathManager(p.pathManager)
+		p.healthCollector = camerahealth.New(
+			p.localAuthStore,
+			p.pathLister,
+			p.eventsService,
+			p,
+		)
+		go p.healthCollector.Run(p.fndCtx)
+	} else if p.pathLister != nil && p.pathManager != nil {
+		p.pathLister.SetPathManager(p.pathManager)
 	}
 
 	if p.conf.RTSP &&
@@ -860,14 +1080,26 @@ func (p *Core) createResources(initial bool) error {
 
 	if p.conf.API &&
 		p.api == nil {
+		// API server: certificate paths default to identity-managed
+		// tls.crt + tls.key when not operator-overridden in conf.
+		certPath := p.conf.APIServerCert
+		keyPath := p.conf.APIServerKey
+		if (certPath == "" || keyPath == "" ||
+			certPath == "identity/api-server.crt" || keyPath == "identity/recorder.key") &&
+			p.identity != nil {
+			tlsCert, tlsKey := p.identity.TLSPaths()
+			certPath = tlsCert
+			keyPath = tlsKey
+		}
+
 		i := &api.API{
 			Version:        string(version),
 			Started:        started,
 			Address:        p.conf.APIAddress,
 			DumpPackets:    p.conf.DumpPackets,
 			Encryption:     p.conf.APIEncryption,
-			ServerKey:      p.conf.APIServerKey,
-			ServerCert:     p.conf.APIServerCert,
+			ServerKey:      keyPath,
+			ServerCert:     certPath,
 			AllowOrigins:   p.conf.APIAllowOrigins,
 			TrustedProxies: p.conf.APITrustedProxies,
 			ReadTimeout:    p.conf.ReadTimeout,
@@ -876,7 +1108,6 @@ func (p *Core) createResources(initial bool) error {
 			AuthManager:    p.authManager,
 			Identity:       p.identity,
 			LocalAuth:      p.localAuth,
-			Pairing:        p.pairingManager,
 			MDNS:           p.mdnsService,
 			PathManager:    p.pathManager,
 			RTSPServer:     p.rtspServer,
@@ -887,6 +1118,24 @@ func (p *Core) createResources(initial bool) error {
 			WebRTCServer:   p.webRTCServer,
 			SRTServer:      p.srtServer,
 			Parent:         p,
+
+			// Phase 6 foundation services. Handlers defensively check
+			// for nil so the API still serves /v1/info and the SPA
+			// even if a service failed to wire.
+			Store:            p.localAuthStore,
+			Vault:            p.credVault,
+			CamerasService:   p.camerasService,
+			EventsService:    p.eventsService,
+			ScheduleResolver: p.scheduleResolver,
+			NotifDispatcher:  p.notifDispatcher,
+			RetentionMgr:     p.retentionMgr,
+
+			// SP2: discovery cache + capability probe (real prober by
+			// default; tests inject fakes via ProbeCapabilitiesFn).
+			Discovery: p.discoverySvc,
+
+			// SP4: media URL signer (key lives in the identity dir).
+			Signer: p.mediaSigner,
 		}
 		err = i.Initialize()
 		if err != nil {
@@ -902,81 +1151,10 @@ func (p *Core) createResources(initial bool) error {
 			p.localAuth.SetAuditEmitter(p.api.EmitLocalAuthAudit)
 		}
 
-		// Wire the pairing manager's audit callback so
-		// device.pairing_completed lands in the recorder's
-		// per-emitter audit chain (per ADR 0006). Done here, after
-		// both p.api and p.pairingManager exist.
-		// Camera-sync poller (slice 4-B per ADR 0016 D2). Polls the MS
-		// every MSPollInterval for desired-state and applies any
-		// drift via the API's camerasync adapter. Dormant pre-pair
-		// AND pre-import (canonical_source != ms gates inside the
-		// goroutine).
-		if p.cameraSyncPoller == nil && p.identity != nil {
-			csp, err := camerasync.New(camerasync.PollerOptions{
-				Identity:     p.identity,
-				Logger:       p,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-				Applier:      p.api.CameraApplier(),
-				AuditEmitter: p.api.CameraAuditEmitter(),
-				Mu:           p.api.CameraApplyLock(),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[camerasync] failed to construct poller: %s", err)
-			} else {
-				p.cameraSyncPoller = csp
-				// Start now if already paired (recorder restart with a
-				// valid identity that's already canonical_source=ms);
-				// the post-pairing callback below also Starts.
-				p.cameraSyncPoller.Start()
-			}
-		}
-
-		// Policy-sync poller (slice 4-C per ADR 0017 D2). Mirrors the
-		// camera-sync poller; gates internally on policy_canonical_source
-		// = ms (independent of the camera flag). Reuses the API's
-		// CameraApplyLock so push-direction conf mutation and
-		// poll-direction policy applies cannot interleave.
-		if p.policySyncPoller == nil && p.identity != nil {
-			psp, err := policysync.New(policysync.PollerOptions{
-				Identity:     p.identity,
-				Logger:       p,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-				Applier:      p.api.PolicyApplier(),
-				AuditEmitter: p.api.PolicyAuditEmitter(),
-				Mu:           p.api.CameraApplyLock(),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[policysync] failed to construct poller: %s", err)
-			} else {
-				p.policySyncPoller = psp
-				p.policySyncPoller.Start()
-			}
-		}
-
-		// Wave A2: software-update poller. Polls the MS for
-		// approved-but-not-yet-applied lifecycle rows and exposes the
-		// freshest one through /v1/recorder/identity so the recorder's
-		// SPA can surface a "Software update available" badge. Dormant
-		// pre-pair (the goroutine's per-tick IsPaired check re-arms post-
-		// pairing without an external nudge).
-		if p.updatePoller == nil && p.identity != nil {
-			if p.updatePollState == nil {
-				p.updatePollState = updatepoll.NewState()
-			}
-			up, err := updatepoll.New(updatepoll.Options{
-				Identity:     p.identity,
-				Logger:       p,
-				State:        p.updatePollState,
-				PollInterval: time.Duration(p.conf.MSPollInterval),
-			})
-			if err != nil {
-				p.Log(logger.Warn, "[updatepoll] failed to construct poller: %s", err)
-			} else {
-				p.updatePoller = up
-				p.api.SetUpdatePollState(updatePollSnapshot{state: p.updatePollState})
-				p.updatePoller.Start()
-			}
-		}
+		// TODO(phase6): wire camera-sync, policy-sync, update-poll
+		// adapters once the new pairing module + post-pair callbacks
+		// exist. They previously polled the bound MS and dispatched
+		// drift through p.api's camera/policy applier hooks.
 
 		// Wave 6: software-update applier wiring per ADR 0014. Wired
 		// only when the operator has provisioned a Raikada release
@@ -1028,66 +1206,16 @@ func (p *Core) createResources(initial bool) error {
 			}
 		}
 
-		if p.pairingManager != nil {
-			pa := p.api
-			p.pairingManager.SetAuditCallback(func(ev mspairing.AuditEvent) {
-				pa.EmitPairingAudit(ev.Action, ev.Outcome, ev.Attributes)
-			})
-			// Refresh mDNS TXT records (paired=false → paired=true)
-			// after a successful pairing so MS instances on the LAN
-			// see the up-to-date advertisement.
-			ms := p.mdnsService
-			poller := p.crlPoller
-			cameraPoller := p.cameraSyncPoller
-			policyPoller := p.policySyncPoller
-			updatePoller := p.updatePoller
-			logRef := p
-			p.pairingManager.SetPairedCallback(func() {
-				if ms != nil {
-					if err := ms.Refresh(); err != nil {
-						logRef.Log(logger.Warn, "[mdns] refresh after pairing failed: %s", err)
-					}
-				}
-				// Start the CRL poller now that we have an MS to
-				// poll (Start was a no-op pre-pair; calling again
-				// after pairing spins up the goroutine).
-				if poller != nil {
-					poller.Start()
-				}
-				// Start both sync pollers. Internally each gates on its
-				// own canonical-source flag, so this is a no-op until
-				// the MS finishes its first push for the corresponding
-				// entity class (which flips the recorder's identity).
-				if cameraPoller != nil {
-					cameraPoller.Start()
-				}
-				if policyPoller != nil {
-					policyPoller.Start()
-				}
-				// Update poller. Idempotent; the first Start before
-				// pairing was a no-op, this Start now enters the
-				// running state.
-				if updatePoller != nil {
-					updatePoller.Start()
-				}
-			})
-		}
+		// TODO(phase6): re-wire pairing-manager audit + paired-callback
+		// fan-out (mDNS refresh, CRL poller Start, camera/policy/update
+		// pollers Start) once the new pairing module lands.
 
 		// Wire the pipeline-side Event publish target so path.go's
 		// camera.online / camera.offline emitters land in the same
-		// EventStore that /v1/events serves from. Tenant id is
-		// captured by value (not by closure over p.conf) to avoid a
-		// data race with reloadConf at core.go:1089. createResources
-		// runs on both initial setup and every conf reload, so each
-		// reload re-snapshots tenantID through this same SetPipeline-
-		// EventTarget call — legitimate tenant-rebind paths still
-		// flow through.
-		var tenantID string
-		if p.conf != nil {
-			tenantID = p.conf.TenantID
-		}
+		// EventStore that /v1/events serves from. Consumer NVR is
+		// single-tenant; an empty tenant id is fine.
 		api.SetPipelineEventTarget(api.DefaultEventStore(), func() string {
-			return tenantID
+			return ""
 		})
 
 		// Wave A3: per-segment historical policy resolver. path.go's
@@ -1117,23 +1245,30 @@ func (p *Core) createResources(initial bool) error {
 		// into publishOnvifEvent, which reuses the pipeline's
 		// EventStore.
 		if p.onvifManager == nil {
+			if p.onvifDispatch == nil {
+				p.onvifDispatch = onvifchannel.NewDispatcher()
+			}
+			dispatch := p.onvifDispatch
 			p.onvifManager = onvif.NewManager(p, func(ev onvif.EventNotification) {
 				api.PublishOnvifEvent(ev)
+				// SP3: fan out to per-camera vendor event channels.
+				dispatch.Dispatch(ev)
 			}, nil)
-			// Persistence (Wave A1). Reuses the recorder-local SQLite
-			// at <identityDir>/recorder.db that already backs the
-			// LocalUser store. Subscriptions are wiped on factory-wipe
-			// because the entire identity dir is removed by D8 (see
-			// internal/api/api_v1_recorder_lifecycle.go).
-			if p.localAuthStore != nil && p.localAuthStore.OnvifSubscriptions != nil {
-				p.onvifManager.SetPersister(onvifSubscriptionPersister{repo: p.localAuthStore.OnvifSubscriptions})
-				rctx, rcancel := context.WithTimeout(p.ctx, 30*time.Second)
-				if _, err := p.onvifManager.Rehydrate(rctx); err != nil {
-					p.Log(logger.Warn, "[onvif] rehydrate subscriptions: %s", err)
-				}
-				rcancel()
-			}
+			// TODO(phase6): re-attach the subscription persister + rehydrate
+			// once the post-MS persistence layer ships.
 			api.SetOnvifManager(p.onvifManager)
+
+			// Phase 6: rebuild the cameras.Service with the onvif
+			// teardown adapter now that the manager exists. The
+			// service was constructed with a nil teardown earlier so
+			// the path bridge could come up before onvif; we swap in
+			// a wired service so Camera.Delete unsubscribes cleanly.
+			if p.camerasService != nil && p.localAuthStore != nil {
+				teardown := newOnvifTeardownAdapter(p.onvifManager, p)
+				p.camerasService = cameras.NewService(
+					p.localAuthStore, p.credVault, p.camerasBus, teardown,
+				)
+			}
 		}
 
 		// Motion controller (Wave 4). Subscribes to the EventStore
@@ -1150,6 +1285,46 @@ func (p *Core) createResources(initial bool) error {
 			p.motionController.Close()
 		}
 		p.motionController = api.WireMotionControllerForAPI(p.api, p)
+
+		// SP3: vendor event channel manager. Started once everything it
+		// funnels through exists (cameras service/bus, events service,
+		// onvif manager for the PullPoint factory, health collector for
+		// last_event_at stamps).
+		if p.vendorEvents == nil && p.camerasService != nil && p.camerasBus != nil &&
+			p.eventsService != nil && p.onvifManager != nil && p.fndCtx != nil {
+			var touch vendorevents.Toucher
+			if p.healthCollector != nil {
+				touch = p.healthCollector.Touch
+			}
+			factories := map[string]vendorevents.AdapterFactory{
+				"onvif":     onvifchannel.New(p.onvifManager, p.onvifDispatch),
+				"amcrest":   amcrestchannel.New,
+				"hikvision": notImplementedChannelFactory("hikvision"),
+				"reolink":   notImplementedChannelFactory("reolink"),
+			}
+			p.vendorEvents = vendorevents.NewManager(
+				p.camerasService, p.camerasBus, factories,
+				p.eventsService, touch,
+				vendorChannelResolver(p.localAuthStore, p.camerasService), p,
+			)
+			go p.vendorEvents.Run(p.fndCtx)
+		}
+
+		// SP4: on-event snapshot capture. The frame-grab fallback rides
+		// the API's live HLS muxer internals; the media signer was
+		// loaded with the identity and handed to the API above.
+		if p.snapshotsSvc == nil && p.localAuthStore != nil &&
+			p.eventsService != nil && p.camerasService != nil && p.fndCtx != nil {
+			p.snapshotsSvc = snapshots.New(
+				p.localAuthStore,
+				p.eventsService,
+				snapshotCameraResolver(p.localAuthStore, p.camerasService),
+				p.api.GrabLiveJPEG,
+				snapshotRootFn(p.localAuthStore, p.conf.PathDefaults.RecordPath),
+				p,
+			)
+			go p.snapshotsSvc.Run(p.fndCtx)
+		}
 	}
 
 	if initial && p.confPath != "" {
@@ -1177,8 +1352,6 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		newConf.AuthHTTPAddress != p.conf.AuthHTTPAddress ||
 		newConf.AuthHTTPFingerprint != p.conf.AuthHTTPFingerprint ||
 		!reflect.DeepEqual(newConf.AuthHTTPExclude, p.conf.AuthHTTPExclude) ||
-		newConf.AuthJWTJWKS != p.conf.AuthJWTJWKS ||
-		newConf.AuthJWTJWKSFingerprint != p.conf.AuthJWTJWKSFingerprint ||
 		newConf.AuthJWTClaimKey != p.conf.AuthJWTClaimKey ||
 		!reflect.DeepEqual(newConf.AuthJWTExclude, p.conf.AuthJWTExclude) ||
 		!reflect.DeepEqual(newConf.AuthJWTInHTTPQuery, p.conf.AuthJWTInHTTPQuery) ||
@@ -1431,29 +1604,8 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.mdnsService = nil
 	}
 
-	// CRL poller likewise full-shutdown-only.
-	if newConf == nil && p.crlPoller != nil {
-		p.crlPoller.Stop()
-		p.crlPoller = nil
-	}
-
-	// Camera-sync poller full-shutdown-only too. The poller's
-	// background goroutine exits within one tick of Stop().
-	if newConf == nil && p.cameraSyncPoller != nil {
-		p.cameraSyncPoller.Stop()
-		p.cameraSyncPoller = nil
-	}
-	// Policy-sync poller (slice 4-C) — same full-shutdown-only
-	// pattern as the camera-sync poller above.
-	if newConf == nil && p.policySyncPoller != nil {
-		p.policySyncPoller.Stop()
-		p.policySyncPoller = nil
-	}
-	// Update poller (Wave A2) — same full-shutdown-only pattern.
-	if newConf == nil && p.updatePoller != nil {
-		p.updatePoller.Stop()
-		p.updatePoller = nil
-	}
+	// TODO(phase6): close CRL / camera-sync / policy-sync / update
+	// pollers here once their Phase 6 replacements land.
 
 	if p.api != nil {
 		if closeAPI {
@@ -1481,12 +1633,42 @@ func (p *Core) closeResources(newConf *conf.Conf, calledByAPI bool) {
 		p.motionController = nil
 	}
 
+	// Phase 6 foundation goroutines — cancel on full shutdown so
+	// pathBridge / notifDispatcher / retentionMgr / cloudSvc /
+	// mdnsRefresher / tlsReloader exit cleanly. fndCtx is shared
+	// across all of them so a single cancel suffices.
+	if newConf == nil && p.fndCtxCancel != nil {
+		p.fndCtxCancel()
+		p.fndCtxCancel = nil
+		p.fndCtx = nil
+		p.pathBridge = nil
+		p.pmAdapter = nil
+		p.discoverySvc = nil
+		p.healthCollector = nil
+		p.vendorEvents = nil
+		p.onvifDispatch = nil
+		p.snapshotsSvc = nil
+		p.pathLister = nil
+		p.notifDispatcher = nil
+		p.retentionMgr = nil
+		p.cloudSvc = nil
+		p.tlsReloader = nil
+		p.mdnsRefresher = nil
+		p.camerasService = nil
+		p.eventsService = nil
+		p.scheduleResolver = nil
+		p.camerasBus = nil
+		p.eventsBus = nil
+		p.credVault = nil
+	}
+
 	// LocalAuth store (pre-pairing auth slice 2026-05-06) — close on
 	// full shutdown so the SQLite handle releases the WAL file.
 	if newConf == nil && p.localAuthStore != nil {
 		_ = p.localAuthStore.Close()
 		p.localAuthStore = nil
 		p.localAuth = nil
+		p.auditEmit = nil
 	}
 
 	if closeSRTServer && p.srtServer != nil {
@@ -1592,279 +1774,6 @@ func (p *Core) APIConfigSet(conf *conf.Conf) {
 	case p.chAPIConfigSet <- conf:
 	case <-p.ctx.Done():
 	}
-}
-
-// handleCRLRevocation runs when the CRL poller detects this
-// recorder's cert in the MS's revoked list. Mirrors the recorder-
-// local unpair sequence: clear the issued DeviceIdentity, reset the
-// pairing-flow state to idle, refresh mDNS so listeners see
-// paired=false, emit a device.unpaired audit entry tagged with the
-// MS-supplied reason. The pairing.Manager / mDNS Service / API
-// audit emitter are all goroutine-safe; we don't need extra locking
-// here.
-func (p *Core) handleCRLRevocation(reason string) error {
-	if p.identity == nil {
-		return nil
-	}
-	recorderID := p.identity.ID().String()
-	prefingerprints := []string{}
-	for _, root := range p.identity.PinnedRoots() {
-		prefingerprints = append(prefingerprints, root.FingerprintSHA256)
-	}
-
-	if err := p.identity.ClearIssuedIdentity(); err != nil {
-		return err
-	}
-	if p.pairingManager != nil {
-		p.pairingManager.Reset()
-	}
-	if p.mdnsService != nil {
-		_ = p.mdnsService.Refresh()
-	}
-	// Audit-emit through the API path so the entry lands in the
-	// recorder's per-emitter chain (matching device.pairing_completed
-	// from the inbound flow).
-	if p.api != nil {
-		attrs := map[string]string{
-			"recording_server_id": recorderID,
-			"reason":              "ms_initiated_revocation:" + reason,
-		}
-		for i, fp := range prefingerprints {
-			attrs[fmt.Sprintf("pinned_root_%d_fingerprint", i)] = fp
-		}
-		p.api.EmitPairingAudit("device.unpaired", "success", attrs)
-	}
-	p.Log(logger.Warn, "[crl] recorder cert revoked by MS (%s) — local DeviceIdentity wiped",
-		reason)
-	return nil
-}
-
-// applyPairingAwareAuth re-points the recorder's auth manager at the
-// bound MS's published JWKS at startup, so MS-issued operator JWTs
-// (e.g. from the slice-4-A read+write proxy) authenticate against
-// /v1/* even when mediamtx.yml says authMethod: internal. Per the
-// pairing-aware auth wiring brief: read pinned ms-metadata.json
-// (issuer + JWKS URL), check mDNS for a live broadcast whose
-// advertised root_fp matches the pinned root (URL-drift recovery),
-// build a chain-pinning x509.CertPool from the pinned roots, and
-// call auth.Manager.ApplyPairingOverride.
-//
-// Inert for unpaired recorders. Logs the resolved URLs at INFO so
-// operators can diagnose mismatches.
-func (p *Core) applyPairingAwareAuth() {
-	if p.identity == nil || !p.identity.IsPaired() {
-		return
-	}
-	pinned := p.identity.MSMetadata()
-	if pinned == nil {
-		p.Log(logger.Warn, "[pairing-auth] paired recorder lacks ms-metadata.json; auth override skipped")
-		return
-	}
-
-	// Build the trusted-root pool from the pinned roots.
-	pinnedRoots := p.identity.PinnedRoots()
-	if len(pinnedRoots) == 0 {
-		p.Log(logger.Warn, "[pairing-auth] paired recorder has no pinned roots; auth override skipped")
-		return
-	}
-	pool := x509.NewCertPool()
-	pinnedFPs := make([]string, 0, len(pinnedRoots))
-	for _, r := range pinnedRoots {
-		if !pool.AppendCertsFromPEM([]byte(r.CertPEM)) {
-			p.Log(logger.Warn, "[pairing-auth] failed to parse pinned root cert (fp=%s)", r.FingerprintSHA256)
-			continue
-		}
-		pinnedFPs = append(pinnedFPs, r.FingerprintSHA256)
-	}
-	if len(pinnedFPs) == 0 {
-		p.Log(logger.Warn, "[pairing-auth] no usable pinned roots after PEM parsing; auth override skipped")
-		return
-	}
-
-	// Resolve effective issuer + JWKS URL. The pinned URL is the
-	// fallback; a live mDNS broadcast whose advertised root_fp
-	// matches one of the pinned fingerprints supersedes it (this is
-	// the URL-drift recovery path for MS hostname renames since
-	// pairing).
-	//
-	// Two URLs come into play: the IP-form transport URL the
-	// recorder fetches the JWKS from (live.URL — host:port resolved
-	// from mDNS), and the public URL the MS uses as its JWT `iss`
-	// claim (live.PublicURL — what the MS itself signs against). The
-	// recorder validates `iss` against PublicURL but fetches the
-	// JWKS from the transport URL; chain-pinning to the root CA per
-	// ADR 0012 D5 makes this safe.
-	resolved := *pinned
-	if p.mdnsService != nil {
-		live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
-		if live != nil && live.URL != "" {
-			issuerURL := live.PublicURL
-			if issuerURL == "" {
-				issuerURL = live.URL // older MS — fall back
-			}
-			driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
-				!sameMSHost(issuerURL, pinned.JWKSURL)
-			if driftDetected {
-				// Use the canonical public URL for BOTH iss-validation
-				// and JWKS fetch. Earlier shape used live.URL (IP form)
-				// for the transport, but stale mDNS-cached IPs after
-				// DHCP changes left JWKS pointing at unreachable hosts
-				// and hung middleware on validation. Hostname-form is
-				// safer: chain-pinning per ADR 0012 D5 still secures
-				// the channel; only the URL string changes.
-				resolved.IssuerURL = issuerURL
-				resolved.JWKSURL = issuerURL + "/.well-known/jwks.json"
-				resolved.RootsURL = issuerURL + "/.well-known/raikada-roots"
-				resolved.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
-				p.Log(logger.Info,
-					"[pairing-auth] live MS broadcast supersedes pinned URL: pinned=%s live_issuer=%s live_transport=%s",
-					pinned.IssuerURL, issuerURL, live.URL)
-				if err := p.identity.RefreshMSMetadata(resolved); err != nil {
-					p.Log(logger.Warn, "[pairing-auth] failed to write refreshed ms-metadata: %s", err)
-				}
-			}
-		}
-	}
-
-	audience := "recording_server/" + p.identity.ID().String()
-	p.authManager.ApplyPairingOverride(
-		conf.AuthMethodJWT,
-		resolved.JWKSURL,
-		"", // no leaf-fingerprint pinning — chain-pin via rootCAs
-		resolved.IssuerURL,
-		audience,
-		pool,
-	)
-
-	// The recorder's bootstrap tenantId in mediamtx.yml is a placeholder
-	// for unpaired operation. Once paired, the effective tenant_id is
-	// the MS's tenant_id (per ADR 0011 D2). We can't read it from the
-	// pinned ms-metadata (the tenant_id wasn't recorded there in slice
-	// 3 phase D.2), so derive it from the live mDNS broadcast TXT
-	// field. Fall back to the bootstrap value if mDNS hasn't surfaced
-	// the broadcast yet — the polling goroutine below recovers it.
-	if p.mdnsService != nil {
-		if live := p.mdnsService.LiveMSBroadcast(pinnedFPs); live != nil && live.TenantID != "" {
-			if p.conf.TenantID != live.TenantID {
-				p.Log(logger.Info,
-					"[pairing-auth] effective tenant_id from MS broadcast: %s (was %s)",
-					live.TenantID, p.conf.TenantID)
-				p.conf.TenantID = live.TenantID
-			}
-		}
-	}
-
-	p.Log(logger.Info,
-		"[pairing-auth] paired recorder using JWT auth: issuer=%s jwks=%s aud=%s tenant=%s",
-		resolved.IssuerURL, resolved.JWKSURL, audience, p.conf.TenantID)
-
-	// Background reconciler: mDNS browse is async; the live broadcast
-	// may not be in the cache at startup. Poll for up to a minute so
-	// the recorder can recover URL drift even if it boots before the
-	// MS has been seen on the LAN. Also picks up tenant_id if it
-	// wasn't yet present.
-	go p.pairingAuthReconciler(pinnedFPs)
-}
-
-// pairingAuthReconciler is the background goroutine started by
-// applyPairingAwareAuth. It polls mDNS for the bound MS and re-applies
-// the override whenever it detects URL drift or a tenant_id change.
-// Runs for the lifetime of the process; cheap (one mDNS-cache lookup
-// every 30s).
-func (p *Core) pairingAuthReconciler(pinnedFPs []string) {
-	tick := time.NewTicker(30 * time.Second)
-	defer tick.Stop()
-	// Quick first poll so a freshly-discovered MS surfaces within
-	// seconds rather than waiting for the 30s tick.
-	first := time.NewTimer(5 * time.Second)
-	defer first.Stop()
-	for {
-		select {
-		case <-p.ctx.Done():
-			return
-		case <-first.C:
-			p.reconcilePairingAuth(pinnedFPs)
-		case <-tick.C:
-			p.reconcilePairingAuth(pinnedFPs)
-		}
-	}
-}
-
-func (p *Core) reconcilePairingAuth(pinnedFPs []string) {
-	if p.mdnsService == nil || p.identity == nil || !p.identity.IsPaired() {
-		return
-	}
-	live := p.mdnsService.LiveMSBroadcast(pinnedFPs)
-	if live == nil || live.URL == "" {
-		return
-	}
-	pinned := p.identity.MSMetadata()
-	if pinned == nil {
-		return
-	}
-	issuerURL := live.PublicURL
-	if issuerURL == "" {
-		issuerURL = live.URL
-	}
-	// URL drift on either the issuer or the JWKS URL?
-	driftDetected := !sameMSHost(issuerURL, pinned.IssuerURL) ||
-		!sameMSHost(issuerURL, pinned.JWKSURL)
-	if driftDetected {
-		updated := *pinned
-		updated.IssuerURL = issuerURL
-		updated.JWKSURL = issuerURL + "/.well-known/jwks.json"
-		updated.RootsURL = issuerURL + "/.well-known/raikada-roots"
-		updated.WebSocketURL = strings.Replace(issuerURL, "https://", "wss://", 1) + "/v1/ws"
-		if err := p.identity.RefreshMSMetadata(updated); err != nil {
-			p.Log(logger.Warn, "[pairing-auth] reconciler: refresh ms-metadata: %s", err)
-			return
-		}
-		// Build a fresh root pool — pinned roots haven't changed but
-		// ApplyPairingOverride needs one.
-		pool := x509.NewCertPool()
-		for _, r := range p.identity.PinnedRoots() {
-			pool.AppendCertsFromPEM([]byte(r.CertPEM))
-		}
-		audience := "recording_server/" + p.identity.ID().String()
-		p.authManager.ApplyPairingOverride(
-			conf.AuthMethodJWT,
-			updated.JWKSURL,
-			"",
-			updated.IssuerURL,
-			audience,
-			pool,
-		)
-		p.Log(logger.Info,
-			"[pairing-auth] reconciler refreshed: issuer=%s jwks=%s tenant=%s",
-			updated.IssuerURL, updated.JWKSURL, p.conf.TenantID)
-	}
-	// Tenant-id drift?
-	if live.TenantID != "" && p.conf.TenantID != live.TenantID {
-		p.Log(logger.Info,
-			"[pairing-auth] reconciler tenant_id update: %s -> %s",
-			p.conf.TenantID, live.TenantID)
-		p.conf.TenantID = live.TenantID
-	}
-}
-
-// sameMSHost compares two MS URLs by scheme + host (port included),
-// ignoring path. Returns true when they refer to the same MS endpoint.
-func sameMSHost(a, b string) bool {
-	if a == b {
-		return true
-	}
-	// Strip trailing slashes / paths.
-	for _, ch := range []string{"/v1", "/.well-known"} {
-		if i := strings.Index(a, ch); i > 0 {
-			a = a[:i]
-		}
-		if i := strings.Index(b, ch); i > 0 {
-			b = b[:i]
-		}
-	}
-	a = strings.TrimSuffix(a, "/")
-	b = strings.TrimSuffix(b, "/")
-	return strings.EqualFold(a, b)
 }
 
 // parseAPIPort extracts the port number from an APIAddress like

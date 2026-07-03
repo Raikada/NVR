@@ -15,18 +15,7 @@ import (
 
 func newInstance(conf string) (*Core, bool) {
 	if conf == "" {
-		// tenantId is required by Conf.Validate (D1 in
-		// canonical-divergences.md); empty conf path means New()
-		// loads defaults, which still need a tenantId. The CLI test
-		// path Conf-loads a default file; that file must include
-		// tenantId. In test isolation (the common case), pass an
-		// explicit conf string instead.
 		return New([]string{})
-	}
-
-	// Inject a sentinel tenantId for tests that don't set one (most).
-	if !strings.Contains(conf, "tenantId:") {
-		conf = "tenantId: 00000000-0000-0000-0000-000000000000\n" + conf
 	}
 
 	// Disable API encryption + use the legacy server.key/server.crt paths
@@ -148,7 +137,7 @@ func TestCoreHotReloading(t *testing.T) {
 	confPath := filepath.Join(os.TempDir(), "rtsp-conf")
 
 	err := os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+		
 			"apiEncryption: no\n"+
 			"apiServerKey: server.key\n"+
 			"apiServerCert: server.crt\n"+
@@ -172,7 +161,7 @@ func TestCoreHotReloading(t *testing.T) {
 	}()
 
 	err = os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+		
 			"apiEncryption: no\n"+
 			"apiServerKey: server.key\n"+
 			"apiServerCert: server.crt\n"+
@@ -195,12 +184,8 @@ func TestCoreHotReloading(t *testing.T) {
 func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 	confPath := filepath.Join(os.TempDir(), "rtsp-conf")
 
-	// tenantId is required by Conf.Validate() per the D1 enforcement
-	// added in commit e97ba172. Without it, New() rejects the config
-	// and the test gets a (nil, false) return.
 	err := os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
-			"apiEncryption: no\n"+
+		"apiEncryption: no\n"+
 			"apiServerKey: server.key\n"+
 			"apiServerCert: server.crt\n"),
 		0o644)
@@ -212,7 +197,7 @@ func TestCoreHotReloadingAndLoggerError(t *testing.T) {
 	defer p.Close()
 
 	err = os.WriteFile(confPath, []byte(
-		"tenantId: 00000000-0000-0000-0000-000000000000\n"+
+		
 			"apiEncryption: no\n"+
 			"apiServerKey: server.key\n"+
 			"apiServerCert: server.crt\n"+

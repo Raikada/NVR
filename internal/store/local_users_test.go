@@ -226,3 +226,41 @@ func TestLocalUsers_CountAndListAll(t *testing.T) {
 		t.Errorf("list len: got %d", len(all))
 	}
 }
+
+func TestLocalUsers_RoleEmailLanguage(t *testing.T) {
+	s := mustOpenStore(t)
+	ctx := context.Background()
+	u := &LocalUser{
+		ID:           uuid.NewString(),
+		Username:     "alice",
+		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=2$AAAA$BBBB",
+		IsActive:     true,
+		RoleID:       "role_admin",
+		Email:        "alice@example.com",
+		Language:     "en",
+	}
+	if err := s.LocalUsers.Insert(ctx, u); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got, err := s.LocalUsers.GetByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.RoleID != "role_admin" || got.Email != "alice@example.com" || got.Language != "en" {
+		t.Errorf("got role=%q email=%q lang=%q", got.RoleID, got.Email, got.Language)
+	}
+
+	if err := s.LocalUsers.SetRole(ctx, u.ID, "role_viewer"); err != nil {
+		t.Fatalf("set role: %v", err)
+	}
+	if err := s.LocalUsers.SetEmail(ctx, u.ID, "alice2@example.com"); err != nil {
+		t.Fatalf("set email: %v", err)
+	}
+	if err := s.LocalUsers.SetLanguage(ctx, u.ID, "es"); err != nil {
+		t.Fatalf("set lang: %v", err)
+	}
+	got, _ = s.LocalUsers.GetByID(ctx, u.ID)
+	if got.RoleID != "role_viewer" || got.Email != "alice2@example.com" || got.Language != "es" {
+		t.Errorf("post-update got role=%q email=%q lang=%q", got.RoleID, got.Email, got.Language)
+	}
+}

@@ -11,6 +11,17 @@
 // status + parsed `{status,error}` body when the server returned a
 // non-2xx response.
 
+import type {
+  User,
+  CameraGroup,
+  RecordingSchedule,
+  EventType,
+  NotificationTarget,
+  NotificationSubscription,
+  MeResponse,
+  Role,
+} from './types';
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -119,6 +130,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   get<T>(path: string): Promise<T> { return request<T>('GET', path); },
   post<T>(path: string, body?: unknown): Promise<T> { return request<T>('POST', path, body); },
+  put<T>(path: string, body?: unknown): Promise<T> { return request<T>('PUT', path, body); },
   patch<T>(path: string, body?: unknown): Promise<T> { return request<T>('PATCH', path, body); },
   delete<T>(path: string): Promise<T> { return request<T>('DELETE', path); },
 };
@@ -197,6 +209,10 @@ export interface Camera {
   source_url: string;
   credentials_ref?: string;
   recording_policy_id?: string;
+  // SP3 vendor event channel: ''|'auto' auto-resolve, or an explicit
+  // 'onvif'|'amcrest'|'none'. Lives on the store row; surfaced on the
+  // camera GET and settable via PATCH.
+  event_channel?: string;
   runtime?: CameraRuntime;
   created_at: string;
   updated_at: string;
@@ -215,6 +231,10 @@ export interface CameraList extends ListEnvelope<Camera> {
 export const fetchCameras = (page = 0, perPage = 50) =>
   api.get<CameraList>(`/cameras?page=${page}&items_per_page=${perPage}`);
 
+// Single-camera fetch. GET /v1/cameras/:id folds the store-row-only
+// fields (event_channel, …) onto the canonical camera.
+export const fetchCamera = (id: string) => api.get<Camera>(`/cameras/${id}`);
+
 export const deleteCamera = (id: string) => api.delete<unknown>(`/cameras/${id}`);
 
 export interface CameraCreateBody {
@@ -230,6 +250,8 @@ export interface CameraPatchBody {
   source_type?: CameraSourceType;
   source_url?: string;
   recording_policy_id?: string;
+  // SP3: '' | 'auto' | 'onvif' | 'amcrest' | 'none'. Invalid values → 400.
+  event_channel?: string;
 }
 
 export const patchCamera = (id: string, patch: CameraPatchBody) =>
@@ -495,119 +517,6 @@ export interface RecorderConfig {
 export const fetchRecorderConfig = () => api.get<RecorderConfig>('/recorder/config');
 export const patchRecorderConfig = (body: Partial<RecorderConfig>) =>
   api.patch<{ status: string }>('/recorder/config', body);
-
-/* ---------- /v1/recorder/identity ---------- */
-
-export interface RecorderIdentity {
-  id: string;
-  tenant_id: string;
-  hostname: string;
-  location: string;
-  timezone: string;
-  firmware_version: string;
-  paired: boolean;
-  public_key_fingerprint: string;
-  pinned_root_fingerprints: string[];
-  // Slice 4-B per ADR 0016 D3 / D5: when "ms", recorder Camera mutation
-  // endpoints are locked down to the MS service principal. SPA uses
-  // this to grey out Add/Edit/Delete affordances on the Cameras page.
-  canonical_source?: 'recorder' | 'ms';
-  // Slice 4-C per ADR 0017 D3 / D5: same pattern as canonical_source
-  // for RecordingPolicy. Independent of canonical_source — a recorder
-  // may legitimately be at canonical_source = "ms" AND
-  // policy_canonical_source = "recorder" during the 4-B → 4-C
-  // migration window. SPA uses this to grey out Add/Edit/Delete
-  // affordances on the Policies page.
-  policy_canonical_source?: 'recorder' | 'ms';
-  // Wave A2: most-recent MS-approved software-update lifecycle row
-  // surfaced via the recorder's local update-state poller. nil when no
-  // approved update exists, the recorder is unpaired, or the poller
-  // hasn't completed its first cycle.
-  pending_software_update?: PendingSoftwareUpdate | null;
-  pending_software_update_polled_at?: string;
-}
-
-export interface PendingSoftwareUpdate {
-  lifecycle_id: string;
-  state: string;
-  state_changed_at?: string;
-  manifest_id?: string;
-  version?: string;
-  channel?: string;
-  release_notes_url?: string;
-}
-
-export const fetchIdentity = () => api.get<RecorderIdentity>('/recorder/identity');
-export const patchIdentity = (body: { location: string }) =>
-  api.patch<{ status: string }>('/recorder/identity', body);
-
-/* ---------- /v1/recorder/pair ---------- */
-
-// Mirrors internal/pairing.State — the recorder-side pairing-flow
-// state machine. Drives the WizPair / Pairing-route UI loop.
-export type PairState =
-  | 'idle'
-  | 'in_progress'
-  | 'approved'
-  | 'rejected'
-  | 'token_expired'
-  | 'token_consumed_elsewhere'
-  | 'failed'
-  | 'already_paired';
-
-export interface PairStatus {
-  state: PairState;
-  started_at?: string;
-  updated_at: string;
-  ms_url?: string;
-  pairing_request_id?: string;
-  detail?: string;
-}
-
-export interface PairStartRequest {
-  ms_url: string;
-  token: string;
-  root_fingerprint?: string; // sha256 hex (with optional `sha256:` prefix); from QR
-}
-
-export interface PairStartResponse {
-  state: PairState;
-  pairing_request_id?: string;
-  detail?: string;
-}
-
-export const startPairing = (body: PairStartRequest) =>
-  api.post<PairStartResponse>('/recorder/pair', body);
-
-export const fetchPairStatus = () => api.get<PairStatus>('/recorder/pair/status');
-
-export const resetPairing = () => api.post<{ status: string }>('/recorder/pair/reset');
-
-// unpairRecorder wipes the recorder's locally-stored DeviceIdentity
-// (cert + chain + pinned roots) and returns it to unpaired state.
-// The recorder's UUIDv7 + ECDSA keypair survive — per ADR 0002 D3
-// those are stable for the life of the install. The MS still has a
-// pairing record + RecordingServer entry until an MS operator
-// cleans it up; the recorder ↔ MS WebSocket-driven unpair flow
-// (pairing-flows.md §2.5) lands in a later slice.
-export const unpairRecorder = () => api.post<{ status: string }>('/recorder/unpair');
-
-/* ---------- /v1/recorder/discovered-management ---------- */
-
-export interface DiscoveredManagement {
-  ms_id?: string;
-  hostname: string;
-  addresses: string[];
-  version?: string;
-  tenant_id?: string;
-  port: number;
-  url: string;
-  first_seen_at: string;
-  last_seen_at: string;
-}
-
-export const fetchDiscoveredManagement = () =>
-  api.get<{ items: DiscoveredManagement[] }>('/recorder/discovered-management');
 
 /* ---------- /v1/recorder system actions ---------- */
 
@@ -930,4 +839,421 @@ export const changeRecorderPassword = (
     current_password,
     new_password,
   });
+
+/* ---------- /v1/system/* (foundation) ---------- */
+
+export type SystemSettings = Record<string, string>;
+
+export const getSystemSettings = () => api.get<SystemSettings>('/system/settings');
+export const patchSystemSettings = (patch: Partial<SystemSettings>) =>
+  api.patch<SystemSettings>('/system/settings', patch);
+export const putSystemTLS = (cert_pem: string, key_pem: string) =>
+  api.post<{ status: string }>('/system/tls', { cert_pem, key_pem });
+
+export const getSetupStatus = () =>
+  api.get<{ setup_required: boolean }>('/system/setup-status');
+
+export const getSystemInfo = () =>
+  api.get<{ recorder_id: string; version: string }>('/system/info');
+
+export const runRetentionSweep = () =>
+  api.post<{ swept: { segments: number; events: number; clips: number } }>(
+    '/system/retention-sweep',
+  );
+
+/* ---------- /v1/users (foundation, admin-only) ---------- */
+
+export const listUsers = () =>
+  api.get<{ items: User[] }>('/users').then((r) => r.items);
+
+export interface CreateUserInput {
+  username: string;
+  password: string;
+  role: Role;
+  email?: string;
+  display_name?: string;
+}
+
+export const createUser = (input: CreateUserInput) =>
+  api.post<User>('/users', input);
+
+export interface UpdateUserPatch {
+  display_name?: string;
+  email?: string;
+  language?: string;
+  is_active?: boolean;
+}
+
+export const updateUser = (id: string, patch: UpdateUserPatch) =>
+  api.patch<User>(`/users/${id}`, patch);
+
+export const setUserRole = (id: string, role: Role) =>
+  api.patch<User>(`/users/${id}/role`, { role });
+
+export const resetUserPassword = (id: string, new_password: string) =>
+  api.post<{ status: string }>(`/users/${id}/reset-password`, { new_password });
+
+export const deleteUser = (id: string) =>
+  api.delete<{ status: string }>(`/users/${id}`);
+
+export const getMe = () => api.get<MeResponse>('/auth/me');
+
+/* ---------- /v1/notifications (foundation) ---------- */
+
+export const listNotificationTargets = () =>
+  api.get<{ items: NotificationTarget[] }>('/notifications/targets').then((r) => r.items);
+
+export interface CreateNotificationTargetInput {
+  kind: 'webhook' | 'email';
+  name: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+  email_address?: string;
+  enabled?: boolean;
+}
+
+export const createNotificationTarget = (input: CreateNotificationTargetInput) =>
+  api.post<NotificationTarget>('/notifications/targets', input);
+
+export interface UpdateNotificationTargetPatch {
+  name?: string;
+  webhook_url?: string;
+  webhook_secret?: string;
+  email_address?: string;
+  enabled?: boolean;
+}
+
+export const updateNotificationTarget = (id: string, patch: UpdateNotificationTargetPatch) =>
+  api.patch<NotificationTarget>(`/notifications/targets/${id}`, patch);
+
+export const deleteNotificationTarget = (id: string) =>
+  api.delete<{ status: string }>(`/notifications/targets/${id}`);
+
+export const testNotificationTarget = (id: string) =>
+  api.post<{ ok: boolean; status?: number; error?: string }>(
+    `/notifications/targets/${id}/test`,
+  );
+
+export const listNotificationSubscriptions = () =>
+  api.get<{ items: NotificationSubscription[] }>('/notifications/subscriptions').then(
+    (r) => r.items,
+  );
+
+export interface CreateNotificationSubscriptionInput {
+  target_id: string;
+  event_type_id?: string;
+  camera_id?: string;
+  min_severity?: 'info' | 'warning' | 'critical';
+  quiet_hours_start_minute?: number;
+  quiet_hours_end_minute?: number;
+}
+
+export const createNotificationSubscription = (
+  input: CreateNotificationSubscriptionInput,
+) => api.post<NotificationSubscription>('/notifications/subscriptions', input);
+
+export const deleteNotificationSubscription = (id: string) =>
+  api.delete<{ status: string }>(`/notifications/subscriptions/${id}`);
+
+export const listNotificationOutbox = (limit = 50) =>
+  api.get<{ items: unknown[] }>(`/notifications/outbox?limit=${limit}`).then((r) => r.items);
+
+export const retryNotificationOutbox = (id: string) =>
+  api.post<{ status: string }>(`/notifications/outbox/${id}/retry`);
+
+/* ---------- Recording schedules (foundation) ---------- */
+
+export const getPolicySchedules = (policyID: string) =>
+  api.get<{ items: RecordingSchedule[] }>(
+    `/recording-policies/${policyID}/schedules`,
+  ).then((r) => r.items);
+
+export const putPolicySchedules = (
+  policyID: string,
+  schedules: RecordingSchedule[],
+) =>
+  api.post<{ status: string }>(
+    `/recording-policies/${policyID}/schedules`,
+    { schedules },
+  );
+
+export const getCameraRecordingState = (cameraID: string) =>
+  api.get<{ active: boolean; mode: string; reason: string; until?: string }>(
+    `/cameras/${cameraID}/recording-state`,
+  );
+
+/* ---------- Event types & retention (foundation) ---------- */
+
+export const listEventTypes = () =>
+  api.get<{ items: EventType[] }>('/event-types').then((r) => r.items);
+
+export interface CreateEventTypeInput {
+  id: string;
+  display_name: string;
+  description?: string;
+}
+
+export const createEventType = (input: CreateEventTypeInput) =>
+  api.post<EventType>('/event-types', input);
+
+export const updateEventType = (
+  id: string,
+  patch: { display_name?: string; description?: string },
+) => api.patch<EventType>(`/event-types/${id}`, patch);
+
+export const getEventRetention = () =>
+  api.get<Record<string, number>>('/event-retention');
+
+export const setEventRetention = (typeID: string, keepDurationSeconds: number) =>
+  api.post<{ status: string }>('/event-retention', {
+    event_type_id: typeID,
+    keep_duration_seconds: keepDurationSeconds,
+  });
+
+/* ---------- Camera groups (foundation) ---------- */
+
+export const listCameraGroups = () =>
+  api.get<{ items: CameraGroup[] }>('/camera-groups').then((r) => r.items);
+
+export const createCameraGroup = (input: { name: string; display_order?: number }) =>
+  api.post<CameraGroup>('/camera-groups', input);
+
+export const updateCameraGroup = (
+  id: string,
+  patch: { name?: string; display_order?: number },
+) => api.patch<CameraGroup>(`/camera-groups/${id}`, patch);
+
+export const deleteCameraGroup = (id: string) =>
+  api.delete<{ status: string }>(`/camera-groups/${id}`);
+
+/* ---------- Camera credentials (foundation) ---------- */
+
+export interface CameraCredentials {
+  rtsp_username: string;
+  rtsp_password: string;
+  onvif_username?: string;
+  onvif_password?: string;
+}
+
+export const setCameraCredentials = (cameraID: string, creds: CameraCredentials) =>
+  api.put<{ status: string }>(`/cameras/${cameraID}/credentials`, creds);
+
+/* ---------- /v1/audit list (typed wrapper) ---------- */
+
+export const listAudit = (filter?: { page?: number; perPage?: number }) =>
+  fetchAudit(filter?.page ?? 0, filter?.perPage ?? 100).then((r) => r.items);
+
+/* ---------- /v1/discovery + camera capabilities/health (SP2 camera lifecycle) ---------- */
+//
+// The recorder passively discovers ONVIF cameras on the LAN and holds
+// them in a discovery cache. GET /v1/discovery/cameras reads the
+// cache; POST /v1/discovery/probe forces a fresh WS-Discovery round
+// and returns the refreshed cache. Adopt turns a discovered entry
+// into a canonical Camera + persists its credentials, returning the
+// created Camera alongside the freshly-probed capabilities.
+
+export interface DiscoveredCamera {
+  xaddr: string;
+  endpoint_reference: string;
+  manufacturer: string;
+  model: string;
+  hardware: string;
+  name: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  // Present when the recorder has already matched this network entry
+  // to a managed Camera (same endpoint_reference / xaddr). Adopting is
+  // suppressed for matched entries.
+  matched_camera_id?: string;
+}
+
+export interface DiscoveredCameraList {
+  items: DiscoveredCamera[];
+}
+
+export const getDiscoveredCameras = () =>
+  api.get<DiscoveredCameraList>('/discovery/cameras');
+
+// Forces a fresh probe round and returns the refreshed cache.
+export const probeDiscovery = () =>
+  api.post<DiscoveredCameraList>('/discovery/probe');
+
+export interface AdoptCameraBody {
+  endpoint_reference: string;
+  name: string;
+  rtsp_username: string;
+  rtsp_password: string;
+}
+
+export interface AdoptCameraResponse {
+  camera: Camera;
+  capabilities: CameraCapabilities;
+}
+
+// POST /v1/discovery/adopt → 201. Errors surface via ApiError with
+// the parsed {error} message: 400 (bad credentials / invalid name),
+// 404 (entry aged out of the cache), 502 (camera unreachable).
+export const adoptCamera = (body: AdoptCameraBody) =>
+  api.post<AdoptCameraResponse>('/discovery/adopt', body);
+
+export interface CameraCapabilityProfile {
+  token: string;
+  name: string;
+  video_codec: string;
+  width: number;
+  height: number;
+  has_audio: boolean;
+}
+
+export interface CameraCapabilities {
+  camera_id: string;
+  profiles: CameraCapabilityProfile[];
+  selected_profile_token: string;
+  has_audio: boolean;
+  has_ptz: boolean;
+  has_motion: boolean;
+  has_io: boolean;
+  has_imaging: boolean;
+  vendor: string;
+  probed_at: string;
+}
+
+// GET returns 404 when the camera has never been probed; callers treat
+// that as "no capability data yet" rather than an error.
+export const getCameraCapabilities = (id: string) =>
+  api.get<CameraCapabilities>(`/cameras/${id}/capabilities`);
+
+// Re-probe the camera's ONVIF capabilities. Returns the same shape as
+// the capabilities GET.
+export const probeCameraCapabilities = (id: string) =>
+  api.post<CameraCapabilities>(`/cameras/${id}/probe`);
+
+export type CameraRTSPState =
+  | 'connected'
+  | 'reconnecting'
+  | 'failed'
+  | 'idle'
+  | 'unknown';
+
+export interface CameraHealth {
+  camera_id: string;
+  rtsp_state: CameraRTSPState;
+  last_keyframe_at?: string;
+  last_event_at?: string;
+  last_seen_at?: string;
+  consecutive_failures: number;
+  last_error?: string;
+  updated_at: string;
+}
+
+export const getCameraHealth = (id: string) =>
+  api.get<CameraHealth>(`/cameras/${id}/health`);
+
+/* ---------- Events SSE stream (foundation) ---------- */
+
+export interface EventStreamFilter {
+  cameraId?: string;
+  severity?: string;
+  kind?: string;
+}
+
+/**
+ * Subscribe to /v1/events/stream via Server-Sent Events. Returns an
+ * unsubscribe function that closes the underlying EventSource.
+ */
+export function subscribeEventsStream(
+  filter: EventStreamFilter,
+  onEvent: (ev: Event) => void, // local Event interface defined above (id, kind, …)
+  onError?: (err: unknown) => void,
+): () => void {
+  const qs = new URLSearchParams();
+  if (filter.cameraId) qs.set('camera_id', filter.cameraId);
+  if (filter.severity) qs.set('severity', filter.severity);
+  if (filter.kind) qs.set('kind', filter.kind);
+  const url = `${BASE}/events/stream${qs.toString() ? `?${qs}` : ''}`;
+  const es = new EventSource(url, { withCredentials: false });
+  es.onmessage = (msg) => {
+    try {
+      const parsed = JSON.parse(msg.data) as Event;
+      onEvent(parsed);
+    } catch (e) {
+      if (onError) onError(e);
+    }
+  };
+  es.onerror = (e) => {
+    if (onError) onError(e);
+  };
+  return () => es.close();
+}
+
+/* ---------- SP4 DB-backed events (snapshots + clip export) ---------- */
+//
+// The canonical event store (events.Service → SQLite) surfaces a richer
+// wire shape than the legacy in-memory Event above: per-event snapshot /
+// thumbnail media URLs, acknowledge metadata, and a linked clip id.
+// snapshot_url / thumbnail_url are RELATIVE, signed, short-lived (~15min)
+// URLs — usable directly as <img src> / <a href> WITHOUT auth headers;
+// re-list to refresh them once they expire.
+
+export interface EventRecord {
+  id: string;
+  camera_id: string;
+  type_id: string;
+  source: string;
+  occurred_at: string;
+  received_at: string;
+  severity: string;
+  payload?: unknown;
+  acknowledged_at?: string;
+  acknowledged_by?: string;
+  expires_at: string;
+  snapshot_url?: string;
+  thumbnail_url?: string;
+  clip_id?: string;
+}
+
+export interface EventRecordList {
+  items: EventRecord[];
+  item_count: number;
+  next_cursor: string;
+}
+
+export interface ListEventsParams {
+  cameraId?: string;
+  typeId?: string;
+  itemsPerPage?: number;
+  cursor?: string;
+  unacknowledged?: boolean;
+}
+
+export const listEvents = (params: ListEventsParams = {}) => {
+  const qs = new URLSearchParams();
+  if (params.cameraId) qs.set('camera_id', params.cameraId);
+  if (params.typeId) qs.set('type_id', params.typeId);
+  if (params.itemsPerPage) qs.set('items_per_page', String(params.itemsPerPage));
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.unacknowledged) qs.set('unacknowledged', 'true');
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return api.get<EventRecordList>(`/events${suffix}`);
+};
+
+// POST /v1/events/:id/acknowledge → 204 No Content.
+export const ackEvent = (id: string) =>
+  api.post<void>(`/events/${id}/acknowledge`);
+
+export interface EventClipBody {
+  pre_roll_seconds?: number;
+  post_roll_seconds?: number;
+}
+
+export interface EventClipResponse {
+  clip: { id: string; state: string; [key: string]: unknown };
+  download_url: string;
+}
+
+// POST /v1/events/:id/clip → 201 (created) or 200 (already existed).
+// Throws ApiError with status 409 when the footage has already been
+// swept and no segments cover the event window.
+export const createEventClip = (id: string, body?: EventClipBody) =>
+  api.post<EventClipResponse>(`/events/${id}/clip`, body ?? {});
 
