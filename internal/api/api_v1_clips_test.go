@@ -394,7 +394,7 @@ func TestStitchSegmentsRemuxesToMP4(t *testing.T) {
 	require.NoError(t, os.WriteFile(b, srcBytes, 0o644))
 	out := filepath.Join(dir, "out.mp4")
 
-	size, checksum, err := stitchSegments([]string{a, b}, out)
+	size, checksum, err := stitchSegments([]string{a, b}, out, nil)
 	require.NoError(t, err)
 	require.Greater(t, size, int64(0))
 	require.Contains(t, checksum, "sha256:")
@@ -421,7 +421,7 @@ func TestStitchSegmentsRemuxSingleSegment(t *testing.T) {
 	require.NoError(t, os.WriteFile(a, srcBytes, 0o644))
 	out := filepath.Join(dir, "out.mp4")
 
-	size, checksum, err := stitchSegments([]string{a}, out)
+	size, checksum, err := stitchSegments([]string{a}, out, nil)
 	require.NoError(t, err)
 	require.Greater(t, size, int64(0))
 	require.Contains(t, checksum, "sha256:")
@@ -439,7 +439,7 @@ func TestStitchSegmentsRejectsEmpty(t *testing.T) {
 	require.NoError(t, err)
 	defer os.RemoveAll(dir)
 
-	_, _, err = stitchSegments(nil, filepath.Join(dir, "out.mp4"))
+	_, _, err = stitchSegments(nil, filepath.Join(dir, "out.mp4"), nil)
 	require.Error(t, err)
 }
 
