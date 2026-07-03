@@ -73,7 +73,7 @@ export function App() {
   });
   const [authUser, setAuthUser] = useState<string>(() => getStoredUsername() ?? 'admin');
   const [claims, setClaims] = useState<MeResponse | null>(null);
-  const isAdmin = claims?.user.role === 'admin';
+  const isAdmin = claims?.user?.role === 'admin';
 
   // Wire the api.ts 401 handler so an expired-token request bumps the
   // SPA back to the Login screen instead of cascading hard errors.

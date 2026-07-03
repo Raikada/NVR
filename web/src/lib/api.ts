@@ -896,7 +896,7 @@ export const resetUserPassword = (id: string, new_password: string) =>
 export const deleteUser = (id: string) =>
   api.delete<{ status: string }>(`/users/${id}`);
 
-export const getMe = () => api.get<MeResponse>('/me');
+export const getMe = () => api.get<MeResponse>('/auth/me');
 
 /* ---------- /v1/notifications (foundation) ---------- */
 
