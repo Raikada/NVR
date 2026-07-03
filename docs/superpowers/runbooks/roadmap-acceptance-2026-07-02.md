@@ -55,10 +55,9 @@ suites were green before this; this is the real-hardware pass.
 
 ## Known limitations (deferred, documented)
 
-- **Clip granularity**: the remux pipeline stitches whole overlapping
-  segments; a 10s pre/post-roll window inside a long-running segment
-  yields the whole segment (observed: 372s). Sample-accurate trimming
-  in the remuxer is the follow-up.
+- ~~**Clip granularity**~~ RESOLVED same session (`2094ca1e`): exports
+  now trim to the requested window with keyframe snap-in (re-verified
+  live: 10.76s / 4.5 MB where the untrimmed export was 372s / 152 MB).
 - Doorbell ONVIF lockout requires a power cycle (device-side state).
 - Pre-existing `internal/core` suite-order test flakiness unchanged.
 
