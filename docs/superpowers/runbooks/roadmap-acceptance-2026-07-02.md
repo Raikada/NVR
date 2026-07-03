@@ -71,3 +71,23 @@ suites were green before this; this is the real-hardware pass.
 - F10: a not-yet-created recordings directory no longer reports
   `storage volume degraded (statfs_failed)`; only real statfs failures
   degrade.
+
+## SPA live UI verification (added when asked "are the clients ready to test")
+
+Driving the real embedded bundle in a headless browser (Cypress
+`live-smoke.cy.ts`) — not just `tsc` — surfaced two ship-blockers the
+type checker cannot see, because a wrong path string still compiles:
+
+- `getMe()` called `/me` (no such route) → SPA static handler returned
+  `index.html` (200) → app read `.user.role` off HTML and threw,
+  blanking the UI for **every user immediately after login**. Fixed to
+  `/auth/me` + hardened the optional chain.
+- Notification client paths were `/notifications/{targets,subscriptions}`
+  but the API registers `/notification-{targets,subscriptions}` — same
+  HTML-fallthrough, Notifications page couldn't load.
+
+A full live sweep of every GET-able SPA path now confirms none fall
+through to HTML. All three verified pages (Cameras w/ discovery + health
+badges, Events w/ real snapshot thumbnails + clip export, Notifications
+w/ the webhook target) render real data. Screenshots captured. Lesson:
+`tsc` green ≠ client works; the live-smoke spec is the guard.
