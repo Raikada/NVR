@@ -901,7 +901,7 @@ export const getMe = () => api.get<MeResponse>('/auth/me');
 /* ---------- /v1/notifications (foundation) ---------- */
 
 export const listNotificationTargets = () =>
-  api.get<{ items: NotificationTarget[] }>('/notifications/targets').then((r) => r.items);
+  api.get<{ items: NotificationTarget[] }>('/notification-targets').then((r) => r.items);
 
 export interface CreateNotificationTargetInput {
   kind: 'webhook' | 'email';
@@ -913,7 +913,7 @@ export interface CreateNotificationTargetInput {
 }
 
 export const createNotificationTarget = (input: CreateNotificationTargetInput) =>
-  api.post<NotificationTarget>('/notifications/targets', input);
+  api.post<NotificationTarget>('/notification-targets', input);
 
 export interface UpdateNotificationTargetPatch {
   name?: string;
@@ -924,18 +924,18 @@ export interface UpdateNotificationTargetPatch {
 }
 
 export const updateNotificationTarget = (id: string, patch: UpdateNotificationTargetPatch) =>
-  api.patch<NotificationTarget>(`/notifications/targets/${id}`, patch);
+  api.patch<NotificationTarget>(`/notification-targets/${id}`, patch);
 
 export const deleteNotificationTarget = (id: string) =>
-  api.delete<{ status: string }>(`/notifications/targets/${id}`);
+  api.delete<{ status: string }>(`/notification-targets/${id}`);
 
 export const testNotificationTarget = (id: string) =>
   api.post<{ ok: boolean; status?: number; error?: string }>(
-    `/notifications/targets/${id}/test`,
+    `/notification-targets/${id}/test`,
   );
 
 export const listNotificationSubscriptions = () =>
-  api.get<{ items: NotificationSubscription[] }>('/notifications/subscriptions').then(
+  api.get<{ items: NotificationSubscription[] }>('/notification-subscriptions').then(
     (r) => r.items,
   );
 
@@ -950,10 +950,10 @@ export interface CreateNotificationSubscriptionInput {
 
 export const createNotificationSubscription = (
   input: CreateNotificationSubscriptionInput,
-) => api.post<NotificationSubscription>('/notifications/subscriptions', input);
+) => api.post<NotificationSubscription>('/notification-subscriptions', input);
 
 export const deleteNotificationSubscription = (id: string) =>
-  api.delete<{ status: string }>(`/notifications/subscriptions/${id}`);
+  api.delete<{ status: string }>(`/notification-subscriptions/${id}`);
 
 export const listNotificationOutbox = (limit = 50) =>
   api.get<{ items: unknown[] }>(`/notifications/outbox?limit=${limit}`).then((r) => r.items);

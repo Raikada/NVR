@@ -38,4 +38,14 @@ describe('live UI smoke (SP2–SP4)', () => {
     cy.contains(/export clip|download/i).should('exist');
     cy.screenshot('live-events', { capture: 'viewport' });
   });
+
+  it('notifications page loads targets without falling back to HTML', () => {
+    cy.visit('/#notifications');
+    // The page must render its own chrome, not crash or blank. The
+    // targets list (or an empty-state) must appear — proves the client
+    // hit the real /v1/notification-targets, not the SPA static handler.
+    cy.contains(/notification|webhook|target/i, { timeout: 15000 }).should('exist');
+    cy.get('body').should('not.contain', 'Cannot read properties');
+    cy.screenshot('live-notifications', { capture: 'viewport' });
+  });
 });
