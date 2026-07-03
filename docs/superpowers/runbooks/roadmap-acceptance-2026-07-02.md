@@ -61,3 +61,14 @@ suites were green before this; this is the real-hardware pass.
   in the remuxer is the follow-up.
 - Doorbell ONVIF lockout requires a power cycle (device-side state).
 - Pre-existing `internal/core` suite-order test flakiness unchanged.
+
+## Post-acceptance fixes (same session)
+
+- F8: `store.ParseTime` now accepts any RFC3339 variant, not only
+  FormatTime's exact `.000` form.
+- F9: re-examined — dispatch and test-endpoint timeouts were already
+  5s; the original "~1s" observation was a cold local listener taking
+  longer than 5s to accept. No code change.
+- F10: a not-yet-created recordings directory no longer reports
+  `storage volume degraded (statfs_failed)`; only real statfs failures
+  degrade.

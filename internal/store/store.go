@@ -165,9 +165,16 @@ func FormatTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
 }
 
-// ParseTime parses a stored timestamp.
+// ParseTime parses a stored timestamp. Rows the store writes itself
+// carry FormatTime's exact .000 form, but migrations (strftime) and
+// external writers use other RFC3339 variants — accept them all (F8,
+// 2026-07-02 smoke).
 func ParseTime(s string) (time.Time, error) {
-	return time.Parse("2006-01-02T15:04:05.000Z07:00", s)
+	t, err := time.Parse("2006-01-02T15:04:05.000Z07:00", s)
+	if err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339Nano, s)
 }
 
 // rowScanner abstracts *sql.Row and *sql.Rows so per-row scan helpers

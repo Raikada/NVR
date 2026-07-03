@@ -3,6 +3,7 @@ package recordcleaner
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -96,9 +97,9 @@ type Cleaner struct {
 	// volumeStateMu guards volumeFullState and volumeDegradedState.
 	// The capacity probe and Close race only on shutdown, but reading
 	// state in tests via test-only accessors needs the lock too.
-	volumeStateMu        sync.Mutex
-	volumeFullState      map[string]bool // mountPath -> currently full
-	volumeDegradedState  map[string]bool // mountPath -> currently degraded
+	volumeStateMu       sync.Mutex
+	volumeFullState     map[string]bool // mountPath -> currently full
+	volumeDegradedState map[string]bool // mountPath -> currently degraded
 }
 
 // Initialize initializes a Cleaner.
@@ -314,6 +315,12 @@ func (c *Cleaner) probeCapacity() {
 func (c *Cleaner) sampleVolume(mountPath string) (full, degraded bool, reason string) {
 	var st syscall.Statfs_t
 	if err := statfsFn(mountPath, &st); err != nil {
+		// A recordings directory that doesn't exist yet (fresh install,
+		// nothing recorded) is not a degraded volume — the recorder
+		// creates it at first segment write (F10).
+		if errors.Is(err, syscall.ENOENT) {
+			return false, false, ""
+		}
 		return false, true, "statfs_failed"
 	}
 	bsize := int64(st.Bsize)
