@@ -52,3 +52,51 @@ Cypress.Commands.add('apiPost', (path: string, body: unknown) => {
 });
 
 export {};
+
+// --- Live E2E helpers (drive the real recorder) ---------------------
+
+// apiToken logs in via the API and yields a bearer token. Password
+// comes from CYPRESS_ADMIN_PASSWORD.
+Cypress.Commands.add('apiToken', () => {
+  const password = Cypress.env('ADMIN_PASSWORD');
+  if (!password) throw new Error('Set CYPRESS_ADMIN_PASSWORD to run live E2E');
+  return cy
+    .request({ method: 'POST', url: '/v1/auth/login', body: { username: 'admin', password } })
+    .then((r) => {
+      expect(r.status, 'login').to.eq(200);
+      return (r.body as { access_token: string }).access_token;
+    });
+});
+
+// api issues an authed request that does NOT fail the test on non-2xx,
+// so specs can assert specific status codes.
+Cypress.Commands.add(
+  'api',
+  (method: string, path: string, token: string, body?: unknown) =>
+    cy.request({
+      method,
+      url: path,
+      headers: { Authorization: `Bearer ${token}` },
+      body: body as Cypress.RequestBody,
+      failOnStatusCode: false,
+    }),
+);
+
+// uiLogin drives the real login form (used by render specs).
+Cypress.Commands.add('uiLogin', () => {
+  cy.visit('/');
+  cy.get('input').first().clear().type('admin');
+  cy.get('input[type="password"]').type(Cypress.env('ADMIN_PASSWORD'), { log: false });
+  cy.get('button').contains(/sign in/i).click();
+  cy.contains(/sign in to continue/i, { timeout: 15000 }).should('not.exist');
+});
+
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      apiToken(): Chainable<string>;
+      api(method: string, path: string, token: string, body?: unknown): Chainable<Cypress.Response<unknown>>;
+      uiLogin(): Chainable<void>;
+    }
+  }
+}
