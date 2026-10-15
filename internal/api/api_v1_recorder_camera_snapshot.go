@@ -96,9 +96,25 @@ func (a *API) onV1RecorderCameraSnapshot(ctx *gin.Context) {
 		case errors.Is(err, hls.ErrMuxerNotFound), errors.Is(err, hls.ErrMuxerNoContent):
 			// Either the path resolved but no muxer is registered for it
 			// (camera not actively serving HLS), or a muxer exists but
-			// has no current content. Both surface as 503 — the camera
-			// is known but not producing media right now. This matches
-			// the snapshot scope decision: 503 with an explanatory body.
+			// has no current content. An HLS muxer only exists while a
+			// live viewer is attached, so console thumbnails would 503
+			// for every unwatched camera — try the snapshots service's
+			// camera-side fetch ladder (vendor CGI → ONVIF snapshot URI)
+			// before giving up.
+			a.mutex.RLock()
+			capture := a.snapshotCapture
+			a.mutex.RUnlock()
+			if capture != nil {
+				if jpeg, cerr := capture(ctx.Request.Context(), cameraID); cerr == nil {
+					ctx.Header("Cache-Control", "no-store")
+					ctx.Header("X-Snapshot-Format", "jpeg")
+					ctx.Data(http.StatusOK, "image/jpeg", jpeg)
+					return
+				}
+			}
+			// Camera is known but not producing media right now. This
+			// matches the snapshot scope decision: 503 with an
+			// explanatory body.
 			a.writeError(ctx, http.StatusServiceUnavailable,
 				fmt.Errorf("camera is not currently producing media: %w", err))
 		default:

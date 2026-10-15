@@ -141,6 +141,22 @@ type API struct {
 	// lifecycle rows for this recorder. Read-only access from the
 	// /v1/recorder/identity handler.
 	updatePollState UpdatePollSnapshot
+
+	// snapshotCapture is the snapshots service's on-demand fetch ladder
+	// (vendor CGI → ONVIF URI → live frame grab). Wired by Core via
+	// SetSnapshotCapture; the /v1/recorder/cameras/:id/snapshot handler
+	// falls back to it when no live HLS muxer is producing (console
+	// thumbnails must work for cameras nobody is watching). Guarded by
+	// a.mutex.
+	snapshotCapture func(ctx context.Context, cameraID string) ([]byte, error)
+}
+
+// SetSnapshotCapture wires the on-demand snapshot ladder. Called by
+// Core after constructing the snapshots service; nil clears it.
+func (a *API) SetSnapshotCapture(fn func(ctx context.Context, cameraID string) ([]byte, error)) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.snapshotCapture = fn
 }
 
 // UpdatePollSnapshot is the minimal projection of internal/updatepoll

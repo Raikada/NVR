@@ -195,6 +195,18 @@ func (s *Service) insertRow(ctx context.Context, eventID, kind, path string, w, 
 	}
 }
 
+// CaptureNow returns a current JPEG for the camera via the fetch
+// ladder (vendor CGI → ONVIF snapshot URI → live frame grab), with
+// burst reuse. On-demand entry point for the API's snapshot endpoint;
+// unlike the event-driven path it writes nothing to disk or the store.
+func (s *Service) CaptureNow(ctx context.Context, cameraID string) ([]byte, error) {
+	info, err := s.resolve(ctx, cameraID)
+	if err != nil {
+		return nil, err
+	}
+	return s.fetchWithBurstReuse(ctx, info)
+}
+
 // fetchWithBurstReuse returns a fresh or recently-fetched JPEG for the
 // camera.
 func (s *Service) fetchWithBurstReuse(ctx context.Context, info CameraInfo) ([]byte, error) {

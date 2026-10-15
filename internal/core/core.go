@@ -1324,6 +1324,9 @@ func (p *Core) createResources(initial bool) error {
 				p,
 			)
 			go p.snapshotsSvc.Run(p.fndCtx)
+			// Console thumbnails: let the snapshot endpoint fall back to
+			// the camera-side fetch ladder when no live muxer exists.
+			p.api.SetSnapshotCapture(p.snapshotsSvc.CaptureNow)
 		}
 	}
 
