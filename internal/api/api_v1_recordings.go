@@ -537,19 +537,11 @@ func (a *API) onV1RecordingsPlayback(ctx *gin.Context) {
 	// Build the playback URL. The recorder doesn't know its own external
 	// hostname (TLS / reverse-proxy concerns are above this layer), so we
 	// emit a relative path; clients resolve against the recorder host
-	// they're already talking to. The host-aware variant is a Phase 2
-	// follow-up — see ADR 0009 OQ2 / playback URL composition.
-	scheme := "http"
-	if c != nil && c.PlaybackEncryption {
-		scheme = "https"
-	}
-	host := ""
-	if c != nil {
-		host = c.PlaybackAddress
-	}
-	url := fmt.Sprintf("%s://%s/get?path=%s&start=%s",
-		scheme,
-		host,
+	// they're already talking to. /playback/* is the same-origin proxy
+	// to the playback listener (media_proxy.go) — previously this
+	// emitted "scheme://:9996/get", a cross-origin URL with an empty
+	// hostname that no client could use.
+	url := fmt.Sprintf("/playback/get?path=%s&start=%s",
 		pathName,
 		r.StartedAt.UTC().Format(time.RFC3339Nano),
 	)

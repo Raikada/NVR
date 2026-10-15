@@ -289,8 +289,10 @@ func TestV1RecordingsPlayback(t *testing.T) {
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	require.NoError(t, json.NewDecoder(pb.Body).Decode(&got))
-	require.True(t, strings.Contains(got.URL, "localhost:9996"),
-		"playback URL must reference recorder's playback bind address: got %q", got.URL)
+	// Relative same-origin proxy path (media_proxy.go); clients resolve
+	// it against the recorder host they're already talking to.
+	require.True(t, strings.HasPrefix(got.URL, "/playback/get?"),
+		"playback URL must be the same-origin playback proxy: got %q", got.URL)
 	require.True(t, strings.Contains(got.URL, "path=cam1"),
 		"playback URL must reference path: got %q", got.URL)
 	require.True(t, got.ExpiresAt.After(time.Now()),
