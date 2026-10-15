@@ -10,6 +10,7 @@ import { IconRail } from './console/IconRail';
 import { isConsoleRoute, type ConsoleRoute } from './console/routes';
 import { useTheme } from './console/theme';
 import { LiveView } from './console/LiveView';
+import { Playback } from './console/Playback';
 import { CameraPanel, type Tour } from './console/CameraPanel';
 import { Icon } from './components/Icon';
 import {
@@ -160,7 +161,13 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
           />
         );
       case 'playback':
-        return <Placeholder name="Playback" />;
+        return (
+          <Playback
+            key={playbackTarget?.key ?? 'pb'}
+            camera={playbackTarget ? data.getCam(playbackTarget.camId) ?? null : null}
+            initialAt={playbackTarget?.at}
+          />
+        );
       case 'search':
         return <Placeholder name="Event Search" />;
       case 'devices':
@@ -179,8 +186,6 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
   })();
 
   void claims; // role-gating lands with the Users screen
-  void playbackTarget;
-  void openLive;
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
