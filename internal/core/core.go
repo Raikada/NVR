@@ -510,6 +510,28 @@ func (p *Core) createResources(initial bool) error {
 		p.localAuth = localauth.New(s, signingKey, idDir, "", p.identity.ID().String())
 	}
 
+	// Boot reconcile: the camera store is the durable source of truth;
+	// the conf file is a projection that can be replaced wholesale
+	// (container upgrades ship a pristine config while /data keeps the
+	// database). Fold store cameras missing from the conf back in so
+	// GET /v1/cameras — which lists conf paths — matches reality, and
+	// persist so the repaired conf survives the next restart.
+	if initial && p.localAuthStore != nil {
+		added, err := api.ReconcileStoreCameras(p.ctx, p.conf, p.localAuthStore)
+		if err != nil {
+			p.Log(logger.Warn, "camera conf reconcile: %s", err)
+		} else if added > 0 {
+			p.Log(logger.Info, "restored %d camera path(s) from the store into the conf", added)
+			if p.confPath != "" {
+				if yamlBytes, saveErr := p.conf.SaveToFile(p.confPath); saveErr != nil {
+					p.Log(logger.Warn, "persist reconciled conf to %s: %s", p.confPath, saveErr)
+				} else if p.confWatcher != nil {
+					p.confWatcher.NoteSelfWrite(yamlBytes)
+				}
+			}
+		}
+	}
+
 	// Phase 6 Task 6.4: foundation services wiring. Construct once,
 	// re-use across conf reloads. Uses the recorder's localAuthStore
 	// (the same SQLite handle the API surface depends on) so all
