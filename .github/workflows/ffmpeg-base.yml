@@ -6,6 +6,11 @@
 name: ffmpeg-base
 
 on:
+  # Tag trigger builds from any branch (workflow_dispatch only works
+  # once this file is on the default branch). Push ffmpeg-<version>,
+  # e.g. ffmpeg-8.0, to (re)publish the base.
+  push:
+    tags: ["ffmpeg-*"]
   workflow_dispatch:
     inputs:
       ffmpeg_version:
@@ -35,6 +40,6 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            FFMPEG_VERSION=${{ inputs.ffmpeg_version }}
+            FFMPEG_VERSION=${{ inputs.ffmpeg_version || '8.0' }}
           # Lowercase per GHCR rules; matches the FROM in consumer.Dockerfile.
-          tags: ghcr.io/raikada/nvr-ffmpeg:${{ inputs.ffmpeg_version }}
+          tags: ghcr.io/raikada/nvr-ffmpeg:${{ inputs.ffmpeg_version || '8.0' }}
