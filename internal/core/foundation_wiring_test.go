@@ -63,6 +63,22 @@ func TestCameraSpecToConfPathNoRecord(t *testing.T) {
 	require.Equal(t, "rtsp://u:p@192.0.2.1:554/sub", p.Source)
 }
 
+// A publish-type camera has no source URL; the spec must keep the
+// base/template Source ("publisher") instead of overwriting it with ""
+// — an empty Source routes into the static-source handler and panics
+// the path goroutine (crashes the whole recorder on camera POST).
+func TestCameraSpecToConfPathEmptySourceKeepsPublisher(t *testing.T) {
+	var tmpl conf.Path
+	tmpl.SetDefaults()
+
+	p := cameraSpecToConfPath(cameras.CameraPathSpec{
+		Name:      "pushcam",
+		SourceURL: "",
+	}, nil, &tmpl)
+
+	require.Equal(t, "publisher", p.Source)
+}
+
 // RefreshDefaults must fold paths created after boot (e.g. via
 // POST /v1/cameras + APIConfigSet) into the adapter, so a subsequent
 // credential rotation merges against the real path conf instead of a
