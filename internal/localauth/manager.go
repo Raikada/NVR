@@ -31,10 +31,13 @@ const (
 	LockThreshold = 5
 	LockDuration  = 15 * time.Minute
 
-	// AccessTokenTTL is the recorder-local JWT lifetime. Mirrors the
-	// MS's 15-minute access-token cap from ADR 0002 D8 / authentication-
-	// flows.md §2.
-	AccessTokenTTL = 15 * time.Minute
+	// AccessTokenTTL is the recorder-local JWT lifetime. A LAN-only
+	// consumer recorder keeps operators logged in for a shift (like
+	// Synology Surveillance Station / Frigate) rather than the cloud
+	// MS's 15-minute cap — a short TTL expired live streams whenever a
+	// background tab's refresh timer was throttled past expiry. The SPA
+	// still slides the session (refresh timer + refresh-on-focus).
+	AccessTokenTTL = 12 * time.Hour
 )
 
 // AuditEmitter is the audit hook the API layer wires in. We emit

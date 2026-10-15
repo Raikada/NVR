@@ -848,7 +848,11 @@ export const refreshSession = () => api.post<RefreshResponse>('/auth/refresh', {
  * handler (setOnUnauthorized) — the next request bumps to Login.
  */
 export function startSessionRefresh(): () => void {
-  const REFRESH_UNDER_MS = 10 * 60 * 1000;
+  // Refresh when less than a quarter of the lifetime remains. Also
+  // refresh whenever the tab regains focus: background tabs throttle
+  // setInterval, so a long-backgrounded tab could otherwise return with
+  // an already-expired token and dead media streams.
+  const REFRESH_UNDER_MS = 3 * 60 * 60 * 1000;
   const tick = async () => {
     try {
       const exp = localStorage.getItem(TOKEN_EXP_KEY);
@@ -861,9 +865,18 @@ export function startSessionRefresh(): () => void {
       /* 401 handled globally; transient errors retried next tick */
     }
   };
-  const id = window.setInterval(tick, 60 * 1000);
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') void tick();
+  };
+  const id = window.setInterval(tick, 5 * 60 * 1000);
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('focus', onVisible);
   void tick();
-  return () => window.clearInterval(id);
+  return () => {
+    window.clearInterval(id);
+    document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('focus', onVisible);
+  };
 }
 
 export const changeRecorderPassword = (
