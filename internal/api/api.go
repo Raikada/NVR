@@ -571,12 +571,16 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		}
 	}
 
-	// Media proxy paths: <video> elements and hls.js can't set an
-	// Authorization header, but same-origin requests carry the login
-	// session cookie — promote it to a bearer for these routes only.
+	// Media proxy paths: native <video> elements can't set an
+	// Authorization header. hls.js sets one per-request (preferred,
+	// always-fresh token); the <video src> paths fall back to
+	// ?access_token= or the login session cookie. Promote whichever is
+	// present for these routes only.
 	if isMediaProxyPath(ctx.Request.URL.Path) &&
 		ctx.Request.Header.Get("Authorization") == "" {
-		if ck, err := ctx.Request.Cookie(sessionCookieName); err == nil && ck.Value != "" {
+		if qt := ctx.Query("access_token"); qt != "" {
+			ctx.Request.Header.Set("Authorization", "Bearer "+qt)
+		} else if ck, err := ctx.Request.Cookie(sessionCookieName); err == nil && ck.Value != "" {
 			ctx.Request.Header.Set("Authorization", "Bearer "+ck.Value)
 		}
 	}

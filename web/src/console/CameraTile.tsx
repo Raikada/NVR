@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import Hls from 'hls.js';
 import { Icon } from '../components/Icon';
 import { Brackets, StatusBadge } from '../components/ui';
-import { ptzHome, ptzMove, ptzStop } from '../lib/api';
+import { getStoredToken, ptzHome, ptzMove, ptzStop } from '../lib/api';
 import { fmtTime } from '../lib/format';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 
@@ -27,8 +27,7 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
     const video = videoRef.current;
     if (!video || !path) return;
     // Same-origin proxy: the API reverse-proxies /hls/* to the HLS
-    // listener, so HTTPS consoles avoid mixed content and the session
-    // cookie authenticates the stream.
+    // listener, so HTTPS consoles avoid mixed content.
     const url = `/hls/${encodeURIComponent(path)}/index.m3u8`;
     let cancelled = false;
     let hls: Hls | null = null;
@@ -36,7 +35,16 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
 
     if (Hls.isSupported()) {
       hls = new Hls({
-        xhrSetup: (xhr) => { xhr.withCredentials = true; },
+        // Attach the CURRENT token on every playlist/segment request.
+        // Reading it fresh per-request means a long-lived live stream
+        // never dies when the token rotates (the sliding refresh keeps
+        // localStorage current) — unlike a cookie or a URL baked at
+        // open time, which expire mid-stream.
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true;
+          const t = getStoredToken();
+          if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
+        },
         liveSyncDurationCount: 3,
         liveMaxLatencyDurationCount: 6,
       });
@@ -52,11 +60,17 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
       hls.loadSource(url);
       hls.attachMedia(video);
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS (Safari): the <video> element can't set headers, so
+      // the token rides the query string — the proxy promotes it. This
+      // one is baked at open time (Safari re-fetches with the same URL);
+      // acceptable since the token outlives a typical viewing session
+      // and the element reloads on error.
       const onLoaded = () => { if (!cancelled) onState?.('playing'); };
       const onError = () => { if (!cancelled) onState?.('error'); };
       video.addEventListener('loadedmetadata', onLoaded);
       video.addEventListener('error', onError);
-      video.src = url;
+      const t = getStoredToken();
+      video.src = t ? `${url}?access_token=${encodeURIComponent(t)}` : url;
       video.play().catch(() => {});
       return () => {
         cancelled = true;

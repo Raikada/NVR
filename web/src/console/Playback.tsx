@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Icon } from '../components/Icon';
 import { Btn, FormRow, Segmented, Slider, TxtInput, chip, pageTitle } from '../components/ui';
 import {
-  createBookmark, createEventClip, getCameraCoverage, listEvents, waitForClip,
+  createBookmark, createEventClip, getCameraCoverage, getStoredToken, listEvents, waitForClip,
   type CoverageEntry, type EventRecord,
 } from '../lib/api';
 import { fmtAgo, fmtDate, fmtDelta, fmtTime } from '../lib/format';
@@ -381,6 +381,11 @@ function playbackURL(path: string, startMs: number): string {
     duration: String(CHUNK_SECS),
     format: 'fmp4',
   });
+  // <video src> can't send headers; the token rides the query string
+  // (the proxy promotes it). Each chunk is rebuilt with the current
+  // token, so a long scrubbing session never loses auth.
+  const t = getStoredToken();
+  if (t) qs.set('access_token', t);
   return `/playback/get?${qs}`;
 }
 

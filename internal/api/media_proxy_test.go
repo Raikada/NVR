@@ -32,7 +32,7 @@ func startMediaProxyAPI(t *testing.T) (*http.Client, string) {
 		case r.URL.Path == "/cam1/index.m3u8":
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 			_, _ = w.Write([]byte("#EXTM3U\n"))
-		case r.URL.Path == "/redir/index.m3u8" && r.URL.RawQuery == "":
+		case r.URL.Path == "/redir/index.m3u8" && !strings.Contains(r.URL.RawQuery, "cookieCheck"):
 			http.Redirect(w, r, "/redir/index.m3u8?cookieCheck=1", http.StatusFound)
 		case r.URL.Path == "/get":
 			_, _ = w.Write([]byte("MP4:" + r.URL.RawQuery))
@@ -116,6 +116,37 @@ func TestMediaProxyAcceptsSessionCookie(t *testing.T) {
 	buf := make([]byte, 64)
 	n, _ := res.Body.Read(buf)
 	require.Equal(t, "MP4:path=cam1&start=x", string(buf[:n]))
+}
+
+// Native <video> and the playback element can't send headers; they put
+// the token on the query string and the proxy promotes it.
+func TestMediaProxyAcceptsQueryToken(t *testing.T) {
+	hc, token := startMediaProxyAPI(t)
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"http://localhost:9997/playback/get?path=cam1&start=x&access_token="+token, nil)
+	res, err := hc.Do(req)
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+}
+
+// The HLS cookieCheck 302 drops the query string; the proxy must carry
+// a ?access_token= into the rewritten Location so the native <video>
+// path stays authenticated across the redirect.
+func TestMediaProxyRedirectCarriesQueryToken(t *testing.T) {
+	hc, token := startMediaProxyAPI(t)
+
+	req, _ := http.NewRequest(http.MethodGet,
+		"http://localhost:9997/hls/redir/index.m3u8?access_token="+token, nil)
+	res, err := hc.Do(req)
+	require.NoError(t, err)
+	res.Body.Close()
+	require.Equal(t, http.StatusFound, res.StatusCode)
+	loc, err := url.Parse(res.Header.Get("Location"))
+	require.NoError(t, err)
+	require.Equal(t, "/hls/redir/index.m3u8", loc.Path)
+	require.Equal(t, token, loc.Query().Get("access_token"))
 }
 
 func TestMediaProxyRequiresAuth(t *testing.T) {

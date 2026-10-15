@@ -35,12 +35,34 @@ func newMediaProxy(target, prefix string) *httputil.ReverseProxy {
 		if r.URL.Path == "" {
 			r.URL.Path = "/"
 		}
+		// access_token is consumed by the auth middleware. It's left on
+		// the forwarded query (the loopback HLS/playback listener
+		// ignores it) so ModifyResponse can carry it across the HLS
+		// cookieCheck redirect.
 		r.Host = upstream.Host
 	}
 	proxy.ModifyResponse = func(res *http.Response) error {
-		if loc := res.Header.Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, prefix+"/") {
-			res.Header.Set("Location", prefix+loc)
+		loc := res.Header.Get("Location")
+		if !strings.HasPrefix(loc, "/") {
+			return nil
 		}
+		if !strings.HasPrefix(loc, prefix+"/") {
+			loc = prefix + loc
+		}
+		// The HLS cookieCheck 302 drops the request's query string, so a
+		// ?access_token= that authenticated the first hop is lost on the
+		// follow-up. Carry it into the Location so the native <video>
+		// path (which can't send headers) stays authenticated.
+		if res.Request != nil {
+			if tok := res.Request.URL.Query().Get("access_token"); tok != "" && !strings.Contains(loc, "access_token=") {
+				sep := "?"
+				if strings.Contains(loc, "?") {
+					sep = "&"
+				}
+				loc += sep + "access_token=" + url.QueryEscape(tok)
+			}
+		}
+		res.Header.Set("Location", loc)
 		return nil
 	}
 	return proxy
