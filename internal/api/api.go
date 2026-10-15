@@ -243,6 +243,9 @@ func (a *API) Initialize() error {
 	// Phase A B5: PTZ + camera reboot.
 	a.registerV1PTZ(group)
 
+	// Phase A B6: camera stats + per-user UI prefs.
+	a.registerV1StatsPrefs(group)
+
 	// Phase 5 Task 5.3: camera groups CRUD.
 	a.registerV1CameraGroups(group)
 
