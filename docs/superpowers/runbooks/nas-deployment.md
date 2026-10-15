@@ -42,6 +42,30 @@ Most x86 NAS boxes are `linux/amd64`; ARM models (many QNAPs, Pis) are
 `linux/arm64`. `uname -m` on the NAS tells you (`x86_64` → amd64,
 `aarch64` → arm64).
 
+## Synology quickstart (DSM 7.2+, x86 models)
+
+Verified against the real target (DS at 192.168.1.220, x86_64):
+
+1. **Package Center → Container Manager → Install** (Synology's Docker;
+   gives you `docker` + `docker compose`, used with `sudo`).
+2. **Control Panel → Terminal & SNMP → Enable SSH** if not already on.
+3. DSM has no git — copy the repo from your workstation instead:
+   ```bash
+   rsync -a --exclude node_modules --exclude .git \
+     <repo-checkout>/ <user>@<nas-ip>:~/raikada/
+   ```
+4. File Station: create `docker/raikada/data` on volume1 and a shared
+   folder for footage (e.g. `surveillance`), then edit
+   `~/raikada/docker/docker-compose.yml` to bind-mount them (see §2).
+5. ```bash
+   cd ~/raikada/docker && sudo docker compose up -d --build
+   sudo docker logs raikada-nvr 2>&1 | grep -A6 "BOOTSTRAP ADMIN"
+   ```
+6. Browse to `https://<nas-ip>:9997`, sign in, adopt cameras.
+
+First build compiles ffmpeg from source — 10–30 min on NAS-class CPUs;
+subsequent rebuilds reuse the cached stage.
+
 ## 2 — Storage layout (edit docker-compose.yml before `up`)
 
 Two volumes, different lifecycles:
