@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import Hls from 'hls.js';
 import { Icon } from '../components/Icon';
 import { Brackets, StatusBadge } from '../components/ui';
-import { ptzHome, ptzMove, ptzStop } from '../lib/api';
+import { getStoredToken, ptzHome, ptzMove, ptzStop } from '../lib/api';
 import { fmtTime } from '../lib/format';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 
@@ -26,14 +26,26 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !path) return;
-    const url = `${window.location.protocol}//${window.location.hostname}:8888/${encodeURIComponent(path)}/index.m3u8`;
+    // Same-origin proxy: the API reverse-proxies /hls/* to the HLS
+    // listener, so HTTPS consoles avoid mixed content.
+    const url = `/hls/${encodeURIComponent(path)}/index.m3u8`;
     let cancelled = false;
     let hls: Hls | null = null;
     onState?.('loading');
 
     if (Hls.isSupported()) {
       hls = new Hls({
-        xhrSetup: (xhr) => { xhr.withCredentials = true; },
+        // Authenticate via the session cookie only (withCredentials
+        // sends it on every same-origin playlist/segment request). We
+        // deliberately do NOT set an Authorization header here:
+        // hls.js's xhrSetup runs before xhr.open(), so a header set
+        // then is dropped/mangled on the child-playlist and segment
+        // loaders, and because the proxy prefers a header over the
+        // cookie, a bad header shadowed the cookie that actually works.
+        // The cookie is kept fresh by the sliding refresh + login.
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = true;
+        },
         liveSyncDurationCount: 3,
         liveMaxLatencyDurationCount: 6,
       });
@@ -49,11 +61,17 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
       hls.loadSource(url);
       hls.attachMedia(video);
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS (Safari): the <video> element can't set headers, so
+      // the token rides the query string — the proxy promotes it. This
+      // one is baked at open time (Safari re-fetches with the same URL);
+      // acceptable since the token outlives a typical viewing session
+      // and the element reloads on error.
       const onLoaded = () => { if (!cancelled) onState?.('playing'); };
       const onError = () => { if (!cancelled) onState?.('error'); };
       video.addEventListener('loadedmetadata', onLoaded);
       video.addEventListener('error', onError);
-      video.src = url;
+      const t = getStoredToken();
+      video.src = t ? `${url}?access_token=${encodeURIComponent(t)}` : url;
       video.play().catch(() => {});
       return () => {
         cancelled = true;
@@ -113,7 +131,8 @@ export function CameraTile({
   const [player, setPlayer] = useState<PlayerState>('loading');
 
   // Grid (non-large) tiles ride the sub-stream when the probe found one.
-  const path = !large && camera.hasSub ? `${camera.name}_sub` : camera.name;
+  // Stream URLs key off the immutable path, never the display label.
+  const path = !large && camera.hasSub ? `${camera.path}_sub` : camera.path;
   const ts = fmtTime(data.now);
 
   return (

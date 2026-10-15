@@ -4,7 +4,7 @@
 // dependency keeps the bundle tight.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError } from './api';
+import { ApiError, fetchCameraSnapshot } from './api';
 
 export type FetchState<T> =
   | { status: 'loading'; data: undefined; error: undefined }
@@ -95,6 +95,55 @@ export function usePoll<T>(
   }, [intervalMs, ...deps]);
 
   return { ...state, refetch: tick };
+}
+
+// useSnapshotURL polls GET /v1/cameras/:id/snapshot and exposes the
+// latest frame as an object URL for <img> thumbnails (the bearer token
+// can't ride an <img src>, so the fetch goes through the API wrapper).
+// Pauses while the tab is hidden; a jittered first fetch keeps a long
+// camera menu from stampeding the recorder. Returns null until the
+// first frame (callers keep their placeholder) and after errors keeps
+// the last good frame.
+export function useSnapshotURL(camId: string, enabled: boolean, intervalMs = 20_000): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  const urlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !camId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const tick = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'visible') {
+        try {
+          const blob = await fetchCameraSnapshot(camId);
+          if (!cancelled) {
+            const next = URL.createObjectURL(blob);
+            if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+            urlRef.current = next;
+            setUrl(next);
+          }
+        } catch {
+          // offline camera / no muxer yet — keep whatever we had
+        }
+      }
+      if (!cancelled) timer = window.setTimeout(tick, intervalMs);
+    };
+
+    timer = window.setTimeout(tick, Math.random() * 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+      setUrl(null);
+    };
+  }, [camId, enabled, intervalMs]);
+
+  return url;
 }
 
 /* ---------- Format helpers ---------- */

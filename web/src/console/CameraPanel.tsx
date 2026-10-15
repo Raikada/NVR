@@ -3,6 +3,7 @@
 import { useMemo, useState, type CSSProperties } from 'react';
 import { Icon } from '../components/Icon';
 import { Brackets, Btn, FormRow, SectionHeader, Slider, StatusBadge, TxtInput, bareBtn, linkBtn } from '../components/ui';
+import { useSnapshotURL } from '../lib/hooks';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 
 export interface TourCam {
@@ -337,6 +338,7 @@ function TourEditor({ tour, cameras, onClose, onSave, onDelete, onStart }: {
 function CameraRow({ cam, onClick, active }: { cam: ConsoleCamera; onClick: () => void; active: boolean }) {
   const c = cam.status === 'online' ? 'var(--success)' : cam.status === 'degraded' ? 'var(--warning)' : 'var(--danger)';
   const [hover, setHover] = useState(false);
+  const snap = useSnapshotURL(cam.id, cam.status !== 'offline', 30_000);
   return (
     <div
       onClick={onClick}
@@ -350,7 +352,10 @@ function CameraRow({ cam, onClick, active }: { cam: ConsoleCamera; onClick: () =
       }}
     >
       <span style={{ width: 6, height: 6, borderRadius: '50%', background: c, boxShadow: `0 0 6px ${c}`, flexShrink: 0 }} />
-      <div style={{ width: 44, height: 26, background: 'linear-gradient(135deg, #1a1410, #0d0c0a)', position: 'relative', flexShrink: 0 }}>
+      <div style={{ width: 44, height: 26, background: 'linear-gradient(135deg, #1a1410, #0d0c0a)', position: 'relative', flexShrink: 0, overflow: 'hidden' }}>
+        {snap && (
+          <img src={snap} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+        )}
         <Brackets />
         {cam.status === 'offline' ? (
           <Icon name="wifi-off" size={10} color="var(--danger)" style={{ position: 'absolute', inset: 0, margin: 'auto' }} />

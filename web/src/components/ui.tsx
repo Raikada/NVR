@@ -250,14 +250,17 @@ export function FormRow({ label, children }: { label: ReactNode; children: React
   );
 }
 
-export function TxtInput({ value, onChange, placeholder, type = 'text', disabled }: {
+export function TxtInput({ value, onChange, placeholder, type = 'text', disabled, autoFocus, onKeyDown }: {
   value?: string; onChange?: (v: string) => void; placeholder?: string; type?: string; disabled?: boolean;
+  autoFocus?: boolean; onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
 }) {
   return (
     <input
       value={value ?? ''}
       type={type}
       disabled={disabled}
+      autoFocus={autoFocus}
+      onKeyDown={onKeyDown}
       onChange={(e) => onChange && onChange(e.target.value)}
       placeholder={placeholder}
       style={{

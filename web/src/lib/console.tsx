@@ -30,7 +30,11 @@ interface VendorInfo {
 
 export interface ConsoleCamera {
   id: string;
+  // name — the label shown in the UI (display_name when set, else the
+  // path name). path — the immutable recorder stream path; every media
+  // URL (HLS, playback, snapshot path lookups) must use path, not name.
   name: string;
+  path: string;
   status: CameraStatus;
   recording: boolean;
   hasPTZ: boolean;
@@ -177,7 +181,8 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
       const policyName = policy ? policy.name.toUpperCase() : 'DEFAULT';
       return {
         id: c.id,
-        name: c.name,
+        name: c.display_name || c.name,
+        path: c.name,
         status: statusOf(c, health),
         recording: statusOf(c, health) === 'online' && (policy ? policy.mode !== 'off' : true),
         hasPTZ: caps?.has_ptz ?? false,

@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Icon } from '../components/Icon';
 import { Btn, FormRow, Segmented, Slider, TxtInput, chip, pageTitle } from '../components/ui';
 import {
-  createBookmark, createEventClip, getCameraCoverage, listEvents, waitForClip,
+  createBookmark, createEventClip, getCameraCoverage, getStoredToken, listEvents, waitForClip,
   type CoverageEntry, type EventRecord,
 } from '../lib/api';
 import { fmtAgo, fmtDate, fmtDelta, fmtTime } from '../lib/format';
@@ -21,6 +21,9 @@ import { CameraTile, LiveVideo } from './CameraTile';
 const ZOOMS = [5, 10, 30, 60, 180, 360, 1440]; // minutes in view
 const MAX_AGO = 7 * 1440; // minutes — matches the 7d coverage fetch
 const CHUNK_SECS = 600;
+// Within this distance of "now" the playhead rides the live edge and the
+// tiles switch to the HLS live stream.
+const LIVE_EDGE_MS = 3000;
 
 function clsColor(typeId: string): string {
   if (typeId.includes('person')) return 'var(--accent)';
@@ -30,9 +33,10 @@ function clsColor(typeId: string): string {
   return '#737373';
 }
 
+// Clip marks as absolute instants (epoch ms); startMs < endMs.
 interface InOut {
-  in: number | null; // minutes ago (in > out)
-  out: number | null;
+  startMs: number | null;
+  endMs: number | null;
 }
 
 export function Playback({ camera, initialAt }: {
@@ -42,25 +46,38 @@ export function Playback({ camera, initialAt }: {
   const data = useConsole();
   const fallback = data.cameras[0];
   const startCam = camera ?? fallback;
-  const initialPos = initialAt
-    ? Math.max(0, (Date.now() - initialAt.getTime()) / 60000)
-    : 45;
+  const initialMs = initialAt ? initialAt.getTime() : Date.now() - 45 * 60000;
+  const initialPos = Math.max(0, (Date.now() - initialMs) / 60000);
 
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
-  const [pos, setPos] = useState(initialPos); // minutes ago; 0 = live edge
+  // The playhead is an absolute instant. While a recorded chunk plays,
+  // the active track's <video> drives it via onTime so timeline and
+  // footage cannot drift apart; paused it is frozen; in coverage gaps
+  // and at the live edge a wall-clock ticker advances it.
+  const [absMs, setAbsMs] = useState(initialMs);
   const [viewLen, setViewLen] = useState(60);
   const [viewEnd, setViewEnd] = useState(Math.max(0, initialPos - 30));
   const [activeId, setActiveId] = useState(startCam?.id ?? '');
   const [tracks, setTracks] = useState<string[]>(() => (startCam ? [startCam.id] : []));
-  const [inOut, setInOut] = useState<InOut>({ in: null, out: null });
+  const [inOut, setInOut] = useState<InOut>({ startMs: null, endMs: null });
   const [exporting, setExporting] = useState(false);
   const [gotoOpen, setGotoOpen] = useState(false);
   const [sidebar, setSidebar] = useState('events');
-  const posRef = useRef(pos);
-  posRef.current = pos;
+  // pos — minutes behind now; derived, used only for timeline geometry.
+  const pos = Math.max(0, (data.now.getTime() - absMs) / 60000);
+  const live = data.now.getTime() - absMs < LIVE_EDGE_MS;
+  const absRef = useRef(absMs);
+  absRef.current = absMs;
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
   const inOutRef = useRef(inOut);
   inOutRef.current = inOut;
+  // Stamped on each video-driven clock update; the ticker only advances
+  // the clock when the video hasn't reported recently.
+  const lastDriveRef = useRef(0);
 
   // Keep track list sane when cameras load after mount.
   useEffect(() => {
@@ -72,7 +89,7 @@ export function Playback({ camera, initialAt }: {
   }, [fallback?.id]);
 
   const cam = data.getCam(activeId) ?? fallback;
-  const phTime = new Date(data.now.getTime() - pos * 60000);
+  const phTime = new Date(absMs);
   const viewStart = viewEnd + viewLen;
 
   /* ----- coverage + per-track events ----- */
@@ -118,27 +135,68 @@ export function Playback({ camera, initialAt }: {
   }, [coverage, data.now]);
 
   /* ----- transport ----- */
-  const seek = useCallback((m: number, opts: { center?: boolean } = {}) => {
-    const p = Math.max(0, Math.min(MAX_AGO, m));
-    setPos(p);
+  const seekAbs = useCallback((ms: number, opts: { center?: boolean } = {}) => {
+    const now = Date.now();
+    const clamped = Math.min(now, Math.max(now - MAX_AGO * 60000, ms));
+    lastDriveRef.current = 0; // the seek wins over in-flight timeupdates
+    setAbsMs(clamped);
+    const p = (now - clamped) / 60000;
     setViewEnd((ve) => {
       const vs = ve + viewLen;
       if (opts.center || p < ve || p > vs) return Math.max(0, p - viewLen / 2);
       return ve;
     });
   }, [viewLen]);
+  const seek = useCallback((m: number, opts: { center?: boolean } = {}) => {
+    seekAbs(Date.now() - m * 60000, opts);
+  }, [seekAbs]);
 
+  // The active track's <video> publishing its clock. Reports far from
+  // the current playhead are stale timeupdates racing a fresh seek —
+  // drop them so the seek wins. Legit reports trail by ≤ one timeupdate
+  // interval (≈250ms wall) × speed.
+  const onTime = useCallback((ms: number) => {
+    if (!playingRef.current) return;
+    if (Math.abs(ms - absRef.current) > 2000 + 1000 * speedRef.current) return;
+    lastDriveRef.current = Date.now();
+    setAbsMs(ms);
+  }, []);
+
+  // Wall-clock ticker: rides the live edge, and advances through
+  // coverage gaps / stalled fetches when no video is driving.
   useEffect(() => {
     if (!playing) return;
+    let prev = Date.now();
     const t = window.setInterval(() => {
-      setPos((p) => {
-        const n = Math.max(0, p - speed / 60);
-        if (n === 0 && p !== 0) setPlaying(false);
-        return n;
+      const now = Date.now();
+      const dt = now - prev;
+      prev = now;
+      setAbsMs((a) => {
+        if (now - a < LIVE_EDGE_MS) return now; // live: follow the clock
+        if (now - lastDriveRef.current < 1200) return a; // video is driving
+        return Math.min(now, a + dt * speed);
       });
-    }, 1000);
+    }, 500);
     return () => window.clearInterval(t);
   }, [playing, speed]);
+
+  // Playing into a gap: skip ahead to the next recorded range on the
+  // active track rather than crawling through dead air.
+  useEffect(() => {
+    if (!playing || live) return;
+    const entries = coverage[activeId];
+    if (!entries || entries.length === 0) return;
+    if (!inGap(activeId, pos)) return;
+    const t = window.setTimeout(() => {
+      let next = Infinity;
+      for (const e of entries) {
+        const s = new Date(e.start).getTime();
+        if (s > absRef.current && s < next) next = s;
+      }
+      seekAbs(next === Infinity ? Date.now() : next + 250);
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [playing, live, pos, activeId, coverage, inGap, seekAbs]);
 
   useEffect(() => {
     if (pos < viewEnd) setViewEnd(Math.max(0, pos - viewLen * 0.85));
@@ -164,18 +222,24 @@ export function Playback({ camera, initialAt }: {
     [trackEvents, activeId, agoOf],
   );
   const prevEvent = () => {
-    const p = posRef.current;
-    const e = camEvents.find((x) => agoOf(x.occurred_at) > p + 0.05);
-    if (e) seek(agoOf(e.occurred_at));
+    const a = absRef.current;
+    const e = camEvents.find((x) => new Date(x.occurred_at).getTime() < a - 3000);
+    if (e) seekAbs(new Date(e.occurred_at).getTime());
   };
   const nextEvent = () => {
-    const p = posRef.current;
-    const e = [...camEvents].reverse().find((x) => agoOf(x.occurred_at) < p - 0.05);
-    if (e) seek(agoOf(e.occurred_at));
+    const a = absRef.current;
+    const e = [...camEvents].reverse().find((x) => new Date(x.occurred_at).getTime() > a + 3000);
+    if (e) seekAbs(new Date(e.occurred_at).getTime());
   };
-  const step = (secs: number) => seek(posRef.current - secs / 60);
-  const setIn = () => { const p = posRef.current; setInOut((r) => ({ in: p, out: r.out != null && r.out < p ? r.out : null })); };
-  const setOut = () => { const p = posRef.current; setInOut((r) => ({ out: p, in: r.in != null && r.in > p ? r.in : null })); };
+  const step = (secs: number) => seekAbs(absRef.current + secs * 1000);
+  const setIn = () => {
+    const a = absRef.current;
+    setInOut((r) => ({ startMs: a, endMs: r.endMs != null && r.endMs > a ? r.endMs : null }));
+  };
+  const setOut = () => {
+    const a = absRef.current;
+    setInOut((r) => ({ endMs: a, startMs: r.startMs != null && r.startMs < a ? r.startMs : null }));
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -191,7 +255,7 @@ export function Playback({ camera, initialAt }: {
       else if (e.key === '[') prevEvent();
       else if (e.key === ']') nextEvent();
       else if (k === 'm') {
-        if (inOutRef.current.in == null || inOutRef.current.out != null) { setInOut({ in: null, out: null }); setIn(); }
+        if (inOutRef.current.startMs == null || inOutRef.current.endMs != null) { setInOut({ startMs: null, endMs: null }); setIn(); }
         else setOut();
       }
       else if (k === 'i') setIn();
@@ -213,9 +277,11 @@ export function Playback({ camera, initialAt }: {
     );
   }
 
-  const currentEvent = camEvents.find((e) => Math.abs(agoOf(e.occurred_at) - pos) < 0.2);
+  const currentEvent = camEvents.find((e) => Math.abs(new Date(e.occurred_at).getTime() - absMs) < 12_000);
   const dayLabel = fmtDate(phTime) === fmtDate(data.now) ? 'Today' : fmtDate(phTime);
-  const rangeSecs = inOut.in != null && inOut.out != null ? Math.round((inOut.in - inOut.out) * 60) : null;
+  const rangeSecs = inOut.startMs != null && inOut.endMs != null
+    ? Math.round((inOut.endMs - inOut.startMs) / 1000)
+    : null;
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, background: 'var(--bg-primary)' }}>
@@ -240,13 +306,15 @@ export function Playback({ camera, initialAt }: {
             tracks={tracks}
             activeId={activeId}
             setActiveId={setActiveId}
+            absMs={absMs}
             pos={pos}
+            live={live}
             playing={playing}
             speed={speed}
             phTime={phTime}
             inGap={inGap}
             trackEvents={trackEvents}
-            agoOf={agoOf}
+            onTime={onTime}
           />
         </div>
         <aside style={{ width: 272, flexShrink: 0, borderLeft: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -330,11 +398,11 @@ export function Playback({ camera, initialAt }: {
         <button onClick={() => setGotoOpen(true)} title="Go to date & time  G" style={{ justifySelf: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 10px', borderRadius: 4 }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 24, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>{fmtTime(phTime)}</span>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, color: 'var(--text-muted)' }}>
-            {dayLabel.toUpperCase()}{pos < 0.05 ? ' · LIVE' : ` · −${fmtDelta(pos)}`}
+            {dayLabel.toUpperCase()}{live ? ' · LIVE' : ` · −${fmtDelta(pos)}`}
           </span>
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifySelf: 'end' }}>
-          <ClipMarker inOut={inOut} onStart={setIn} onEnd={setOut} onClear={() => setInOut({ in: null, out: null })} rangeSecs={rangeSecs} />
+          <ClipMarker inOut={inOut} onStart={setIn} onEnd={setOut} onClear={() => setInOut({ startMs: null, endMs: null })} rangeSecs={rangeSecs} />
           <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 6px' }} />
           <button
             onClick={() => { seek(0, { center: true }); setPlaying(true); }}
@@ -363,7 +431,12 @@ export function Playback({ camera, initialAt }: {
       />
 
       {exporting && (
-        <ExportModal cam={cam} phTime={phTime} range={rangeSecs != null ? inOut : null} nowMs={data.now.getTime()} onClose={() => setExporting(false)} />
+        <ExportModal
+          cam={cam}
+          phTime={phTime}
+          range={inOut.startMs != null && inOut.endMs != null ? { startMs: inOut.startMs, endMs: inOut.endMs } : null}
+          onClose={() => setExporting(false)}
+        />
       )}
       {gotoOpen && (
         <GotoModal now={data.now} onClose={() => setGotoOpen(false)} onGo={(m) => { seek(m, { center: true }); setGotoOpen(false); }} />
@@ -381,46 +454,65 @@ function playbackURL(path: string, startMs: number): string {
     duration: String(CHUNK_SECS),
     format: 'fmp4',
   });
-  return `${window.location.protocol}//${window.location.hostname}:9996/get?${qs}`;
+  // Same-origin proxy to the playback server (:9996 is plain HTTP and
+  // often unpublished; the console itself is HTTPS). <video src> can't
+  // send headers; the token rides the query string (the proxy promotes
+  // it). Each chunk is rebuilt with the current token, so a long
+  // scrubbing session never loses auth.
+  const t = getStoredToken();
+  if (t) qs.set('access_token', t);
+  return `/playback/get?${qs}`;
 }
 
-function PlaybackVideo({ path, pos, playing, speed, gap }: {
+function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime }: {
   path: string;
-  pos: number; // minutes ago
+  absMs: number; // absolute playhead (epoch ms)
+  live: boolean;
   playing: boolean;
   speed: number;
   gap: boolean;
+  // The active track drives the shared playhead clock from its <video>.
+  driver: boolean;
+  onTime: (ms: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [chunk, setChunk] = useState<{ startMs: number; url: string } | null>(null);
   const [failed, setFailed] = useState(false);
-  const live = pos < 0.05;
 
-  // Re-chunk when the playhead leaves the current chunk (or none yet).
+  // (Re)load a chunk when the playhead falls outside the current one.
   useEffect(() => {
     if (live || gap) return;
-    const playheadMs = Date.now() - pos * 60000;
-    const offset = chunk ? (playheadMs - chunk.startMs) / 1000 : -1;
-    if (chunk && offset >= 0 && offset < CHUNK_SECS - 5) return;
-    const startMs = playheadMs;
+    const offset = chunk ? (absMs - chunk.startMs) / 1000 : -1;
+    if (chunk && offset >= 0 && offset < CHUNK_SECS - 2) return;
     setFailed(false);
-    setChunk({ startMs, url: playbackURL(path, startMs) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [Math.floor(pos * 6), path, live, gap]); // re-evaluate every ~10s of pos drift
+    setChunk({ startMs: absMs, url: playbackURL(path, absMs) });
+  }, [absMs, path, live, gap, chunk]);
 
-  // Keep the <video> element synced to the logical playhead.
+  // Driver publishes its clock: the shared playhead follows the actual
+  // decoded position, so timeline and footage cannot drift apart.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !driver || !chunk || live || gap) return;
+    const startMs = chunk.startMs;
+    const h = () => { if (!v.seeking) onTime(startMs + v.currentTime * 1000); };
+    v.addEventListener('timeupdate', h);
+    return () => v.removeEventListener('timeupdate', h);
+  }, [chunk, driver, live, gap, onTime]);
+
+  // Keep the element aligned with the shared playhead. The driver only
+  // corrects gross jumps (external seeks); followers track tightly.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || live || gap || !chunk) return;
-    const playheadMs = Date.now() - pos * 60000;
-    const want = (playheadMs - chunk.startMs) / 1000;
-    if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - want) > 2.5) {
+    const want = (absMs - chunk.startMs) / 1000;
+    const tolerance = driver && playing ? 1.5 : 0.35;
+    if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - want) > tolerance) {
       try { v.currentTime = Math.max(0, want); } catch { /* not seekable yet */ }
     }
     v.playbackRate = speed;
     if (playing && v.paused) v.play().catch(() => {});
     if (!playing && !v.paused) v.pause();
-  }, [pos, playing, speed, chunk, live, gap]);
+  }, [absMs, playing, speed, chunk, live, gap, driver]);
 
   if (live) {
     return <LiveVideo path={path} />;
@@ -438,6 +530,7 @@ function PlaybackVideo({ path, pos, playing, speed, gap }: {
         playsInline
         autoPlay
         onError={() => setFailed(true)}
+        onEnded={() => setChunk(null)} // media ran out before CHUNK_SECS — fetch from the playhead
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
       />
       {failed && (
@@ -451,17 +544,19 @@ function PlaybackVideo({ path, pos, playing, speed, gap }: {
 
 /* ---------- synced multi-track grid ---------- */
 
-function SyncedGrid({ tracks, activeId, setActiveId, pos, playing, speed, phTime, inGap, trackEvents, agoOf }: {
+function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, speed, phTime, inGap, trackEvents, onTime }: {
   tracks: string[];
   activeId: string;
   setActiveId: (id: string) => void;
+  absMs: number;
   pos: number;
+  live: boolean;
   playing: boolean;
   speed: number;
   phTime: Date;
   inGap: (tid: string, m: number) => boolean;
   trackEvents: Record<string, EventRecord[]>;
-  agoOf: (iso: string) => number;
+  onTime: (ms: number) => void;
 }) {
   const data = useConsole();
   const n = tracks.length;
@@ -477,8 +572,8 @@ function SyncedGrid({ tracks, activeId, setActiveId, pos, playing, speed, phTime
         const c = data.getCam(tid);
         if (!c) return null;
         const isMain = tid === activeId;
-        const gap = inGap(tid, pos);
-        const ev = (trackEvents[tid] ?? []).find((e) => Math.abs(agoOf(e.occurred_at) - pos) < 0.2);
+        const gap = !live && inGap(tid, pos);
+        const ev = (trackEvents[tid] ?? []).find((e) => Math.abs(new Date(e.occurred_at).getTime() - absMs) < 12_000);
         return (
           <div key={tid} style={{ position: 'relative', minHeight: 0, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div
@@ -490,11 +585,22 @@ function SyncedGrid({ tracks, activeId, setActiveId, pos, playing, speed, phTime
                 large={n <= 2}
                 fill
                 dim={gap}
-                media={<PlaybackVideo path={c.name} pos={pos} playing={playing} speed={speed} gap={gap} />}
+                media={
+                  <PlaybackVideo
+                    path={c.path}
+                    absMs={absMs}
+                    live={live}
+                    playing={playing}
+                    speed={speed}
+                    gap={gap}
+                    driver={isMain}
+                    onTime={onTime}
+                  />
+                }
               />
               {/* playback-time corner overlay */}
               <div style={badge({ bottom: 10, right: 10, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums' })}>{fmtTime(phTime)}</div>
-              {pos >= 0.05 && <div style={badge({ top: 10, left: 10, color: 'var(--danger)' })}>PLAYBACK</div>}
+              {!live && <div style={badge({ top: 10, left: 10, color: 'var(--danger)' })}>PLAYBACK</div>}
               {gap && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
                   <span style={{ padding: '4px 10px', background: 'rgba(10,10,10,0.75)', border: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, color: 'var(--text-secondary)' }}>NO RECORDING</span>
@@ -517,7 +623,7 @@ const transBtn: CSSProperties = { width: 30, height: 30, borderRadius: 4, backgr
 function ClipMarker({ inOut, onStart, onEnd, onClear, rangeSecs }: {
   inOut: InOut; onStart: () => void; onEnd: () => void; onClear: () => void; rangeSecs: number | null;
 }) {
-  const stage = inOut.in == null ? 0 : inOut.out == null ? 1 : 2;
+  const stage = inOut.startMs == null ? 0 : inOut.endMs == null ? 1 : 2;
   const base: CSSProperties = { ...transBtn, width: 'auto', padding: '0 10px', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1 };
   if (stage === 0) {
     return <button onClick={onStart} title="Mark where the clip starts  M" style={base}><Icon name="scissors" size={12} />MARK CLIP</button>;
@@ -632,8 +738,8 @@ function Timeline({ tracks, activeId, setActiveId, pos, viewLen, viewEnd, setVie
     for (let t = firstAbs; t <= nowMs - viewEnd * 60000; t += stepMin * 60000) ticks.push(t);
   }
 
-  const inX = inOut.in != null ? xOf(inOut.in) : null;
-  const outX = inOut.out != null ? xOf(inOut.out) : null;
+  const inX = inOut.startMs != null ? xOf((nowMs - inOut.startMs) / 60000) : null;
+  const outX = inOut.endMs != null ? xOf((nowMs - inOut.endMs) / 60000) : null;
   const phX = xOf(pos);
   const phVisible = phX >= 0 && phX <= 1;
 
@@ -846,11 +952,10 @@ function GotoModal({ now, onClose, onGo }: { now: Date; onClose: () => void; onG
 
 /* ---------- Export ---------- */
 
-function ExportModal({ cam, phTime, range, nowMs, onClose }: {
+function ExportModal({ cam, phTime, range, onClose }: {
   cam: ConsoleCamera;
   phTime: Date;
-  range: InOut | null;
-  nowMs: number;
+  range: { startMs: number; endMs: number } | null;
   onClose: () => void;
 }) {
   const [before, setBefore] = useState(30);
@@ -859,10 +964,8 @@ function ExportModal({ cam, phTime, range, nowMs, onClose }: {
   const [error, setError] = useState('');
   const [downloadURL, setDownloadURL] = useState('');
 
-  const secs = range && range.in != null && range.out != null ? Math.round((range.in - range.out) * 60) : before + after;
-  const startT = range && range.in != null
-    ? new Date(nowMs - range.in * 60000)
-    : new Date(phTime.getTime() - before * 1000);
+  const secs = range ? Math.round((range.endMs - range.startMs) / 1000) : before + after;
+  const startT = range ? new Date(range.startMs) : new Date(phTime.getTime() - before * 1000);
 
   // A clip rides an event: for a marked range we drop a bookmark at the
   // start and export [0, range] around it; for a centered export we drop
@@ -871,7 +974,7 @@ function ExportModal({ cam, phTime, range, nowMs, onClose }: {
     setState('working');
     setError('');
     try {
-      const anchor = range && range.in != null ? new Date(nowMs - range.in * 60000) : phTime;
+      const anchor = range ? new Date(range.startMs) : phTime;
       const bm = await createBookmark(cam.id, 'clip export', anchor.toISOString());
       const body = range
         ? { pre_roll_seconds: 0, post_roll_seconds: secs }

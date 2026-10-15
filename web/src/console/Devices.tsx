@@ -6,10 +6,11 @@ import { Icon } from '../components/Icon';
 import { Brackets, Btn, FormRow, Modal, SectionHeader, Segmented, StatusBadge, TxtInput, bareBtn, pageTitle, screenHdr } from '../components/ui';
 import {
   ApiError, adoptCamera, createCamera, deleteCamera, getDiscoveredCameras,
-  probeCameraCapabilities, probeDiscovery, rebootCamera, setCameraCredentials,
+  patchCamera, probeCameraCapabilities, probeDiscovery, rebootCamera, setCameraCredentials,
   type DiscoveredCamera,
 } from '../lib/api';
 import { fmtAgo } from '../lib/format';
+import { useSnapshotURL } from '../lib/hooks';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 import { CameraTile } from './CameraTile';
 
@@ -133,6 +134,7 @@ function hostOfXaddr(xaddr: string): string {
 function DeviceCard({ c, onClick, active }: { c: ConsoleCamera; onClick: () => void; active: boolean }) {
   const offline = c.status === 'offline';
   const degraded = c.status === 'degraded';
+  const snap = useSnapshotURL(c.id, !offline, 30_000);
   return (
     <div onClick={onClick} style={{
       display: 'flex', alignItems: 'center', gap: 14, padding: 12,
@@ -141,7 +143,10 @@ function DeviceCard({ c, onClick, active }: { c: ConsoleCamera; onClick: () => v
       borderRadius: 6, cursor: 'pointer',
       opacity: offline ? 0.7 : 1,
     }}>
-      <div style={{ width: 96, height: 56, position: 'relative', flexShrink: 0, background: 'linear-gradient(135deg, #1a1410, #0d0c0a)' }}>
+      <div style={{ width: 96, height: 56, position: 'relative', flexShrink: 0, background: 'linear-gradient(135deg, #1a1410, #0d0c0a)', overflow: 'hidden' }}>
+        {snap && !offline && (
+          <img src={snap} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+        )}
         <Brackets />
         {offline && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -243,7 +248,9 @@ function AddCameraModal({ prefill, onClose, onAdded }: {
       {!prefill && (
         <FormRow label="Stream URL"><TxtInput value={url} onChange={setUrl} placeholder="rtsp://192.168.1.x:554/stream1" /></FormRow>
       )}
-      <FormRow label="Display name"><TxtInput value={name} onChange={setName} placeholder="e.g. front_door" /></FormRow>
+      {/* This is the immutable stream path (ADR 0009), not the editable
+          display label — that's renameable later from the device detail. */}
+      <FormRow label="Name"><TxtInput value={name} onChange={setName} placeholder="e.g. front_door" /></FormRow>
       <FormRow label="Username"><TxtInput value={user} onChange={setUser} /></FormRow>
       <FormRow label="Password"><TxtInput value={pass} onChange={setPass} placeholder="••••••••" type="password" /></FormRow>
       {prefill && (
@@ -268,7 +275,22 @@ function DeviceDetail({ c, onClose, onOpenLive }: {
   const data = useConsole();
   const [busy, setBusy] = useState('');
   const [note, setNote] = useState('');
-  useEffect(() => { setNote(''); setBusy(''); }, [c.id]);
+  const [editingName, setEditingName] = useState<string | null>(null);
+  useEffect(() => { setNote(''); setBusy(''); setEditingName(null); }, [c.id]);
+
+  const saveName = () => {
+    if (editingName === null) return;
+    const v = editingName.trim();
+    if (v === c.name) { setEditingName(null); return; }
+    setBusy('rename');
+    setNote('');
+    // Empty clears the label back to the stream path; the path itself
+    // (c.path) is immutable — it keys the stream URL and recordings.
+    void patchCamera(c.id, { display_name: v === c.path ? '' : v })
+      .then(() => { setNote('renamed'); setEditingName(null); data.refreshCameras(); })
+      .catch((e) => setNote(e instanceof ApiError ? (e.message || `HTTP ${e.status}`) : 'rename failed'))
+      .finally(() => setBusy(''));
+  };
 
   const act = (label: string, fn: () => Promise<unknown>, done: string) => {
     setBusy(label);
@@ -292,7 +314,35 @@ function DeviceDetail({ c, onClose, onOpenLive }: {
       </div>
       <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
-          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{c.name}</span>
+          {editingName === null ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{c.name}</span>
+              <button
+                title="Rename camera"
+                onClick={() => setEditingName(c.name)}
+                style={{ ...bareBtn, color: 'var(--text-secondary)', display: 'flex' }}
+              >
+                <Icon name="settings-2" size={13} />
+              </button>
+            </span>
+          ) : (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <TxtInput
+                value={editingName}
+                onChange={setEditingName}
+                placeholder={c.path}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveName();
+                  if (e.key === 'Escape') setEditingName(null);
+                }}
+              />
+              <Btn kind="primary" onClick={saveName} disabled={busy !== ''}>
+                {busy === 'rename' ? 'Saving…' : 'Save'}
+              </Btn>
+              <Btn kind="ghost" onClick={() => setEditingName(null)} disabled={busy !== ''}>Cancel</Btn>
+            </span>
+          )}
           <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
             <StatusBadge kind={c.status} />
             {['REC', ...(c.hasPTZ ? ['PTZ'] : []), ...(c.hasAudio ? ['AUDIO'] : []), ...(c.hasSub ? ['SUB'] : [])].map((cap) => (
@@ -313,6 +363,7 @@ function DeviceDetail({ c, onClose, onOpenLive }: {
             {([
               ['VENDOR', c.manufacturer || '—'],
               ['MODEL', c.model || '—'],
+              ['STREAM PATH', c.path],
               ['HOST', c.host || '—'],
               ['CODEC', c.codec || '—'],
               ['RES', c.resolution || '—'],

@@ -205,6 +205,9 @@ export interface Camera {
   site_id: string;
   recording_server_id: string;
   name: string;
+  // Operator-editable label; name is the immutable stream path. Empty
+  // means "use name".
+  display_name?: string;
   source_type: CameraSourceType;
   source_url: string;
   credentials_ref?: string;
@@ -247,6 +250,9 @@ export const createCamera = (body: CameraCreateBody) => api.post<Camera>('/camer
 
 export interface CameraPatchBody {
   name?: string;
+  // Rename surface: the label shown everywhere in the console. "" clears
+  // back to the path name. (name itself is immutable server-side.)
+  display_name?: string;
   source_type?: CameraSourceType;
   source_url?: string;
   recording_policy_id?: string;
@@ -1364,6 +1370,20 @@ export interface CameraStats {
   ts: string;
 }
 export const getCameraStats = (id: string) => api.get<CameraStats>(`/cameras/${id}/stats`);
+
+// On-demand live JPEG for thumbnails (recorder snapshot endpoint; pass
+// at= for a still from recorded footage). Returned as a Blob so callers
+// can objectURL it into an <img>; <img src> can't carry the bearer token.
+// 404/503 = no frame available — callers fall back to a placeholder.
+export async function fetchCameraSnapshot(id: string, at?: string): Promise<Blob> {
+  const headers: Record<string, string> = {};
+  const token = getStoredToken();
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const qs = at ? `?at=${encodeURIComponent(at)}` : '';
+  const res = await fetch(`${BASE}/recorder/cameras/${id}/snapshot${qs}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, null, `snapshot failed: ${res.status}`);
+  return res.blob();
+}
 
 // Per-user UI prefs — opaque JSON values, merge-upsert by key.
 export type MyPrefs = Record<string, unknown>;

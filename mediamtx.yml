@@ -233,7 +233,10 @@ pprofTrustedProxies: []
 # Global settings -> Playback server
 
 # Allow clients to download recordings from the playback server.
-playback: false
+# On for the consumer NVR: the console's Playback page streams recorded
+# windows through /v1/playback/get, which proxies this listener (matches
+# docker/consumer-config.yml).
+playback: yes
 # Address of the playback server listener.
 playbackAddress: :9996
 # Enable HTTPS on the playback server.
