@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '../components/Icon';
 import { Btn, SectionHeader, Segmented, monoLabel, pageTitle, screenHdr } from '../components/ui';
-import { createEventClip, listEvents, type EventRecord } from '../lib/api';
+import { createEventClip, listEvents, waitForClip, type EventRecord } from '../lib/api';
 import { fmtAgo, fmtTime } from '../lib/format';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 import { CLASS_ICON, classOf, labelOf, noteOf, type EventClass } from './events';
@@ -214,7 +214,11 @@ function EventDetail({ ev, cam, onClose, onOpenPlayback, onAck, nowMs }: {
   const doExport = () => {
     setExportState('working');
     void createEventClip(ev.id)
-      .then((r) => { setDownloadURL(r.download_url); setExportState('ready'); })
+      .then(async (r) => {
+        await waitForClip(r.clip.id);
+        setDownloadURL(r.download_url);
+        setExportState('ready');
+      })
       .catch(() => setExportState('failed'));
   };
   return (

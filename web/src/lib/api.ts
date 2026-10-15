@@ -1296,6 +1296,28 @@ export interface EventClipResponse {
 export const createEventClip = (id: string, body?: EventClipBody) =>
   api.post<EventClipResponse>(`/events/${id}/clip`, body ?? {});
 
+// Clip export is asynchronous: the POST returns {clip, download_url}
+// with state "preparing"; the download URL 409s until state is
+// "ready". waitForClip polls the clip row until it settles.
+export interface ClipRow {
+  id: string;
+  state: string;
+  size_bytes?: number;
+  [k: string]: unknown;
+}
+export const getClip = (id: string) => api.get<ClipRow>(`/clips/${id}`);
+
+export async function waitForClip(id: string, timeoutMs = 30_000): Promise<ClipRow> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const c = await getClip(id);
+    if (c.state === 'ready') return c;
+    if (c.state === 'failed') throw new Error('clip export failed');
+    if (Date.now() > deadline) throw new Error('clip export timed out');
+    await new Promise((r) => window.setTimeout(r, 700));
+  }
+}
+
 /* ---------- Phase A (v1.4.0) console surface ---------- */
 
 // Coverage — merged recorded ranges for the playback timeline.

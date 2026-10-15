@@ -11,7 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Icon } from '../components/Icon';
 import { Btn, FormRow, Segmented, Slider, TxtInput, chip, pageTitle } from '../components/ui';
 import {
-  createBookmark, createEventClip, getCameraCoverage, listEvents,
+  createBookmark, createEventClip, getCameraCoverage, listEvents, waitForClip,
   type CoverageEntry, type EventRecord,
 } from '../lib/api';
 import { fmtAgo, fmtDate, fmtDelta, fmtTime } from '../lib/format';
@@ -877,6 +877,7 @@ function ExportModal({ cam, phTime, range, nowMs, onClose }: {
         ? { pre_roll_seconds: 0, post_roll_seconds: secs }
         : { pre_roll_seconds: before, post_roll_seconds: after };
       const clip = await createEventClip(bm.id, body);
+      await waitForClip(clip.clip.id);
       setDownloadURL(clip.download_url);
       setState('ready');
     } catch (e) {
