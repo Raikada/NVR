@@ -9,6 +9,9 @@ import { ConsoleTopBar, FooterStrip, useChromeStats } from './console/Shell';
 import { IconRail } from './console/IconRail';
 import { isConsoleRoute, type ConsoleRoute } from './console/routes';
 import { useTheme } from './console/theme';
+import { LiveView } from './console/LiveView';
+import { CameraPanel, type Tour } from './console/CameraPanel';
+import { Icon } from './components/Icon';
 import {
   clearStoredToken, getMe, getStoredToken, getStoredUsername,
   setOnUnauthorized, startSessionRefresh,
@@ -80,6 +83,7 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
   const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
   const [focusCamId, setFocusCamId] = useState<string | null>(null);
   const [playbackTarget, setPlaybackTarget] = useState<PlaybackTarget | null>(null);
+  const [tour, setTour] = useState<Tour | null>(null);
   const [claims, setClaims] = useState<MeResponse | null>(null);
 
   useEffect(() => {
@@ -90,6 +94,7 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
     setRoute(r);
     window.location.hash = r;
     setFocusCamId(null);
+    setTour(null);
   }, []);
 
   useEffect(() => {
@@ -133,10 +138,27 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
     return () => window.removeEventListener('keydown', onKey);
   }, [navigate]);
 
+  const startTour = useCallback((t: Tour | null) => {
+    if (!t) { setTour(null); setFocusCamId(null); return; }
+    setRoute('live');
+    window.location.hash = 'live';
+    setTour(t);
+  }, []);
+
+  const sidePanel = route === 'live' || route === 'playback';
+
   const screen = (() => {
     switch (route) {
       case 'live':
-        return <Placeholder name="Live View" />;
+        return (
+          <LiveView
+            focusId={focusCamId}
+            setFocusId={setFocusCamId}
+            onOpenPlayback={openPlayback}
+            tour={tour}
+            onStopTour={() => setTour(null)}
+          />
+        );
       case 'playback':
         return <Placeholder name="Playback" />;
       case 'search':
@@ -157,12 +179,8 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
   })();
 
   void claims; // role-gating lands with the Users screen
-  void camPanelOpen;
-  void focusCamId;
   void playbackTarget;
-  void openPlayback;
   void openLive;
-  void data;
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
@@ -182,6 +200,25 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
           onAlerts={() => setAlertsPanelOpen((o) => !o)}
           alertsCount={data.unreadCount}
         />
+        {sidePanel && (
+          <CameraPanel
+            open={camPanelOpen}
+            onClose={() => setCamPanelOpen(false)}
+            onPick={(c) => { if (route === 'playback') openPlayback(c.id); else openLive(c.id); }}
+            activeId={focusCamId || playbackTarget?.camId || null}
+            onStartTour={startTour}
+            activeTour={tour}
+          />
+        )}
+        {sidePanel && !camPanelOpen && (
+          <button
+            onClick={() => setCamPanelOpen(true)}
+            title="Show cameras (C)"
+            style={{ width: 20, background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', borderTop: 'none', borderBottom: 'none', borderLeft: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Icon name="panel-left-open" size={12} />
+          </button>
+        )}
         {screen}
       </div>
       <FooterStrip
