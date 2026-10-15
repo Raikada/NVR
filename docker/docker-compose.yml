@@ -1,0 +1,32 @@
+# Consumer NVR — NAS deployment.
+#
+#   cd docker && docker compose up -d --build
+#
+# host networking is required for camera WS-Discovery (multicast) and
+# mDNS; it also sidesteps the RTSP/WebRTC UDP port spread. On Synology,
+# Container Manager honors compose host networking; on QNAP/Unraid/
+# TrueNAS SCALE use their compose/custom-app facility.
+services:
+  raikada-nvr:
+    build:
+      context: ..
+      dockerfile: docker/consumer.Dockerfile
+      args:
+        VERSION: v1.3.0
+    image: raikada-nvr:latest
+    container_name: raikada-nvr
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # Identity: keys, SQLite DB, TLS. SMALL — put it on protected
+      # storage and back it up; losing it means re-adopting cameras.
+      - raikada-data:/data
+      # Recordings: segments, snapshots, clip exports. BIG — point this
+      # at your storage pool, e.g. /volume1/surveillance on Synology.
+      - raikada-recordings:/recordings
+    environment:
+      - TZ=America/Chicago
+
+volumes:
+  raikada-data:
+  raikada-recordings:
