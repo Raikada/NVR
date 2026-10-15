@@ -122,8 +122,8 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	msEndpoint := ""
 	cloudEndpoint := ""
 	if c != nil {
-		msEndpoint = c.ManagementServerEndpoint
-		cloudEndpoint = c.CloudEndpoint
+		msEndpoint = ""
+		cloudEndpoint = ""
 	}
 	in.Network = probe.Sample(msEndpoint, cloudEndpoint)
 
@@ -143,7 +143,7 @@ func (a *API) onV1HealthGet(ctx *gin.Context) {
 	// defs.Camera elsewhere in the surface.
 	tenantID := ""
 	if c != nil {
-		tenantID = c.TenantID
+		tenantID = ""
 	}
 
 	hs := defs.BuildHealthStatus(in, healthSnapshotID(started), "", tenantID)

@@ -1,41 +1,23 @@
 // Wave 7 / ADR 0015 device-lifecycle endpoints — recorder side.
 //
-// Three new endpoints, all gated on device_lifecycle.manage:
+// Two non-pairing endpoints, all gated on device_lifecycle.manage:
 //
-//   POST /v1/recorder/config-reset       (D7)  — non-destructive
 //   POST /v1/recorder/factory-wipe       (D8)  — destructive, two-stage
 //   POST /v1/recorder/recovery-bundle    (D19) — signed evidence/export
 //                                                  manifest (no private keys)
 //
-// What's preserved vs cleared mirrors ADR 0015's vocabulary precisely:
+// factory-wipe:
+//   two-stage: first call returns a confirmation token; second call
+//   with the token actually wipes. Wipes recordings + identity dir
+//   files. Recording segment files on disk are best-effort identified
+//   from PathDefaults.RecordPath; off-disk paths the recorder doesn't
+//   own (e.g. operator-mounted external storage) are NOT touched.
 //
-//   config-reset (default behaviour, return_to_unpaired=false):
-//     keeps:   identity (UUID + keypair + issued cert + chain + pinned
-//              roots), update trust roots, recordings + indexes, local
-//              audit + event history, MS metadata
-//     clears:  in-memory pairing-flow transient state, refreshes mDNS
-//              announcement
-//
-//   config-reset (return_to_unpaired=true):
-//     also clears the issued MS identity material per D4 (delegates
-//     to identity.ClearIssuedIdentity, the same call /v1/recorder/unpair
-//     uses).
-//
-//   factory-wipe:
-//     two-stage: first call returns a confirmation token; second call
-//     with the token actually wipes. Wipes EVERYTHING except update
-//     trust roots per D8: identity dir (UUID + keypair + cert + chain
-//     + pinned roots), local audit/event in-memory state. Recording
-//     segment files on disk are best-effort identified from
-//     PathDefaults.RecordPath; off-disk paths the recorder doesn't
-//     own (e.g. operator-mounted external storage) are NOT touched —
-//     documented as a v1 limitation.
-//
-//   recovery-bundle:
-//     signed manifest of segments + audit + health. NO private keys
-//     per D19. The signature is computed with the recorder's
-//     persistent ECDSA keypair so the operator can verify the bundle
-//     came from this recorder.
+// recovery-bundle:
+//   signed manifest of segments + audit + health. NO private keys.
+//   The signature is computed with the recorder's persistent ECDSA
+//   keypair so the operator can verify the bundle came from this
+//   recorder.
 
 package api
 
@@ -59,14 +41,13 @@ import (
 )
 
 // recorderLifecycleConfirmationTTL bounds the two-stage wipe confirmation
-// flow. Mirrors the MS-side TTL.
+// flow.
 const recorderLifecycleConfirmationTTL = 10 * time.Minute
 
 // recorderLifecycleConfirmation tracks an outstanding factory-wipe
 // confirmation. In-memory only — the wipe destroys local state, so
 // persisting confirmation tokens to disk would survive the wipe and
-// muddy the audit story. After the wipe, the process restarts (or
-// the operator restarts it) with fresh identity per D8.
+// muddy the audit story.
 type recorderLifecycleConfirmation struct {
 	token     string
 	expiresAt time.Time
@@ -77,99 +58,6 @@ var (
 	recorderLifecycleMu  sync.Mutex
 	recorderLifecycleTok *recorderLifecycleConfirmation
 )
-
-// onV1RecorderConfigResetPost — POST /v1/recorder/config-reset
-//
-// Body: { "return_to_unpaired": bool }
-func (a *API) onV1RecorderConfigResetPost(ctx *gin.Context) {
-	if !a.guardAdminAction(ctx) {
-		return
-	}
-	var body struct {
-		ReturnToUnpaired bool `json:"return_to_unpaired"`
-	}
-	_ = ctx.ShouldBindJSON(&body)
-	actor := principalFromContext(ctx)
-
-	a.emitAudit(defs.AuditLogEntryInput{
-		ActorKind:    actor.PrincipalKind,
-		ActorID:      actor.Sub,
-		Action:       "device_lifecycle.config_reset_requested",
-		Outcome:      defs.AuditOutcomeSuccess,
-		ResourceKind: "recording_server",
-		Attributes: map[string]string{
-			"return_to_unpaired": fmt.Sprintf("%v", body.ReturnToUnpaired),
-		},
-	})
-
-	a.emitAudit(defs.AuditLogEntryInput{
-		ActorKind:    actor.PrincipalKind,
-		ActorID:      actor.Sub,
-		Action:       "device_lifecycle.config_reset_started",
-		Outcome:      defs.AuditOutcomeSuccess,
-		ResourceKind: "recording_server",
-	})
-
-	preFingerprints := []string{}
-	if a.Identity != nil {
-		for _, r := range a.Identity.PinnedRoots() {
-			preFingerprints = append(preFingerprints, r.FingerprintSHA256)
-		}
-	}
-
-	// Reset the pairing-flow transient state so the operator can
-	// kick off a fresh pairing flow (or stay paired, depending on
-	// the path below) without seeing stale "approved" status.
-	if a.Pairing != nil {
-		a.Pairing.Reset()
-	}
-
-	// Per D7, return_to_unpaired layers the unpair operation on top
-	// of config reset. Delegates to ClearIssuedIdentity which is
-	// the exact behaviour /v1/recorder/unpair already uses.
-	if body.ReturnToUnpaired && a.Identity != nil && a.Identity.IsPaired() {
-		if err := a.Identity.ClearIssuedIdentity(); err != nil {
-			a.emitAudit(defs.AuditLogEntryInput{
-				ActorKind:    actor.PrincipalKind,
-				ActorID:      actor.Sub,
-				Action:       "device_lifecycle.config_reset_failed",
-				Outcome:      defs.AuditOutcomeFailure,
-				ResourceKind: "recording_server",
-				Attributes:   map[string]string{"reason": err.Error()},
-			})
-			a.writeError(ctx, http.StatusInternalServerError, err)
-			return
-		}
-		if a.MDNS != nil {
-			_ = a.MDNS.Refresh()
-		}
-	}
-
-	a.emitAudit(defs.AuditLogEntryInput{
-		ActorKind:    actor.PrincipalKind,
-		ActorID:      actor.Sub,
-		Action:       "device_lifecycle.config_reset_succeeded",
-		Outcome:      defs.AuditOutcomeSuccess,
-		ResourceKind: "recording_server",
-		Attributes: map[string]string{
-			"return_to_unpaired":             fmt.Sprintf("%v", body.ReturnToUnpaired),
-			"pre_pinned_roots_fingerprints":  strings.Join(preFingerprints, ","),
-			"preserved":                      "identity,recordings,indexes,audit,event_history,update_trust_roots",
-			"cleared":                        cfgResetClearedMsg(body.ReturnToUnpaired),
-		},
-	})
-	a.Log(logger.Warn, "[lifecycle] config reset (return_to_unpaired=%v) per ADR 0015 D7", body.ReturnToUnpaired)
-
-	ctx.JSON(http.StatusOK, gin.H{
-		"reset_kind":         "config",
-		"return_to_unpaired": body.ReturnToUnpaired,
-		"completed_at":       time.Now().UTC().Format(time.RFC3339),
-		"preserved": []string{
-			"identity_uuid", "private_keypair", "recordings", "indexes",
-			"local_audit", "event_history", "update_trust_roots",
-		},
-	})
-}
 
 // onV1RecorderFactoryWipePost — POST /v1/recorder/factory-wipe
 //
@@ -298,16 +186,9 @@ func (a *API) onV1RecorderFactoryWipePost(ctx *gin.Context) {
 		}
 	}
 
-	// Wipe identity. Per D8, on next boot the recorder generates
-	// fresh material. The identity package supports this by simply
-	// removing the on-disk dir; identity.Open recreates it.
-	identityDir := ""
-	if a.Identity != nil {
-		identityDir = a.identityDirGuess()
-	}
-	if a.Identity != nil {
-		_ = a.Identity.ClearIssuedIdentity()
-	}
+	// Wipe identity. On next boot the recorder generates fresh
+	// material via identity.Open.
+	identityDir := a.identityDirGuess()
 	if identityDir != "" {
 		// Remove every file in the identity dir EXCEPT we keep the
 		// dir itself so `identity.Open` recreates clean material on
@@ -318,21 +199,11 @@ func (a *API) onV1RecorderFactoryWipePost(ctx *gin.Context) {
 		}
 	}
 
-	// Reset the pairing manager.
-	if a.Pairing != nil {
-		a.Pairing.Reset()
-	}
-	// Refresh mDNS so listeners see the unpaired state.
+	// Refresh mDNS so listeners see the post-wipe state.
 	if a.MDNS != nil {
 		_ = a.MDNS.Refresh()
 	}
 
-	// Final audit (after wipe). Local audit will be cleared on
-	// recorder restart since the on-disk identity-derived state has
-	// been wiped — the audit chain head is anchored in the disk
-	// buffer that the recorder will recreate on next boot. Per D9,
-	// already-ingested upstream audit history (the MS) remains
-	// immutable.
 	a.emitAudit(defs.AuditLogEntryInput{
 		ActorKind:    actor.PrincipalKind,
 		ActorID:      actor.Sub,
@@ -370,8 +241,7 @@ func (a *API) onV1RecorderFactoryWipePost(ctx *gin.Context) {
 //
 // The signature is over the canonical-JSON of the manifest body;
 // verification key is the recorder's public key (PublicKey() on the
-// Identity). Operators can verify the bundle came from this recorder
-// by checking the signature against the public key fingerprint.
+// Identity).
 //
 // Body: { "purpose": "evidence" | "recovery", "include_audit": bool }
 func (a *API) onV1RecorderRecoveryBundleExport(ctx *gin.Context) {
@@ -394,20 +264,18 @@ func (a *API) onV1RecorderRecoveryBundleExport(ctx *gin.Context) {
 	actor := principalFromContext(ctx)
 
 	manifest := map[string]any{
-		"format_version":    1,
-		"purpose":           body.Purpose,
-		"recorder_id":       "",
+		"format_version":         1,
+		"purpose":                body.Purpose,
+		"recorder_id":            "",
 		"public_key_fingerprint": "",
-		"firmware_version":  a.Version,
-		"exported_at":       time.Now().UTC().Format(time.RFC3339),
-		"paired":            false,
+		"firmware_version":       a.Version,
+		"exported_at":            time.Now().UTC().Format(time.RFC3339),
 	}
 	if a.Identity != nil {
 		manifest["recorder_id"] = a.Identity.ID().String()
 		if fp, err := a.Identity.PublicKeyFingerprint(); err == nil {
 			manifest["public_key_fingerprint"] = fp
 		}
-		manifest["paired"] = a.Identity.IsPaired()
 	}
 
 	// Health snapshot — best-effort, doesn't surface PII.
@@ -415,10 +283,7 @@ func (a *API) onV1RecorderRecoveryBundleExport(ctx *gin.Context) {
 
 	if body.IncludeAudit {
 		// Most recent audit-chain entries (in-memory ring; tail of
-		// up to 200 newest, in chain order). The chain machinery's
-		// Snapshot() returns oldest-first; we slice the tail so the
-		// bundle's audit segment stays bounded for very long-lived
-		// recorders.
+		// up to 200 newest, in chain order).
 		all := defaultAuditSink().Snapshot()
 		if n := len(all); n > 200 {
 			all = all[n-200:]
@@ -451,16 +316,16 @@ func (a *API) onV1RecorderRecoveryBundleExport(ctx *gin.Context) {
 		Outcome:      defs.AuditOutcomeSuccess,
 		ResourceKind: "recording_server",
 		Attributes: map[string]string{
-			"purpose":            body.Purpose,
-			"include_audit":      fmt.Sprintf("%v", body.IncludeAudit),
-			"manifest_bytes":     fmt.Sprintf("%d", len(canonical)),
-			"signed":             fmt.Sprintf("%v", signature != ""),
+			"purpose":        body.Purpose,
+			"include_audit":  fmt.Sprintf("%v", body.IncludeAudit),
+			"manifest_bytes": fmt.Sprintf("%d", len(canonical)),
+			"signed":         fmt.Sprintf("%v", signature != ""),
 		},
 	})
 
 	bundle := gin.H{
-		"manifest":  json.RawMessage(canonical),
-		"signature": signature,
+		"manifest":            json.RawMessage(canonical),
+		"signature":           signature,
 		"signature_algorithm": "ecdsa-p256-sha256",
 	}
 	ctx.Header("Content-Disposition",
@@ -472,20 +337,13 @@ func (a *API) onV1RecorderRecoveryBundleExport(ctx *gin.Context) {
 // recoveryBundleHealthSnapshot collects a small, PII-free snapshot
 // of the recorder's health state for inclusion in a recovery bundle.
 func (a *API) recoveryBundleHealthSnapshot() map[string]any {
-	snap := map[string]any{
+	return map[string]any{
 		"version": a.Version,
-		"paired":  false,
 	}
-	if a.Identity != nil {
-		snap["paired"] = a.Identity.IsPaired()
-		snap["canonical_source"] = a.Identity.CanonicalSource()
-		snap["policy_canonical_source"] = a.Identity.PolicyCanonicalSource()
-	}
-	return snap
 }
 
 // identityDirGuess derives the on-disk identity directory from the
-// recorder's running conf path. Mirrors core.go logic.
+// recorder's running conf path.
 func (a *API) identityDirGuess() string {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
@@ -495,13 +353,6 @@ func (a *API) identityDirGuess() string {
 	if dir := a.Conf.IdentityDir; dir != "" {
 		return dir
 	}
-	// Fallback: the recorder's identity package reads the dir on Open;
-	// we can't reach into the *Identity to read its dir, but the
-	// default path is "<dirname(confPath)>/identity". The conf
-	// doesn't expose confPath directly to handlers — we leave this
-	// empty when no IdentityDir is configured (factory wipe still
-	// proceeds; only the "remove identity files" step is skipped,
-	// and ClearIssuedIdentity has already wiped the issued material).
 	return ""
 }
 
@@ -542,12 +393,4 @@ func signWithIdentity(priv *ecdsa.PrivateKey, digest []byte) ([]byte, error) {
 	copy(out[32-len(rBytes):32], rBytes)
 	copy(out[64-len(sBytes):64], sBytes)
 	return out, nil
-}
-
-func cfgResetClearedMsg(returnToUnpaired bool) string {
-	base := "pairing_flow_transient_state,ui_prefs_cache,non_authoritative_local_overrides"
-	if returnToUnpaired {
-		base += ",issued_pairing_identity,paired_ms_metadata"
-	}
-	return base
 }

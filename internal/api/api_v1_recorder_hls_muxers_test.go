@@ -99,7 +99,7 @@ func TestV1RecorderHLSMuxersList(t *testing.T) {
 	require.Equal(t, 2, out.ItemCount)
 	require.Len(t, out.Items, 2)
 	for _, m := range out.Items {
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", m.TenantID)
+		require.Equal(t, "", m.TenantID)
 	}
 }
 

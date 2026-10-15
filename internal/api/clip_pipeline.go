@@ -128,13 +128,18 @@ func volumeRootForPathClip(recordPath string) string {
 	dir := recordPath
 	for {
 		base := filepath.Base(dir)
-		if base == dir || base == "/" || base == "." {
-			break
-		}
-		if !containsRune(base, '%') {
+		// Check the segment BEFORE the termination test: for relative
+		// record paths filepath.Dir strips "./", so the last plain
+		// segment (e.g. "recordings") satisfies base == dir and must
+		// still count as the volume root.
+		if base != "/" && base != "." && !containsRune(base, '%') {
 			return dir
 		}
-		dir = filepath.Dir(dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
 	}
 	return "/"
 }
@@ -177,8 +182,8 @@ func resolveClipExportDir(pathConfs map[string]*conf.Path, pathName string) (str
 // outPath. Returns the produced file's byte size and sha256
 // checksum. Thin wrapper over remuxFmp4Segments (see clip_remux.go)
 // retained for naming clarity at the pipeline boundary.
-func stitchSegments(segPaths []string, outPath string) (int64, string, error) {
-	return remuxFmp4Segments(segPaths, outPath)
+func stitchSegments(segPaths []string, outPath string, trims []segmentTrim) (int64, string, error) {
+	return remuxFmp4Segments(segPaths, outPath, trims)
 }
 
 // clipPreparer drives one clip from `requested` to `ready` (or
@@ -234,7 +239,10 @@ func (p *clipPreparer) prepare() {
 	}
 
 	outPath := filepath.Join(exportDir, clip.ID+".mp4")
-	size, checksum, err := stitchSegments(paths, outPath)
+	// Sample-accurate-ish trim: snap-in at the keyframe at/before the
+	// range start, cut-out at the range end.
+	trims := buildTrimPlan(segs, clip.RangeStartedAt, clip.RangeEndedAt)
+	size, checksum, err := stitchSegments(paths, outPath, trims)
 	if err != nil {
 		// Best-effort cleanup of a partial output file.
 		os.Remove(outPath) //nolint:errcheck
@@ -279,4 +287,31 @@ func runPreparerAsync(p *clipPreparer) {
 		defer preparerWG.Done()
 		p.prepare()
 	}()
+}
+
+// segmentTrim is the per-segment trim window for clip extraction,
+// expressed relative to the segment's own timeline. Zero SkipBefore =
+// keep from the start; DropAfter past the content = keep to the end.
+type segmentTrim struct {
+	SkipBefore time.Duration
+	DropAfter  time.Duration
+}
+
+// buildTrimPlan maps the clip's wall-clock range onto per-segment trim
+// windows using the segments' start times. Video trim-in snaps to the
+// keyframe at or before SkipBefore inside the remuxer (stream copy —
+// no re-encode), so clips may start up to one GOP early, never late.
+func buildTrimPlan(segs []segmentLookup, rangeStart, rangeEnd time.Time) []segmentTrim {
+	plan := make([]segmentTrim, len(segs))
+	for i, s := range segs {
+		skip := rangeStart.Sub(s.started)
+		if skip < 0 {
+			skip = 0
+		}
+		plan[i] = segmentTrim{
+			SkipBefore: skip,
+			DropAfter:  rangeEnd.Sub(s.started),
+		}
+	}
+	return plan
 }

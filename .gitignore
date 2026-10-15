@@ -13,3 +13,8 @@
 
 # Codebase wiki (agent-generated)
 /.codebase-wiki/
+
+# Cypress runtime artifacts
+web/cypress/videos/
+web/cypress/screenshots/
+web/cypress/downloads/

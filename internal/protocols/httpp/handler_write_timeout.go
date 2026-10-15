@@ -25,6 +25,19 @@ func (w *writeTimeoutWriter) WriteHeader(statusCode int) {
 	w.w.WriteHeader(statusCode)
 }
 
+// Flush forwards to the underlying writer's Flush method when present.
+// SSE streams (e.g. /v1/events/stream) rely on Flush so the client
+// receives data eagerly rather than after the entire response body
+// completes. Without this passthrough, gin's responseWriter type-asserts
+// for http.Flusher, fails, and silently drops the flush — the client
+// then waits forever for data that's still buffered server-side.
+func (w *writeTimeoutWriter) Flush() {
+	if f, ok := w.w.(http.Flusher); ok {
+		w.rc.SetWriteDeadline(time.Now().Add(w.timeout)) //nolint:errcheck
+		f.Flush()
+	}
+}
+
 // apply write deadline before every Write() call.
 // this allows to write long responses, splitted in chunks,
 // without causing timeouts.

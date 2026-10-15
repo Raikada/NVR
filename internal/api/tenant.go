@@ -9,22 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// tenantID returns the recorder's currently-configured tenant id, taking
-// the standard mutex on a.Conf. See ADR 0005 D7 for why every recorder
-// is bound to exactly one tenant; D1 in canonical-divergences.md for the
-// API-surface implications of that binding.
-//
-// Returns the empty string if a.Conf is nil — this case occurs only in
-// tests that construct the API struct directly without a Conf, which
-// pre-date D1 and don't need a tenant id to validate handler behavior.
-// Production callers always have Conf set by Initialize.
+// tenantID is a vestigial accessor preserved for any handler still
+// scoping responses by tenant. The consumer NVR is single-tenant by
+// construction; this always returns the empty string.
 func (a *API) tenantID() string {
-	a.mutex.RLock()
-	defer a.mutex.RUnlock()
-	if a.Conf == nil {
-		return ""
-	}
-	return a.Conf.TenantID
+	return ""
 }
 
 // globalPIIReadGrant returns the operator escape-hatch flag from the

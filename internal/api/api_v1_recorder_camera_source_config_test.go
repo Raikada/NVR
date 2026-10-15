@@ -44,7 +44,7 @@ func TestV1RecorderSourceConfigGet(t *testing.T) {
 
 	var out RPiCameraSourceConfig
 	require.NoError(t, json.Unmarshal(body, &out))
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", out.TenantID)
+	require.Equal(t, "", out.TenantID)
 	// rpiCameraWidth has a non-zero default per setDefaults.
 	require.Equal(t, uint(1920), out.RPICameraWidth)
 }

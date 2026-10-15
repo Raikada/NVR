@@ -214,7 +214,14 @@ func validateScopeKind(scopeKind, scopeTargetID, tenantID, siteID, recordingServ
 	}
 	switch scopeKind {
 	case scopeKindTenant:
-		if tenantID == "" || scopeTargetID != tenantID {
+		// Consumer NVR is single-tenant by construction (the recorder has
+		// no bound tenant_id). Accept any scope_kind=tenant claim that
+		// either omits a scope_target_id or matches the recorder's
+		// (empty) tenant_id; downstream gating still enforces scope.
+		if tenantID == "" {
+			return scopeKindOutcomeOK, ""
+		}
+		if scopeTargetID != tenantID {
 			return scopeKindOutcomeMismatch,
 				"scope_kind=tenant scope_target_id does not match recorder's bound tenant_id"
 		}

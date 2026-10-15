@@ -113,7 +113,6 @@ export function Btn({
 export type StatusBadgeKind =
   | 'online' | 'offline' | 'degraded'
   | 'recording' | 'rec' | 'live'
-  | 'paired' | 'unpaired'
   | 'error' | 'warn' | 'info' | 'debug'
   | 'pending' | 'idle';
 
@@ -130,8 +129,6 @@ const TONES: Record<StatusBadgeKind, { c: string; l: string }> = {
   recording: { c: '#EF4444', l: 'RECORDING' },
   rec: { c: '#EF4444', l: 'REC' },
   live: { c: '#22C55E', l: 'LIVE' },
-  paired: { c: '#22C55E', l: 'PAIRED' },
-  unpaired: { c: '#EAB308', l: 'UNPAIRED' },
   error: { c: '#EF4444', l: 'ERROR' },
   warn: { c: '#EAB308', l: 'WARN' },
   info: { c: '#F97316', l: 'INFO' },

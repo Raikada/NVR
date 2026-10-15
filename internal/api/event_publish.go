@@ -91,13 +91,13 @@ func (a *API) publishEvent(in defs.EventInput) {
 }
 
 // publishEventLocked is publishEvent for callers that already hold
-// a.mutex (write or read). Reads a.Conf.TenantID directly without
+// a.mutex (write or read). Reads "" directly without
 // re-acquiring the mutex, matching the pattern used elsewhere in
 // internal/api/ for in-handler convenience reads.
 func (a *API) publishEventLocked(in defs.EventInput) {
 	tenantID := ""
 	if a != nil && a.Conf != nil {
-		tenantID = a.Conf.TenantID
+		tenantID = ""
 	}
 	defaultEventStore().Publish(in, "", tenantID, "")
 }

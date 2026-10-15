@@ -7,7 +7,6 @@ import "github.com/bluenviron/mediamtx/internal/auth"
 type AuthManager struct {
 	AuthenticateImpl           func(req *auth.Request) (string, *auth.Error)
 	AuthenticateWithClaimsImpl func(req *auth.Request) (string, auth.Claims, *auth.Error)
-	RefreshJWTJWKSImpl         func()
 }
 
 // Authenticate replicates auth.Manager.Authenticate.
@@ -24,11 +23,6 @@ func (m *AuthManager) AuthenticateWithClaims(req *auth.Request) (string, auth.Cl
 	}
 	user, err := m.AuthenticateImpl(req)
 	return user, auth.Claims{}, err
-}
-
-// RefreshJWTJWKS is a function that simulates a JWKS refresh.
-func (m *AuthManager) RefreshJWTJWKS() {
-	m.RefreshJWTJWKSImpl()
 }
 
 // NilAuthManager is an auth manager that accepts everything.

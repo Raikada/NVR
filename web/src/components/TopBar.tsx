@@ -3,7 +3,6 @@ import type { AppState } from '../lib/types';
 
 interface TopBarProps {
   server: AppState & { recordingCount: number; cameraCount: number };
-  paired: boolean;
   now: Date;
   /** Pre-pairing auth slice 2026-05-06: when set, renders a Sign Out
    *  button that clears the recorder-local JWT and routes back to
@@ -12,7 +11,7 @@ interface TopBarProps {
   onLogout?: () => void;
 }
 
-export function TopBar({ server, paired, now, username, onLogout }: TopBarProps) {
+export function TopBar({ server, now, username, onLogout }: TopBarProps) {
   const time = now.toLocaleTimeString('en-GB', { hour12: false });
   return (
     <header
@@ -113,7 +112,6 @@ export function TopBar({ server, paired, now, username, onLogout }: TopBarProps)
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <StatusBadge kind={paired ? 'paired' : 'unpaired'} />
         <StatusBadge kind="recording" label={`REC ${server.recordingCount}/${server.cameraCount}`} />
         <div
           style={{

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,12 +31,6 @@ func (p testParent) Log(l logger.Level, s string, a ...any) {
 func (testParent) APIConfigSet(_ *conf.Conf) {}
 
 func tempConf(t *testing.T, cnt string) *conf.Conf {
-	// tenantId is required by conf.Validate (D1 in canonical-divergences.md);
-	// inject a sentinel so individual tests don't need to repeat it.
-	if !strings.Contains(cnt, "tenantId:") {
-		cnt = "tenantId: 00000000-0000-0000-0000-000000000000\n" + cnt
-	}
-
 	fi, err := test.CreateTempFile([]byte(cnt))
 	require.NoError(t, err)
 	defer os.Remove(fi)
@@ -156,15 +149,13 @@ func TestInfo(t *testing.T) {
 	var out map[string]any
 	httpRequest(t, hc, http.MethodGet, "http://localhost:9997/v1/info", nil, &out)
 	require.Equal(t, map[string]any{
-		"tenant_id": "00000000-0000-0000-0000-000000000000",
-		"started":  time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
-		"version":  "v1.2.3",
+		"tenant_id": "",
+		"started":   time.Date(2008, 11, 7, 11, 22, 0, 0, time.Local).Format(time.RFC3339),
+		"version":   "v1.2.3",
 	}, out)
 }
 
-func TestAuthJWKSRefresh(t *testing.T) {
-	ok := false
-
+func TestAuthRefreshIssuerMaterialNoOp(t *testing.T) {
 	api := API{
 		Address:      "localhost:9997",
 		ReadTimeout:  conf.Duration(10 * time.Second),
@@ -172,9 +163,6 @@ func TestAuthJWKSRefresh(t *testing.T) {
 		AuthManager: &test.AuthManager{
 			AuthenticateImpl: func(_ *auth.Request) (string, *auth.Error) {
 				return "", nil
-			},
-			RefreshJWTJWKSImpl: func() {
-				ok = true
 			},
 		},
 		Parent: &testParent{},
@@ -190,9 +178,9 @@ func TestAuthJWKSRefresh(t *testing.T) {
 	u, err := url.Parse("http://localhost:9997/v1/auth/refresh-issuer-material")
 	require.NoError(t, err)
 
+	// Endpoint is a no-op in the consumer NVR — the JWKS-from-MS path
+	// has been removed. Just confirm it returns 200.
 	httpRequest(t, hc, http.MethodPost, u.String(), nil, nil)
-
-	require.True(t, ok)
 }
 
 func TestAuthError(t *testing.T) {

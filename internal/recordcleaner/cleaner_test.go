@@ -187,7 +187,9 @@ func (f *fakeStatfs) statfs(path string, st *syscall.Statfs_t) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failOn[path] {
-		return syscall.ENOENT
+		// A real I/O failure — ENOENT is deliberately NOT a failure
+		// since F10 (missing dir = not yet created, not degraded).
+		return syscall.EIO
 	}
 	frac, ok := f.usedFraction[path]
 	if !ok {
@@ -357,4 +359,27 @@ func TestVolumeIDFromMountPath_MatchesAPILayer(t *testing.T) {
 	require.NotEqual(t, abs, id)
 	// Determinism: a second call returns the same id.
 	require.Equal(t, id, volumeIDFromMountPath("/tmp/x"))
+}
+
+// F10 (2026-07-02 smoke): a recordings directory that doesn't exist
+// yet (fresh install, nothing recorded) is not a degraded volume — the
+// recorder creates it at first segment write. Only real statfs
+// failures degrade.
+func TestSampleVolumeMissingDirIsNotDegraded(t *testing.T) {
+	prev := statfsFn
+	t.Cleanup(func() { statfsFn = prev })
+
+	c := &Cleaner{}
+
+	statfsFn = func(_ string, _ *syscall.Statfs_t) error { return syscall.ENOENT }
+	_, degraded, reason := c.sampleVolume("/nope/recordings")
+	if degraded {
+		t.Fatalf("missing dir must not degrade (reason=%q)", reason)
+	}
+
+	statfsFn = func(_ string, _ *syscall.Statfs_t) error { return syscall.EIO }
+	_, degraded, reason = c.sampleVolume("/broken/volume")
+	if !degraded || reason != "statfs_failed" {
+		t.Fatalf("real statfs failure must degrade, got degraded=%v reason=%q", degraded, reason)
+	}
 }

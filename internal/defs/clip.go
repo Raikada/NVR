@@ -47,6 +47,10 @@ type Clip struct {
 	RecordingServerID string `json:"recording_server_id"`
 	CameraID          string `json:"camera_id"`
 
+	// EventID links an event-derived clip back to its event (SP4).
+	// Empty for ad-hoc range clips.
+	EventID string `json:"event_id,omitempty"`
+
 	RequestedBy string `json:"requested_by"`
 
 	Label       string  `json:"label"`

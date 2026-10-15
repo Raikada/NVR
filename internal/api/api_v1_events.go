@@ -254,6 +254,13 @@ func (a *API) eventStore() *EventStore {
 // that want to detect the unwired-producers gap explicitly can probe
 // for any of the wired kinds and check whether they ever appear.
 func (a *API) onV1EventsList(ctx *gin.Context) {
+	// SP4: the canonical event store is SQLite via events.Service; the
+	// in-memory buffer survives only for pre-foundation tests and
+	// degraded boots (see api_v1_events_db.go).
+	if a.EventsService != nil {
+		a.onV1EventsListDB(ctx)
+		return
+	}
 	filters, err := parseEventFilters(ctx)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
@@ -304,6 +311,10 @@ func (a *API) onV1EventsList(ctx *gin.Context) {
 
 // onV1EventsGet serves GET /v1/events/:id.
 func (a *API) onV1EventsGet(ctx *gin.Context) {
+	if a.EventsService != nil {
+		a.onV1EventsGetDB(ctx)
+		return
+	}
 	idStr := ctx.Param("id")
 	if _, err := uuid.Parse(idStr); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid event id: %w", err))

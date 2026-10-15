@@ -52,9 +52,17 @@ import (
 // concatenation. Audio and video streams are tracked independently
 // because their timebases differ (90 kHz video vs. sample-rate
 // audio is the common case).
-func remuxFmp4Segments(segPaths []string, outPath string) (int64, string, error) {
+// Trimming (SP4 follow-up). trims, when non-nil, carries one window
+// per segment in segment-local time. Video trim-in snaps to the
+// keyframe at or before SkipBefore (backward seek; stream copy can't
+// start mid-GOP), audio follows the first kept video packet, and the
+// output timeline is re-based so the clip starts at ~0.
+func remuxFmp4Segments(segPaths []string, outPath string, trims []segmentTrim) (int64, string, error) {
 	if len(segPaths) == 0 {
 		return 0, "", errors.New("no segments to remux")
+	}
+	if trims != nil && len(trims) != len(segPaths) {
+		return 0, "", errors.New("trim plan length mismatch")
 	}
 
 	// Allocate output format context up front. We pass an empty
@@ -92,6 +100,8 @@ func remuxFmp4Segments(segPaths []string, outPath string) (int64, string, error)
 		inIdx        int   // first-segment index, for reference
 		dtsOffset    int64 // running offset in output timebase
 		lastEndDts   int64 // dts+duration of last written packet, in output timebase
+		trimBase     int64 // subtracted from segment-0 packets to re-base a trimmed timeline
+		trimBaseSet  bool
 	}
 
 	// outputs is indexed by mediaType — audio/video — because that's
@@ -192,6 +202,30 @@ func remuxFmp4Segments(segPaths []string, outPath string) (int64, string, error)
 			}
 		}
 
+		// Trim window for this segment (nil trims = keep everything).
+		var trim *segmentTrim
+		if trims != nil {
+			trim = &trims[segIdx]
+		}
+		if trim != nil && trim.SkipBefore > 0 {
+			// Land on the keyframe at or before the trim-in point; a
+			// failed seek degrades to forward keyframe-snapping in the
+			// packet loop below.
+			ts := trim.SkipBefore.Microseconds()
+			if serr := inFC.SeekFrame(-1, ts, astiav.NewSeekFlags(astiav.SeekFlagBackward)); serr != nil {
+				// Non-fatal: fall through and let the loop skip.
+				_ = serr
+			}
+		}
+		// videoStartSec is the segment-local time of the first kept
+		// video packet: audio follows it so A/V stay in sync. -1 =
+		// video not started (or no trim).
+		videoStartSec := -1.0
+		hasVideo := outputs[astiav.MediaTypeVideo] != nil
+		if trim == nil || trim.SkipBefore <= 0 {
+			videoStartSec = 0
+		}
+
 		// Build per-segment input-stream-index -> outputs entry.
 		inIdxToOut := map[int]*streamMap{}
 		for _, is := range inFC.Streams() {
@@ -240,10 +274,69 @@ func remuxFmp4Segments(segPaths []string, outPath string) (int64, string, error)
 				continue
 			}
 
+			// Trim filtering, in segment-local seconds.
+			if trim != nil {
+				ptsSec := -1.0
+				if pkt.Pts() != astiav.NoPtsValue {
+					ptsSec = float64(pkt.Pts()) * inTb.Float64()
+				}
+				// Trim-out: drop packets starting past the window.
+				if ptsSec >= 0 && ptsSec > trim.DropAfter.Seconds() {
+					pkt.Unref()
+					continue
+				}
+				// Trim-in.
+				if trim.SkipBefore > 0 {
+					switch sm.mediaType {
+					case astiav.MediaTypeVideo:
+						if videoStartSec < 0 {
+							// Keep only from a keyframe on; post-seek the
+							// first packet normally is one.
+							if !pkt.Flags().Has(astiav.PacketFlagKey) {
+								pkt.Unref()
+								continue
+							}
+							videoStartSec = ptsSec
+						}
+					case astiav.MediaTypeAudio:
+						start := trim.SkipBefore.Seconds()
+						if hasVideo {
+							if videoStartSec < 0 {
+								pkt.Unref()
+								continue
+							}
+							start = videoStartSec
+						}
+						if ptsSec >= 0 && ptsSec < start {
+							pkt.Unref()
+							continue
+						}
+					}
+				}
+			}
+
 			// Rescale into output timebase, then apply the running
 			// offset so the timeline stays monotonic.
 			pkt.SetStreamIndex(sm.out.Index())
 			pkt.RescaleTs(inTb, sm.outTimeBase)
+
+			// Re-base a trimmed first segment so the output starts at
+			// ~0 rather than at the trim-in offset.
+			if segIdx == 0 && trim != nil && trim.SkipBefore > 0 {
+				if !sm.trimBaseSet && pkt.Dts() != astiav.NoPtsValue {
+					sm.trimBase = pkt.Dts()
+					sm.trimBaseSet = true
+				}
+				if sm.trimBaseSet {
+					if pkt.Pts() != astiav.NoPtsValue {
+						pkt.SetPts(pkt.Pts() - sm.trimBase)
+					}
+					if pkt.Dts() != astiav.NoPtsValue {
+						pkt.SetDts(pkt.Dts() - sm.trimBase)
+					}
+				}
+			}
+
 			if pkt.Pts() != astiav.NoPtsValue {
 				pkt.SetPts(pkt.Pts() + sm.dtsOffset)
 			}

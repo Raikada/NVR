@@ -4,22 +4,6 @@
 # Settings in this section are applied anywhere.
 
 ###############################################
-# Global settings -> Identity
-
-# The tenant this recorder is bound to. Required.
-#
-# Every recorder is bound to exactly one tenant — recorders are
-# physically single-tenant by construction (per ADR 0005 D4).
-# Until the pairing flow lands per ADR 0002, this value is set
-# manually here; once pairing exists, the recorder will populate
-# this field at PairingToken-consume time and the manual setting
-# becomes the bootstrap default for unpaired recorders.
-#
-# The value must be a non-empty string. UUIDv7 is the canonical
-# id format per ADR 0001 cross-cutting rule 1.
-tenantId: 00000000-0000-0000-0000-000000000000
-
-###############################################
 # Global settings -> General
 
 # Verbosity of the program; available values are "error", "warn", "info", "debug".
@@ -138,8 +122,9 @@ authHTTPExclude:
 - action: metrics
 - action: pprof
 
-# JWT-based authentication.
-# Users have to log in through an external identity server and obtain a JWT.
+# JWT-based authentication (consumer NVR uses recorder-local JWTs only;
+# JWTs are validated against the recorder's locally-issued signing key
+# that the /v1/recorder/login endpoint uses to mint operator tokens).
 # This JWT must contain the claim "mediamtx_permissions" with permissions,
 # for instance:
 # {
@@ -151,15 +136,6 @@ authHTTPExclude:
 #   ]
 # }
 # Users are expected to pass the JWT in the Authorization header or as password.
-# This is the JWKS URL that will be used to pull (once) the public key that allows
-# to validate JWTs.
-authJWTJWKS:
-# If the JWKS URL has a self-signed or invalid certificate,
-# you can provide the fingerprint of the certificate in order to
-# validate it anyway. It can be obtained by running:
-# openssl s_client -connect jwt_jwks_domain:443 </dev/null 2>/dev/null | sed -n '/BEGIN/,/END/p' > server.crt
-# openssl x509 -in server.crt -noout -fingerprint -sha256 | cut -d "=" -f2 | tr -d ':'
-authJWTJWKSFingerprint:
 # name of the claim that contains permissions.
 authJWTClaimKey: mediamtx_permissions
 # Actions to exclude from JWT-based authentication.

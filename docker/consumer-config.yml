@@ -1,0 +1,21 @@
+# Container config for the consumer NVR appliance. Cameras, policies,
+# users, schedules all live in the SQLite DB under /data — this file is
+# bootstrap-only. The recorder rewrites it in place as camera paths are
+# applied; mount /etc/raikada as a volume if you want those rewrites to
+# survive image upgrades (the DB is the source of truth either way:
+# paths are rebuilt from it at boot).
+identityDir: /data/identity
+logLevel: info
+
+api: yes
+apiAddress: :9997
+apiEncryption: yes   # HTTPS on a self-signed cert; replace via Settings → TLS
+
+rtspAddress: :8554
+
+# LAN discovery + the _raikada-nvr._tcp advertisement. Requires host
+# networking (multicast); harmless if bridged, discovery just stays empty.
+mdns: true
+
+pathDefaults:
+  recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S-%f

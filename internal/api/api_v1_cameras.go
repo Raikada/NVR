@@ -91,7 +91,7 @@ func (a *API) cameraFromConfPath(c *conf.Conf, p *conf.Path) defs.Camera {
 	_, nameToID := cameraIDMaps(c.Paths)
 	cameraID := nameToID[p.Name]
 	runtime := a.cameraRuntimeForPath(p.Name)
-	cam := defs.CameraFromPath(p, cameraID, c.TenantID, recordingPolicyIDForPath(p), nameToID, runtime)
+	cam := defs.CameraFromPath(p, cameraID, "", recordingPolicyIDForPath(p), nameToID, runtime)
 	return cam
 }
 
@@ -146,7 +146,22 @@ func (a *API) onV1CamerasGet(ctx *gin.Context) {
 	}
 	p := c.Paths[name]
 	cam := a.cameraFromConfPath(c, p)
+	a.overlayStoreFields(ctx, &cam)
 	ctx.JSON(http.StatusOK, &cam)
+}
+
+// overlayStoreFields folds store-row-only camera fields (event_channel,
+// SP3) onto a conf-path-derived wire object. Best-effort: a missing row
+// leaves the fields zero.
+func (a *API) overlayStoreFields(ctx *gin.Context, cam *defs.Camera) {
+	if a.CamerasService == nil || cam.ID == "" {
+		return
+	}
+	row, err := a.CamerasService.Get(ctx.Request.Context(), cam.ID)
+	if err != nil {
+		return
+	}
+	cam.EventChannel = row.EventChannel
 }
 
 // decodeCamera reads a Camera body for POST/PUT/PATCH. Tenant scoping
@@ -268,16 +283,25 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !a.guardAdminAction(ctx) {
 		return
 	}
-	if !a.applyCameraLockdown(ctx, "", "create") {
-		return
-	}
 	cam, _, ok := a.decodeCameraBody(ctx)
 	if !ok {
 		return
 	}
+	created, ok := a.createCameraCommon(ctx, cam)
+	if !ok {
+		return
+	}
+	ctx.JSON(http.StatusCreated, created)
+}
+
+// createCameraCommon is the shared camera-create flow behind both
+// POST /v1/cameras and POST /v1/discovery/adopt: conf-path build with
+// policy application, store-row sync, conf apply, events + audit. On
+// failure it writes the HTTP error itself and returns ok=false.
+func (a *API) createCameraCommon(ctx *gin.Context, cam *defs.Camera) (*defs.Camera, bool) {
 	if cam.Name == "" {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("camera name is required"))
-		return
+		return nil, false
 	}
 
 	a.mutex.Lock()
@@ -286,7 +310,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	newConf := a.Conf.Clone()
 	if _, exists := newConf.OptionalPaths[cam.Name]; exists {
 		a.writeError(ctx, http.StatusConflict, fmt.Errorf("camera with name '%s' already exists", cam.Name))
-		return
+		return nil, false
 	}
 
 	// Resolve the RecordingPolicy linkage. If the body provided one,
@@ -303,7 +327,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	if !policyOK || policyCfg == nil {
 		a.writeError(ctx, http.StatusBadRequest,
 			fmt.Errorf("recording_policy_id '%s' does not reference an existing policy", policyID))
-		return
+		return nil, false
 	}
 
 	// Server issues the UUID per ADR 0009 §D4. For consistency with the
@@ -311,7 +335,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	// derive it from the name; the round-trip stays stable regardless
 	// of restarts.
 	cam.ID = cameraIDFromPathName(cam.Name)
-	cam.TenantID = a.Conf.TenantID
+	cam.TenantID = ""
 	now := time.Now().UTC()
 	cam.CreatedAt = now
 	cam.UpdatedAt = now
@@ -321,7 +345,7 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	p, err := defs.PathFromCamera(*cam)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	// Apply the resolved RecordingPolicy onto the path so the per-path
@@ -341,16 +365,16 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	op, err := optionalPathFromConfPath(p)
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	if err := newConf.AddPath(cam.Name, op); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 	if err := newConf.Validate(nil); err != nil {
 		a.writeError(ctx, http.StatusBadRequest, err)
-		return
+		return nil, false
 	}
 
 	// ID is genuinely derived (cameraIDFromPathName); we re-stamp it
@@ -360,6 +384,14 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	// the name and any reload computes the same value).
 	if storedPath, ok := newConf.Paths[cam.Name]; ok {
 		storedPath.ID = cam.ID
+	}
+
+	// Insert the canonical store row BEFORE applying the conf so a
+	// store failure aborts the create; the vault / health / PathBridge
+	// surfaces key off this row (smoke finding F1).
+	if err := a.syncCameraStoreCreate(ctx.Request.Context(), cam); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return nil, false
 	}
 
 	a.Conf = newConf
@@ -378,10 +410,8 @@ func (a *API) onV1CamerasPost(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", cam.ID, "create", map[string]string{"camera_id": cam.ID})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[cam.Name])
-	ctx.JSON(http.StatusCreated, &cam2)
+	return &cam2, true
 }
 
 func (a *API) onV1CamerasPatch(ctx *gin.Context) {
@@ -393,9 +423,6 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
 		return
 	}
-	if !a.applyCameraLockdown(ctx, id, "update") {
-		return
-	}
 
 	body, err := readLimitedBody(ctx)
 	if err != nil {
@@ -404,6 +431,18 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	}
 	if !a.checkBodyTenantSnakeCase(ctx, body) {
 		return
+	}
+	// Phase 5: PATCH must reject the `credentials` field; operators
+	// rotate via the dedicated PUT /v1/cameras/:id/credentials.
+	{
+		var probe map[string]json.RawMessage
+		if err := json.Unmarshal(body, &probe); err == nil {
+			if _, has := probe["credentials"]; has {
+				a.writeError(ctx, http.StatusBadRequest,
+					fmt.Errorf("credentials cannot be set via PATCH; use PUT /v1/cameras/{id}/credentials"))
+				return
+			}
+		}
 	}
 
 	a.mutex.Lock()
@@ -504,6 +543,23 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		storedPath.ID = id
 	}
 
+	// event_channel (SP3) lives on the store row only; validate here
+	// and thread it through the store sync below.
+	if !validEventChannel(patch.EventChannel) {
+		a.writeError(ctx, http.StatusBadRequest,
+			fmt.Errorf("event_channel must be one of auto, onvif, amcrest, none"))
+		return
+	}
+
+	// Mirror the patch onto the canonical store row BEFORE applying the
+	// conf, so credential re-materialization never dials a stale URL.
+	patched := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	patched.EventChannel = patch.EventChannel
+	if err := a.syncCameraStoreUpdate(ctx.Request.Context(), &patched); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -520,8 +576,6 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "update", map[string]string{"camera_id": id})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -533,9 +587,6 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
-		return
-	}
-	if !a.applyCameraLockdown(ctx, id, "replace") {
 		return
 	}
 
@@ -557,7 +608,7 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	// recorder-internal name (the route's UUID maps to it).
 	cam.ID = id
 	cam.Name = name
-	cam.TenantID = a.Conf.TenantID
+	cam.TenantID = ""
 	if cam.CreatedAt.IsZero() {
 		// Keep original CreatedAt; fall through with a zero value to be
 		// handled below if we lack the original.
@@ -602,6 +653,13 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 		storedPath.ID = id
 	}
 
+	// Mirror the replacement onto the canonical store row (see PATCH).
+	replaced := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	if err := a.syncCameraStoreUpdate(ctx.Request.Context(), &replaced); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -618,8 +676,6 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	})
 	a.emitConfigAppliedLocked("camera", id, "replace", map[string]string{"camera_id": id})
 
-	a.engageLockdownIfMSSourced(ctx)
-
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
 	ctx.JSON(http.StatusOK, &cam2)
 }
@@ -631,9 +687,6 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 	id, err := validateCameraID(ctx.Param("id"))
 	if err != nil {
 		a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("invalid camera id: %w", err))
-		return
-	}
-	if !a.applyCameraLockdown(ctx, id, "delete") {
 		return
 	}
 
@@ -661,6 +714,14 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 		return
 	}
 
+	// Remove the canonical store row (cascades credentials / health /
+	// events) BEFORE applying the conf so a store failure aborts the
+	// delete instead of orphaning rows (smoke finding F3).
+	if err := a.syncCameraStoreDelete(ctx.Request.Context(), id); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -676,8 +737,6 @@ func (a *API) onV1CamerasDelete(ctx *gin.Context) {
 		},
 	})
 	a.emitConfigAppliedLocked("camera", id, "delete", map[string]string{"camera_id": id})
-
-	a.engageLockdownIfMSSourced(ctx)
 
 	a.writeOK(ctx)
 }
@@ -788,4 +847,14 @@ func mergeCameraOntoConfPath(existing conf.Path, patch defs.Camera) defs.Camera 
 	}
 	cam.Runtime = nil
 	return cam
+}
+
+// validEventChannel accepts the SP3 vendor-channel vocabulary. Empty
+// means "not specified" on PATCH (preserve existing).
+func validEventChannel(v string) bool {
+	switch v {
+	case "", "auto", "onvif", "amcrest", "none":
+		return true
+	}
+	return false
 }

@@ -104,7 +104,7 @@ func TestV1CamerasListPopulatedAndPagination(t *testing.T) {
 
 	// Tenant id stamped on every item.
 	for _, c := range resp.Items {
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", c.TenantID)
+		require.Equal(t, "", c.TenantID)
 	}
 
 	// Source URL with userinfo is redacted; credentials_ref marks presence.
@@ -200,7 +200,7 @@ func TestV1CamerasPostCreatesAndIssuesUUID(t *testing.T) {
 	require.NotEmpty(t, cam.ID)
 	require.Equal(t, cameraIDFromPathName("fresh_cam"), cam.ID)
 	require.Equal(t, "fresh_cam", cam.Name)
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", cam.TenantID)
+	require.Equal(t, "", cam.TenantID)
 
 	// Confirm the path was added to the live conf.
 	_, ok := api.Conf.OptionalPaths["fresh_cam"]
@@ -275,6 +275,25 @@ func TestV1CamerasPatchUpdates(t *testing.T) {
 	require.Equal(t, "rtsp://192.0.2.99:554/newpath", cam.SourceURL)
 	require.NotNil(t, cam.MaxReaders)
 	require.Equal(t, 5, *cam.MaxReaders)
+}
+
+func TestV1CamerasPatchRejectsCredentials(t *testing.T) {
+	// Phase 5 Task 5.2: PATCH must reject the `credentials` field; the
+	// dedicated PUT /v1/cameras/:id/credentials is the only write path.
+	cnf := tempConf(t, "api: yes\n"+
+		"paths:\n"+
+		"  withcreds:\n"+
+		"    source: rtsp://192.0.2.1:554/stream\n")
+	api := &API{Conf: cnf, Parent: &testParent{}}
+
+	id := cameraIDFromPathName("withcreds")
+	body, _ := json.Marshal(map[string]any{
+		"source_url":  "rtsp://192.0.2.99:554/newpath",
+		"credentials": map[string]string{"username": "alice", "password": "hunter2"},
+	})
+
+	code, _ := invokeCameraHandler(api, api.onV1CamerasPatch, http.MethodPatch, "", id, body)
+	require.Equal(t, http.StatusBadRequest, code)
 }
 
 func TestV1CamerasPatchRuntimeIgnored(t *testing.T) {

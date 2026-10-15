@@ -14,9 +14,12 @@ type LocalUser struct {
 	Username            string
 	DisplayName         string // optional; defaults to Username when empty
 	PasswordHash        string
-	IsAdmin             bool
+	IsAdmin             bool   // legacy; prefer RoleID
 	IsActive            bool
 	MustChangePassword  bool
+	RoleID              string // FK roles.id; empty when unassigned
+	Email               string // optional SMTP recipient
+	Language            string // user-preferred language (ISO 639-1); defaults "en"
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	LastLoginAt         time.Time // zero if never logged in
@@ -38,15 +41,20 @@ func (r *LocalUsersRepo) Insert(ctx context.Context, u *LocalUser) error {
 	if u.UpdatedAt.IsZero() {
 		u.UpdatedAt = now
 	}
+	if u.Language == "" {
+		u.Language = "en"
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO local_users (id, username, display_name, password_hash,
 		                          is_admin, is_active, must_change_password,
+		                          role_id, email, language,
 		                          created_at, updated_at,
 		                          failed_login_attempts)
-		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, 0)
+		VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, 0)
 	`,
 		u.ID, u.Username, u.DisplayName, u.PasswordHash,
 		boolToInt(u.IsAdmin), boolToInt(u.IsActive), boolToInt(u.MustChangePassword),
+		u.RoleID, u.Email, u.Language,
 		FormatTime(u.CreatedAt), FormatTime(u.UpdatedAt),
 	)
 	if err != nil && isConstraintErr(err) {
@@ -192,8 +200,9 @@ func (r *LocalUsersRepo) SetPassword(ctx context.Context, id, hash string) error
 
 const localUserSelect = `
 SELECT id, username, COALESCE(display_name, ''), password_hash, is_admin,
-       is_active, must_change_password, created_at, updated_at,
-       COALESCE(last_login_at, ''),
+       is_active, must_change_password,
+       COALESCE(role_id, ''), COALESCE(email, ''), language,
+       created_at, updated_at, COALESCE(last_login_at, ''),
        failed_login_attempts, COALESCE(locked_until, '')
 FROM local_users
 `
@@ -203,8 +212,9 @@ func scanLocalUser(row rowScanner) (*LocalUser, error) {
 	var createdAt, updatedAt, lastLoginAt, lockedUntil string
 	var isAdmin, isActive, mustChange int
 	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash,
-		&isAdmin, &isActive, &mustChange, &createdAt, &updatedAt,
-		&lastLoginAt,
+		&isAdmin, &isActive, &mustChange,
+		&u.RoleID, &u.Email, &u.Language,
+		&createdAt, &updatedAt, &lastLoginAt,
 		&u.FailedLoginAttempts, &lockedUntil); err != nil {
 		return nil, err
 	}
@@ -230,4 +240,55 @@ func scanLocalUser(row rowScanner) (*LocalUser, error) {
 		u.LockedUntil = t
 	}
 	return &u, nil
+}
+
+// SetRole updates role_id (must be a valid roles.id, FK enforced).
+func (r *LocalUsersRepo) SetRole(ctx context.Context, id, roleID string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE local_users SET role_id = ?, updated_at = ? WHERE id = ?
+	`, roleID, Now(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrLocalUserNotFound
+	}
+	return nil
+}
+
+// SetEmail updates the user's email (empty string clears it).
+func (r *LocalUsersRepo) SetEmail(ctx context.Context, id, email string) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE local_users SET email = NULLIF(?, ''), updated_at = ? WHERE id = ?
+	`, email, Now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrLocalUserNotFound
+	}
+	return nil
+}
+
+// SetLanguage updates the user's language preference.
+func (r *LocalUsersRepo) SetLanguage(ctx context.Context, id, lang string) error {
+	if lang == "" {
+		lang = "en"
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE local_users SET language = ?, updated_at = ? WHERE id = ?
+	`, lang, Now(), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrLocalUserNotFound
+	}
+	return nil
 }

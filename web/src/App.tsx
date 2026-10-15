@@ -13,24 +13,27 @@ import { ToastStack } from './components/Toast';
 import { SetupWizard } from './components/SetupWizard';
 import { Overview } from './routes/Overview';
 import { Cameras } from './routes/Cameras';
+import { Events } from './routes/Events';
 import { Policies } from './routes/Policies';
-import { Pairing } from './routes/Pairing';
 import { Storage } from './routes/Storage';
 import { Network } from './routes/Network';
 import { Logs } from './routes/Logs';
 import { Diagnostics } from './routes/Diagnostics';
 import { Settings } from './routes/Settings';
+import { Users } from './routes/Users';
+import { Notifications } from './routes/Notifications';
 import { Login } from './routes/Login';
 import { PasswordChange } from './routes/PasswordChange';
 import { INITIAL_CAMERAS } from './lib/mockdata';
 import {
   clearStoredToken,
-  fetchIdentity,
+  getMe,
+  getSetupStatus,
   getStoredToken,
   getStoredUsername,
   setOnUnauthorized,
 } from './lib/api';
-import type { AppState, Route, Toast, ToastInput } from './lib/types';
+import type { AppState, MeResponse, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
 
 function readHashRoute(): Route {
@@ -49,7 +52,11 @@ type AuthState = 'loading' | 'anonymous' | 'must_change_password' | 'authenticat
 
 export function App() {
   const [route, setRoute] = useState<Route>(() => readHashRoute());
-  const [showWizard, setShowWizard] = useState(true);
+  // Wizard visibility is gated on /v1/system/setup-status. Default
+  // hidden so existing recorders don't suddenly see a wizard; we
+  // flip it open after the first authenticated setup-status fetch
+  // returns setup_required:true.
+  const [showWizard, setShowWizard] = useState(false);
 
   // Auth gate (pre-pairing auth slice 2026-05-06). The recorder no
   // longer accepts anonymous /v1/* requests by default, so the SPA
@@ -65,6 +72,8 @@ export function App() {
     return t ? 'authenticated' : 'anonymous';
   });
   const [authUser, setAuthUser] = useState<string>(() => getStoredUsername() ?? 'admin');
+  const [claims, setClaims] = useState<MeResponse | null>(null);
+  const isAdmin = claims?.user?.role === 'admin';
 
   // Wire the api.ts 401 handler so an expired-token request bumps the
   // SPA back to the Login screen instead of cascading hard errors.
@@ -97,8 +106,6 @@ export function App() {
     gateway: '10.0.1.1',
     cameraCount: INITIAL_CAMERAS.length,
     recordingCount: INITIAL_CAMERAS.filter((c) => c.status === 'online').length,
-    paired: false,
-    managementServer: null,
     cameras: INITIAL_CAMERAS,
   });
 
@@ -118,72 +125,42 @@ export function App() {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
 
-  // Periodic identity poll so the SPA reflects backend pairing-state
-  // transitions the operator didn't trigger from this tab — most
-  // notably MS-initiated unpair (the recorder's CRL poller detects
-  // its own cert was revoked, runs ClearIssuedIdentity, and
-  // /v1/recorder/identity flips to paired:false). Without this
-  // poll the operator would see a stale "paired" state until a
-  // manual refresh.
-  //
-  // 30s is a deliberate trade: fast enough that a remote unpair
-  // surfaces within roughly a minute (CRL poll interval + identity
-  // poll interval), slow enough that an idle browser tab isn't
-  // burning recorder CPU on a request the operator usually doesn't
-  // care about.
+  // Load /v1/me claims (role + permissions) once authenticated so
+  // admin-gated routes (Users, Notifications) can reveal themselves.
   useEffect(() => {
     if (auth !== 'authenticated') return;
     let cancelled = false;
-    const tick = async () => {
-      try {
-        const id = await fetchIdentity();
+    void getMe()
+      .then((m) => {
         if (cancelled) return;
-        setState((prev) => {
-          // Backend says unpaired but local state still thinks
-          // paired: MS-initiated unpair (or another tab unpaired)
-          // while this tab was open.
-          if (prev.paired && !id.paired) {
-            queueMicrotask(() =>
-              addToast({
-                kind: 'warning',
-                title: 'UNPAIRED BY MANAGEMENT SERVER',
-                body: 'The MS revoked this recorder. You can re-pair from the Pairing page.',
-                icon: 'unlink',
-              }),
-            );
-            return { ...prev, paired: false, managementServer: null };
-          }
-          // Backend says paired but local doesn't — rare (the
-          // pairing flow updates local state directly), but covers
-          // the case where another tab paired this recorder, or
-          // the page loads with a recorder that was already paired.
-          if (!prev.paired && id.paired) {
-            return {
-              ...prev,
-              paired: true,
-              managementServer: prev.managementServer ?? {
-                host: 'Paired',
-                ip: '',
-                mac: '',
-                cameras: 0,
-                ver: '',
-                trust: 'SIGNED',
-              },
-            };
-          }
-          return prev;
-        });
-      } catch {
-        // Network blips are expected; next tick will retry.
-      }
-    };
-    void tick();
-    const interval = window.setInterval(tick, 30 * 1000);
+        setClaims(m);
+      })
+      .catch(() => {
+        // Endpoint absent on older builds; treat as non-admin.
+      });
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
     };
-  }, [addToast, auth]);
+  }, [auth]);
+
+  // Once authenticated, ask the recorder whether first-run setup is
+  // still pending. setup-status returns {setup_required:true} until
+  // the wizard's "Done" path persists setup_complete=true.
+  useEffect(() => {
+    if (auth !== 'authenticated') return;
+    let cancelled = false;
+    void getSetupStatus()
+      .then((r) => {
+        if (cancelled) return;
+        if (r.setup_required) setShowWizard(true);
+      })
+      .catch(() => {
+        // Endpoint absent on older builds; leave the wizard hidden.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth]);
 
   const go = useCallback((r: Route) => {
     setRoute(r);
@@ -219,10 +196,10 @@ export function App() {
         );
       case 'cameras':
         return <Cameras state={state} setState={setState} addToast={addToast} />;
+      case 'events':
+        return <Events addToast={addToast} />;
       case 'policies':
         return <Policies addToast={addToast} />;
-      case 'pairing':
-        return <Pairing state={state} setState={setState} addToast={addToast} />;
       case 'storage':
         return <Storage />;
       case 'network':
@@ -233,6 +210,10 @@ export function App() {
         return <Diagnostics state={state} addToast={addToast} />;
       case 'settings':
         return <Settings state={state} addToast={addToast} />;
+      case 'users':
+        return isAdmin ? <Users addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
+      case 'notifications':
+        return isAdmin ? <Notifications addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
     }
   })();
 
@@ -256,13 +237,12 @@ export function App() {
     <>
       <TopBar
         server={serverHeader}
-        paired={state.paired}
         now={now}
         username={authUser}
         onLogout={handleLogout}
       />
       <div className="shell">
-        <IconRail route={route} go={go} />
+        <IconRail route={route} go={go} isAdmin={isAdmin} />
         {main}
       </div>
       {showWizard && (

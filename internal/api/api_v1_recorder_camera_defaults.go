@@ -71,7 +71,7 @@ func (a *API) onV1RecorderCameraDefaultsGet(ctx *gin.Context) {
 	a.mutex.RUnlock()
 
 	defaults := c.PathDefaults
-	defaults.TenantID = c.TenantID
+	defaults.TenantID = ""
 	defaults.Source = redactSourceURL(defaults.Source)
 
 	// Round-trip through JSON to drop the policy fields. Doing it on the

@@ -188,18 +188,11 @@ func (a *API) onV1RecorderLocalUsersMePasswordPost(ctx *gin.Context) {
 		return
 	}
 
-	// Audit the password rotation.
-	a.emitAudit(defs.AuditLogEntryInput{
-		ActorKind:    defs.AuditActorKindLocalUser,
-		ActorID:      res.UserID,
-		Action:       "user.password_changed",
-		Outcome:      defs.AuditOutcomeSuccess,
-		ResourceKind: "local_user",
-		ResourceID:   res.UserID,
-		Attributes: map[string]string{
-			"username": res.Username,
-		},
-	})
+	// Audit the password rotation. Phase 5 standardizes on
+	// auth.password_changed (was user.password_changed; the legacy kind
+	// was redundant once auth.* became the canonical authentication
+	// namespace).
+	a.authPasswordChangedEmit(ctx.Request.Context(), res.UserID, res.Username)
 
 	ctx.JSON(http.StatusOK, loginResponse{
 		Token:              res.Token,

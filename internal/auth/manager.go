@@ -3,8 +3,6 @@ package auth
 
 import (
 	"bytes"
-	gocrypto "crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MicahParks/keyfunc/v3"
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/protocols/tls"
 	"github.com/golang-jwt/jwt/v5"
@@ -27,7 +24,6 @@ const (
 	PauseAfterError = 2 * time.Second
 
 	maxInboundBodySize = 128 * 1024
-	jwksRefreshPeriod  = 60 * 60 * time.Second
 )
 
 func isHTTP(req *Request) bool {
@@ -107,27 +103,17 @@ type LocalJWTKeyFunc func() (publicKey any, issuer, audience string, ok bool)
 
 // Manager is the authentication manager.
 type Manager struct {
-	Method             conf.AuthMethod
-	InternalUsers      []conf.AuthInternalUser
-	HTTPAddress        string
-	HTTPFingerprint    string
-	HTTPExclude        []conf.AuthInternalUserPermission
-	JWTJWKS            string
-	JWTJWKSFingerprint string
-	JWTClaimKey        string
-	JWTExclude         []conf.AuthInternalUserPermission
-	JWTInHTTPQuery     *bool
-	JWTIssuer          string
-	JWTAudience        string
-	// JWTJWKSRootCAs, when non-nil, overrides JWTJWKSFingerprint for
-	// the JWKS HTTPS pull and validates the server cert by chain
-	// against this pool. Set by Core's pairing-aware auth wiring at
-	// startup (the pinned MS root CA per ADR 0012 D5) so recorders
-	// can talk to a paired MS whose service cert rotates every 30
-	// days per ADR 0011 D4 without re-pinning by leaf each rotation.
-	// Nil keeps the legacy fingerprint-pinning path.
-	JWTJWKSRootCAs *x509.CertPool
-	ReadTimeout    time.Duration
+	Method          conf.AuthMethod
+	InternalUsers   []conf.AuthInternalUser
+	HTTPAddress     string
+	HTTPFingerprint string
+	HTTPExclude     []conf.AuthInternalUserPermission
+	JWTClaimKey     string
+	JWTExclude      []conf.AuthInternalUserPermission
+	JWTInHTTPQuery  *bool
+	JWTIssuer       string
+	JWTAudience     string
+	ReadTimeout     time.Duration
 
 	// LocalJWT is the recorder-local JWT validation hook (pre-pairing
 	// auth slice 2026-05-06). When set, every Authenticate call where
@@ -138,9 +124,7 @@ type Manager struct {
 	// behavior.
 	LocalJWT LocalJWTKeyFunc
 
-	mutex           sync.RWMutex
-	jwksLastRefresh time.Time
-	jwtKeyFunc      keyfunc.Keyfunc
+	mutex sync.RWMutex
 }
 
 // ReloadInternalUsers reloads InternalUsers.
@@ -148,47 +132,6 @@ func (m *Manager) ReloadInternalUsers(u []conf.AuthInternalUser) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	m.InternalUsers = u
-}
-
-// ApplyPairingOverride re-points the auth manager at JWT auth using
-// the bound MS's published JWKS / issuer / audience. Used by Core at
-// startup when the recorder is paired (per pairing-flows §4) so the
-// recorder accepts MS-issued operator JWTs even though mediamtx.yml
-// continues to say `authMethod: internal`. The on-disk config is
-// unchanged; the override is in-process only.
-//
-// rootCAs is the recorder's pinned MS root pool per ADR 0012 D5.
-// When non-nil it supersedes any prior fingerprint pinning for the
-// JWKS HTTPS pull (the MS service cert rotates every 30 days per ADR
-// 0011 D4; chain-pinning to the operator-pinned root tolerates that
-// rotation without re-pairing).
-//
-// Idempotent: calling with the same JWKS URL is a no-op for the
-// cache; calling with a new URL forces the next request to re-pull.
-// Safe to call concurrently with Authenticate — the mutex guards the
-// field swap and the JWKS pull holds the same mutex.
-func (m *Manager) ApplyPairingOverride(method conf.AuthMethod, jwks, jwksFingerprint, issuer, audience string, rootCAs *x509.CertPool) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-	jwksChanged := m.JWTJWKS != jwks
-	m.Method = method
-	m.JWTJWKS = jwks
-	m.JWTJWKSFingerprint = jwksFingerprint
-	m.JWTJWKSRootCAs = rootCAs
-	m.JWTIssuer = issuer
-	m.JWTAudience = audience
-	if jwksChanged {
-		// Force re-pull on next Authenticate so a stale cached JWKS
-		// from a previous binding doesn't slip through.
-		m.jwksLastRefresh = time.Time{}
-		m.jwtKeyFunc = nil
-	}
-	// JWTClaimKey defaults to "mediamtx_permissions" — the value MS-
-	// issued JWTs carry per camera-canonical-push.md §6.1. Operators
-	// can override in mediamtx.yml.
-	if m.JWTClaimKey == "" {
-		m.JWTClaimKey = "mediamtx_permissions"
-	}
 }
 
 // Claims carries ADR 0011 D2 JWT claims surfaced to callers that want
@@ -273,7 +216,10 @@ func (m *Manager) AuthenticateWithClaims(req *Request) (string, Claims, *Error) 
 		user, err = m.authenticateHTTP(req, token)
 
 	default:
-		user, claims, err = m.authenticateJWTWithClaims(req, token)
+		// AuthMethodJWT: only the LocalJWT path is supported in the
+		// consumer NVR — there is no remote JWKS to pull. If the
+		// LocalJWT validation above didn't return, treat as auth failure.
+		err = fmt.Errorf("authentication failed")
 	}
 
 	if err != nil {
@@ -438,129 +384,3 @@ func (m *Manager) authenticateHTTP(req *Request, token string) (string, error) {
 	return req.Credentials.User, nil
 }
 
-func (m *Manager) authenticateJWTWithClaims(req *Request, token string) (string, Claims, error) {
-	if matchesPermission(m.JWTExclude, req) {
-		return "", Claims{Method: conf.AuthMethodJWT}, nil
-	}
-
-	keyfunc, err := m.pullJWTJWKS()
-	if err != nil {
-		return "", Claims{}, err
-	}
-
-	if token == "" {
-		return "", Claims{}, fmt.Errorf("JWT not provided")
-	}
-
-	var opts []jwt.ParserOption
-	if m.JWTIssuer != "" {
-		opts = append(opts, jwt.WithIssuer(m.JWTIssuer))
-	}
-	if m.JWTAudience != "" {
-		opts = append(opts, jwt.WithAudience(m.JWTAudience))
-	}
-
-	var cc jwtClaims
-	cc.permissionsKey = m.JWTClaimKey
-	_, err = jwt.ParseWithClaims(token, &cc, keyfunc, opts...)
-	if err != nil {
-		return "", Claims{}, err
-	}
-
-	if !matchesPermission(cc.permissions, req) {
-		return "", Claims{}, fmt.Errorf("user doesn't have permission to perform action")
-	}
-
-	out := Claims{
-		Method:            conf.AuthMethodJWT,
-		Subject:           cc.Subject,
-		JTI:               cc.ID,
-		TenantID:          cc.tenantID,
-		PrincipalKind:     cc.principalKind,
-		Scope:             cc.scope,
-		ScopeKind:         cc.scopeKind,
-		ScopeTargetID:     cc.scopeTargetID,
-		ClientFingerprint: cc.clientFingerprint,
-	}
-	return cc.Subject, out, nil
-}
-
-func (m *Manager) pullJWTJWKS() (jwt.Keyfunc, error) {
-	now := time.Now()
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	if now.Sub(m.jwksLastRefresh) >= jwksRefreshPeriod {
-		var tlsCfg *gocrypto.Config
-		switch {
-		case m.JWTJWKSRootCAs != nil:
-			// Pairing-aware path: chain-pin to the MS root CA per ADR
-			// 0012 D5. InsecureSkipVerify=false (default) — Go's stdlib
-			// performs full chain validation against RootCAs. We skip
-			// hostname verification because the MS's service cert may
-			// only carry URI SANs (raikada://management/<id>) per ADR
-			// 0011 D3, not DNS SANs matching the resolved URL host.
-			// VerifyConnection re-asserts chain validity manually with
-			// hostname check stripped.
-			tlsCfg = &gocrypto.Config{
-				InsecureSkipVerify: true, //nolint:gosec
-				VerifyConnection: func(cs gocrypto.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("no peer certificates")
-					}
-					opts := x509.VerifyOptions{
-						Roots:         m.JWTJWKSRootCAs,
-						Intermediates: x509.NewCertPool(),
-					}
-					for _, c := range cs.PeerCertificates[1:] {
-						opts.Intermediates.AddCert(c)
-					}
-					_, err := cs.PeerCertificates[0].Verify(opts)
-					return err
-				},
-			}
-		default:
-			tlsCfg = tls.MakeConfig(m.JWTJWKSFingerprint)
-		}
-		tr := &http.Transport{
-			TLSClientConfig: tlsCfg,
-		}
-		defer tr.CloseIdleConnections()
-
-		httpClient := &http.Client{
-			Timeout:   (m.ReadTimeout),
-			Transport: tr,
-		}
-
-		res, err := httpClient.Get(m.JWTJWKS)
-		if err != nil {
-			return nil, err
-		}
-		defer res.Body.Close()
-
-		var raw json.RawMessage
-		err = json.NewDecoder(&customLimitReader{res.Body, maxInboundBodySize}).Decode(&raw)
-		if err != nil {
-			return nil, err
-		}
-
-		tmp, err := keyfunc.NewJWKSetJSON(raw)
-		if err != nil {
-			return nil, err
-		}
-
-		m.jwtKeyFunc = tmp
-		m.jwksLastRefresh = now
-	}
-
-	return m.jwtKeyFunc.Keyfunc, nil
-}
-
-// RefreshJWTJWKS refreshes the JWT JWKS.
-func (m *Manager) RefreshJWTJWKS() {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	m.jwksLastRefresh = time.Time{}
-}

@@ -79,7 +79,7 @@ func TestV1RecordingPoliciesListReturnsSeededDefault(t *testing.T) {
 	require.Equal(t, "Default", resp.Items[0].Name)
 	require.Equal(t, defs.RecordingPolicyModeContinuous, resp.Items[0].Mode)
 	require.True(t, resp.Items[0].Enabled)
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", resp.Items[0].TenantID)
+	require.Equal(t, "", resp.Items[0].TenantID)
 }
 
 func TestV1RecordingPoliciesListPagination(t *testing.T) {
@@ -168,7 +168,7 @@ func TestV1RecordingPoliciesPostCreates(t *testing.T) {
 	_, err := uuid.Parse(p.ID)
 	require.NoError(t, err)
 	require.Equal(t, "MyPolicy", p.Name)
-	require.Equal(t, "00000000-0000-0000-0000-000000000000", p.TenantID)
+	require.Equal(t, "", p.TenantID)
 }
 
 func TestV1RecordingPoliciesPostTenantMismatch(t *testing.T) {

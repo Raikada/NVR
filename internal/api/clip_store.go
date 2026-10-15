@@ -236,3 +236,19 @@ func IsRecordingSegmentPinnedByClip(segmentPath string) bool {
 func init() {
 	recordcleanerSetSegmentPinPredicate(IsRecordingSegmentPinnedByClip)
 }
+
+// FindByEventID returns the clip linked to an event, if any (SP4
+// idempotency: one clip per event).
+func (s *ClipStore) FindByEventID(eventID string) (defs.Clip, bool) {
+	if eventID == "" {
+		return defs.Clip{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.items {
+		if c.EventID == eventID {
+			return *c, true
+		}
+	}
+	return defs.Clip{}, false
+}

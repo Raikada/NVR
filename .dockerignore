@@ -1,8 +1,8 @@
-# do not add .git, since it is needed to extract the tag
-# do not add /binaries, since it is needed by Docker images
-/tmp
-/coverage*.txt
-/api/*.html
-/internal/core/VERSION
-/internal/servers/hls/hls.min.js
-/internal/staticsources/rpicamera/mtxrpicam_*/
+.git
+binaries
+web/node_modules
+web/dist
+web/cypress/screenshots
+web/cypress/videos
+docs
+*.md

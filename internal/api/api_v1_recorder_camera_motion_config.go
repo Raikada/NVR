@@ -73,7 +73,7 @@ func (a *API) onV1RecorderCameraMotionConfigGet(ctx *gin.Context) {
 		CameraID string `json:"camera_id"`
 	}{
 		MotionConfig: mc,
-		TenantID:     c.TenantID,
+		TenantID:     "",
 		CameraID:     cameraID,
 	}
 	ctx.JSON(http.StatusOK, &resp)
@@ -252,7 +252,7 @@ func (a *API) onV1RecorderCameraMotionConfigTest(ctx *gin.Context) {
 	a.mutex.RLock()
 	tenantID := ""
 	if a.Conf != nil {
-		tenantID = a.Conf.TenantID
+		tenantID = ""
 	}
 	if _, ok := pathNameFromCameraID(a.Conf.Paths, cameraID); !ok {
 		a.mutex.RUnlock()

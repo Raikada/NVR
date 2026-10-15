@@ -476,7 +476,7 @@ func TestV1StreamsListReturnsAllProtocols(t *testing.T) {
 		require.Truef(t, ok, "missing %s stream in list output", proto)
 		require.Equal(t, id.String(), s["id"])
 		require.Equal(t, cameraIDFromPathName(paths[proto]), s["camera_id"])
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", s["tenant_id"])
+		require.Equal(t, "", s["tenant_id"])
 	}
 }
 
@@ -635,7 +635,7 @@ func TestV1StreamsGetByID(t *testing.T) {
 			require.Equal(t, "redacted", raw["remote_addr"],
 				"remote_addr must be redacted at the API boundary")
 			// tenant_id must be stamped.
-			require.Equal(t, "00000000-0000-0000-0000-000000000000", raw["tenant_id"])
+			require.Equal(t, "", raw["tenant_id"])
 		})
 	}
 }
@@ -800,6 +800,6 @@ func TestV1StreamsListTenantIDStamp(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &resp))
 	require.NotEmpty(t, resp.Items)
 	for _, s := range resp.Items {
-		require.Equal(t, "00000000-0000-0000-0000-000000000000", s["tenant_id"])
+		require.Equal(t, "", s["tenant_id"])
 	}
 }

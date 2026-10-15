@@ -1,31 +1,17 @@
-// Settings route — identity / firmware update / system actions /
-// device lifecycle.
-//
-// Identity card: wires to /v1/recorder/identity. hostname and
-// timezone are read-only at the recorder API (changing them is the
-// host's provisioning system's job); location is operator-set and
-// PATCHes through to conf.ServerLocation.
-//
-// Firmware: surfaces a.Version (firmware_version) from the same
-// identity endpoint. Software updates land via the MS lifecycle
-// endpoints (ADR 0014) — recorder applier is wired in
-// internal/softwareupdate/.
+// Settings route — system actions / device lifecycle.
 //
 // System actions:
 //   - Reboot wires to POST /v1/recorder/reboot (admin-gated, audited).
 //   - Backup Config wires to GET /v1/recorder/config-backup (browser
 //     download).
 //   - Restore Config wires to POST /v1/recorder/config-restore.
-//   - Wave 7 / ADR 0015 lifecycle: Reset (config-reset, optional
-//     return-to-unpaired), Factory Wipe (two-stage destructive),
-//     Recovery Bundle export.
+//   - Factory Wipe (two-stage destructive), Recovery Bundle export,
+//     Config Reset.
 
-import { useEffect, useState } from 'react';
-import { Btn, Card, Input, SectionHeader, Toggle } from '../components/primitives';
+import { useState } from 'react';
+import { Btn, Card, SectionHeader, Toggle } from '../components/primitives';
 import { PageHeader } from '../components/PageHeader';
 import {
-  fetchIdentity,
-  patchIdentity,
   rebootRecorder,
   configBackupURL,
   restoreConfig,
@@ -34,7 +20,6 @@ import {
   factoryWipeConfirm,
   exportRecorderRecoveryBundle,
 } from '../lib/api';
-import { useFetch } from '../lib/hooks';
 import { useRef } from 'react';
 import type { AppState, ToastInput } from '../lib/types';
 
@@ -43,54 +28,19 @@ interface SettingsProps {
   addToast: (t: ToastInput) => void;
 }
 
-export function Settings({ state, addToast }: SettingsProps) {
-  const identity = useFetch(fetchIdentity, []);
-
-  // Auto-update + telemetry toggles are local-state only. The recorder
-  // doesn't expose a config flag for either today; the auto-update
-  // policy lives in the MS lifecycle (ADR 0014) and telemetry isn't
-  // implemented in v1.
+export function Settings({ state: _state, addToast }: SettingsProps) {
+  // Local-only toggles (placeholder).
   const [autoUpdate, setAutoUpdate] = useState(true);
   const [telemetry, setTelemetry] = useState(true);
-  const [hostname, setHostname] = useState(state.hostname);
-  const [location, setLocation] = useState('');
-  const [timezone, setTimezone] = useState('');
-  const [savingLocation, setSavingLocation] = useState(false);
   const [rebooting, setRebooting] = useState(false);
 
-  // Wave 7 / ADR 0015 device-lifecycle state.
+  // Device-lifecycle state.
   const [resetting, setResetting] = useState(false);
   const [wipeStage, setWipeStage] = useState<'idle' | 'confirm'>('idle');
   const [wipeToken, setWipeToken] = useState('');
   const [wipeAck, setWipeAck] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [exportingBundle, setExportingBundle] = useState(false);
-
-  // Once identity loads, mirror its fields into local edit state.
-  useEffect(() => {
-    if (identity.data) {
-      setHostname(identity.data.hostname);
-      setLocation(identity.data.location);
-      setTimezone(identity.data.timezone);
-    }
-  }, [identity.data]);
-
-  async function saveLocation() {
-    setSavingLocation(true);
-    try {
-      await patchIdentity({ location });
-      addToast({
-        kind: 'success',
-        title: 'SAVED',
-        body: `Location: ${location || '(empty)'}`,
-        icon: 'check-circle',
-      });
-      identity.refetch();
-    } catch (e) {
-      addToast({ kind: 'danger', title: 'SAVE FAILED', body: (e as Error).message, icon: 'x' });
-    }
-    setSavingLocation(false);
-  }
 
   async function doReboot() {
     if (!confirm('Reboot the recorder? Recording will pause for ~30 seconds.')) return;
@@ -123,19 +73,15 @@ export function Settings({ state, addToast }: SettingsProps) {
     });
   }
 
-  // Wave 7 / ADR 0015 lifecycle handlers.
-  async function doConfigReset(returnToUnpaired: boolean) {
-    const msg = returnToUnpaired
-      ? 'Reset config + return to unpaired state? This wipes the issued MS identity material and returns the recorder to pre-pair operation. Recordings + identity UUID + keypair survive.'
-      : 'Reset recorder config? This is non-destructive — recordings + identity + audit + pairing all survive.';
-    if (!confirm(msg)) return;
+  async function doConfigReset() {
+    if (!confirm('Reset recorder config? This is non-destructive — recordings + identity + audit all survive.')) return;
     setResetting(true);
     try {
-      await configReset({ return_to_unpaired: returnToUnpaired });
+      await configReset({});
       addToast({
         kind: 'success',
         title: 'CONFIG RESET',
-        body: returnToUnpaired ? 'Reset + unpaired' : 'Reset complete; identity preserved',
+        body: 'Reset complete; identity preserved',
         icon: 'rotate-ccw',
       });
     } catch (e) {
@@ -255,36 +201,9 @@ export function Settings({ state, addToast }: SettingsProps) {
       <PageHeader
         breadcrumb="RECORDING SERVER / SETTINGS"
         title="Settings"
-        sub={
-          identity.status === 'error'
-            ? `Recorder unreachable — ${identity.error.message}`
-            : identity.status === 'loading'
-              ? 'Loading recorder identity…'
-              : 'System-level controls for this recorder'
-        }
+        sub="System-level controls for this recorder"
       />
       <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <Card>
-          <SectionHeader
-            right={
-              <Btn
-                kind="primary"
-                size="sm"
-                disabled={savingLocation || identity.status !== 'ready' || location === identity.data?.location}
-                onClick={saveLocation}
-              >
-                {savingLocation ? 'Saving…' : 'Save Location'}
-              </Btn>
-            }
-          >
-            IDENTITY
-          </SectionHeader>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
-            <Input label="HOSTNAME (READ-ONLY)" value={hostname} onChange={() => {}} mono disabled />
-            <Input label="LOCATION" value={location} onChange={setLocation} />
-            <Input label="TIMEZONE (READ-ONLY)" value={timezone} onChange={() => {}} mono disabled />
-          </div>
-        </Card>
         <Card>
           <SectionHeader>FIRMWARE</SectionHeader>
           <div
@@ -319,94 +238,10 @@ export function Settings({ state, addToast }: SettingsProps) {
                   marginTop: 3,
                 }}
               >
-                {identity.data?.firmware_version || '—'}
+                {_state.firmware || '—'}
               </div>
             </div>
-            {/* Wave 6: updates are coordinated by the paired
-                Management Server per ADR 0014 D6. The recorder is the
-                apply mechanism, not the approval surface — operators
-                drive approve/apply from the MS UI. The button below
-                just opens an info toast pointing operators at the MS. */}
-            <Btn
-              kind="ghost"
-              icon="info"
-              onClick={() =>
-                addToast({
-                  kind: 'info',
-                  title: 'UPDATES ARE COORDINATED BY THE MS',
-                  body:
-                    identity.data?.paired
-                      ? 'Approve + apply updates from the Management Server UI (ADR 0014 D6).'
-                      : 'Pair this recorder with a Management Server to receive updates.',
-                  icon: 'info',
-                })
-              }
-            >
-              Updates →
-            </Btn>
           </div>
-          {/* Wave A2: software-update poller surfaces MS-approved
-              lifecycle rows via /v1/recorder/identity. Badge appears
-              only when an approved update exists and hasn't been
-              applied yet; operators apply from the MS UI per ADR 0014
-              D6. */}
-          {identity.data?.pending_software_update ? (
-            <div
-              style={{
-                marginTop: 12,
-                padding: '10px 12px',
-                background: 'var(--accent-info-bg, rgba(76, 154, 255, 0.08))',
-                border: '1px solid var(--accent-info, rgba(76, 154, 255, 0.4))',
-                borderRadius: 4,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                gap: 8,
-              }}
-            >
-              <div>
-                <div
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 10,
-                    letterSpacing: 1,
-                    color: 'var(--accent-info, #4c9aff)',
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  SOFTWARE UPDATE AVAILABLE
-                </div>
-                <div
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 13,
-                    color: 'var(--text-primary)',
-                    marginTop: 3,
-                  }}
-                >
-                  v{identity.data.pending_software_update.version || '?'}
-                  {identity.data.pending_software_update.channel
-                    ? ` · ${identity.data.pending_software_update.channel}`
-                    : ''}
-                </div>
-              </div>
-              {identity.data.pending_software_update.release_notes_url ? (
-                <a
-                  href={identity.data.pending_software_update.release_notes_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    color: 'var(--accent-info, #4c9aff)',
-                    textDecoration: 'none',
-                  }}
-                >
-                  RELEASE NOTES →
-                </a>
-              ) : null}
-            </div>
-          ) : null}
           <div
             style={{
               display: 'flex',
@@ -490,7 +325,7 @@ export function Settings({ state, addToast }: SettingsProps) {
             Failover tab semantics but locally (operator standing in
             front of the recorder, not in the MS UI). */}
         <Card style={{ gridColumn: '1/3' }}>
-          <SectionHeader>RESET (ADR 0015 D7)</SectionHeader>
+          <SectionHeader>RESET</SectionHeader>
           <div
             style={{
               fontFamily: 'var(--font-sans)',
@@ -501,16 +336,11 @@ export function Settings({ state, addToast }: SettingsProps) {
               lineHeight: 1.5,
             }}
           >
-            Non-destructive. Preserves identity (UUID + keypair + cert),
-            recordings, audit chain, update trust roots. Refreshes the
-            last-known-good config from the paired MS.
+            Non-destructive. Preserves identity, recordings, and audit chain.
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <Btn kind="secondary" icon="rotate-ccw" disabled={resetting} onClick={() => doConfigReset(false)}>
+            <Btn kind="secondary" icon="rotate-ccw" disabled={resetting} onClick={doConfigReset}>
               {resetting ? 'Resetting…' : 'Config Reset'}
-            </Btn>
-            <Btn kind="secondary" icon="plug" disabled={resetting} onClick={() => doConfigReset(true)}>
-              {resetting ? 'Resetting…' : 'Reset + Return to Unpaired'}
             </Btn>
             <Btn kind="secondary" icon="download-cloud" disabled={exportingBundle} onClick={doRecoveryBundleExport}>
               {exportingBundle ? 'Exporting…' : 'Export Recovery Bundle'}
@@ -518,7 +348,7 @@ export function Settings({ state, addToast }: SettingsProps) {
           </div>
         </Card>
         <Card style={{ gridColumn: '1/3', borderColor: 'rgba(239,68,68,0.3)' }}>
-          <SectionHeader>FACTORY WIPE (ADR 0015 D8)</SectionHeader>
+          <SectionHeader>FACTORY WIPE</SectionHeader>
           <div
             style={{
               fontFamily: 'var(--font-sans)',
@@ -529,7 +359,7 @@ export function Settings({ state, addToast }: SettingsProps) {
               fontWeight: 600,
             }}
           >
-            DESTRUCTIVE — clears recordings, identity, audit, and pairing material.
+            DESTRUCTIVE — clears recordings, identity, and audit.
           </div>
           <div
             style={{
@@ -571,8 +401,8 @@ export function Settings({ state, addToast }: SettingsProps) {
                   style={{ marginTop: 2 }}
                 />
                 <span>
-                  I understand my recordings, audit chain, and pairing
-                  material will be destroyed. Update trust roots survive.
+                  I understand my recordings, identity, and audit chain
+                  will be destroyed.
                 </span>
               </label>
               <div style={{ display: 'flex', gap: 8 }}>
