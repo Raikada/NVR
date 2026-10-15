@@ -19,6 +19,10 @@
 #     -t raikada-nvr:latest --load .
 
 ARG FFMPEG_VERSION=8.0
+# Declared before the first FROM: only global ARGs are visible to FROM
+# lines (an ARG after any FROM is scoped to that stage, and the ffmpeg
+# stage's FROM below couldn't see it — "base name should not be blank").
+ARG FFMPEG_BASE=ghcr.io/raikada/nvr-ffmpeg:8.0
 
 #################################################################
 FROM node:20-alpine AS web
@@ -34,8 +38,8 @@ RUN npm run build
 # .github/workflows/ffmpeg-base.yml). This replaces a ~5-6 min
 # from-source compile on every release with a cached pull, cutting the
 # appliance build to ~2-3 min. Rebuild the base only when
-# FFMPEG_VERSION changes; FFMPEG_BASE can be overridden to pin a repo.
-ARG FFMPEG_BASE=ghcr.io/raikada/nvr-ffmpeg:8.0
+# FFMPEG_VERSION changes; FFMPEG_BASE (global ARG, declared at the top
+# of this file) can be overridden to pin a repo.
 FROM ${FFMPEG_BASE} AS ffmpeg
 
 #################################################################
