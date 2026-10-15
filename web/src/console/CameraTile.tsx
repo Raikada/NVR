@@ -35,15 +35,16 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
 
     if (Hls.isSupported()) {
       hls = new Hls({
-        // Attach the CURRENT token on every playlist/segment request.
-        // Reading it fresh per-request means a long-lived live stream
-        // never dies when the token rotates (the sliding refresh keeps
-        // localStorage current) — unlike a cookie or a URL baked at
-        // open time, which expire mid-stream.
+        // Authenticate via the session cookie only (withCredentials
+        // sends it on every same-origin playlist/segment request). We
+        // deliberately do NOT set an Authorization header here:
+        // hls.js's xhrSetup runs before xhr.open(), so a header set
+        // then is dropped/mangled on the child-playlist and segment
+        // loaders, and because the proxy prefers a header over the
+        // cookie, a bad header shadowed the cookie that actually works.
+        // The cookie is kept fresh by the sliding refresh + login.
         xhrSetup: (xhr) => {
           xhr.withCredentials = true;
-          const t = getStoredToken();
-          if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
         },
         liveSyncDurationCount: 3,
         liveMaxLatencyDurationCount: 6,
