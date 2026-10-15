@@ -240,7 +240,8 @@ func init() {
 // FindByEventID returns the clip linked to an event, if any (SP4
 // idempotency: one clip per event).
 func (s *ClipStore) FindByEventID(eventID string) (defs.Clip, bool) {
-	if eventID == "" {
+	// Nil-safe: test cleanups can leave the package singleton nil.
+	if s == nil || eventID == "" {
 		return defs.Clip{}, false
 	}
 	s.mu.Lock()
