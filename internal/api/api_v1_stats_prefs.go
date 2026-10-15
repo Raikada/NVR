@@ -67,7 +67,9 @@ func (a *API) onV1CameraStats(ctx *gin.Context) {
 		tracks = append(tracks, string(tr.Codec))
 	}
 	out := gin.H{
-		"online":          p.Online,
+		// Available = stream is up. (APIPath.Online only means a source
+		// handler is attached and stays true for unreachable cameras.)
+		"online":          p.Available,
 		"bytes_received":  p.InboundBytes,
 		"bytes_sent":      p.OutboundBytes,
 		"frames_in_error": p.InboundFramesInError,
@@ -75,8 +77,8 @@ func (a *API) onV1CameraStats(ctx *gin.Context) {
 		"tracks":          tracks,
 		"ts":              time.Now().UTC(),
 	}
-	if p.OnlineTime != nil {
-		out["online_since"] = p.OnlineTime.UTC()
+	if p.AvailableTime != nil {
+		out["online_since"] = p.AvailableTime.UTC()
 	}
 	ctx.JSON(http.StatusOK, out)
 }

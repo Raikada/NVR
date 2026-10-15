@@ -52,7 +52,10 @@ func TestCameraStats(t *testing.T) {
 		WriteTimeout: conf.Duration(10 * time.Second), Conf: cnf,
 		AuthManager: test.NilAuthManager, Store: st, Parent: &testParent{},
 		PathManager: &fakePathManager{path: &defs.APIPath{
-			Name: "statcam", Online: true, OnlineTime: &onlineAt,
+			// Online means "source handler attached" and is true even for
+			// an unreachable camera; Available is the stream-up signal the
+			// stats endpoint must surface.
+			Name: "statcam", Online: true, Available: true, AvailableTime: &onlineAt,
 			InboundBytes: 123456, OutboundBytes: 7890,
 			InboundFramesInError: 2,
 			Tracks2: []defs.APIPathTrack{{Codec: defs.APIPathTrackCodec("H264")}, {Codec: defs.APIPathTrackCodec("MPEG-4 Audio")}},
@@ -77,6 +80,7 @@ func TestCameraStats(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(body, &out))
 	require.True(t, out.Online)
+	require.Equal(t, onlineAt.Unix(), out.OnlineSince.Unix())
 	require.EqualValues(t, 123456, out.BytesReceived)
 	require.Equal(t, []string{"H264", "MPEG-4 Audio"}, out.Tracks)
 	require.WithinDuration(t, time.Now(), out.Timestamp, 5*time.Second)

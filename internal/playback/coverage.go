@@ -5,6 +5,8 @@
 package playback
 
 import (
+	"errors"
+	"io/fs"
 	"time"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
@@ -30,7 +32,9 @@ func Coverage(pathConf *conf.Path, pathName string, from, to time.Time) ([]Cover
 	}
 	segments, err := recordstore.FindSegments(pathConf, pathName, start, end)
 	if err != nil {
-		if err == recordstore.ErrNoSegmentsFound {
+		// Not-exist covers cameras that have never recorded (no
+		// per-path directory yet) — that's "no footage", not an error.
+		if err == recordstore.ErrNoSegmentsFound || errors.Is(err, fs.ErrNotExist) {
 			return []CoverageEntry{}, nil
 		}
 		return nil, err

@@ -831,9 +831,15 @@ export interface LoginResponse {
 export const loginRecorder = (username: string, password: string) =>
   api.post<LoginResponse>("/recorder/login", { username, password });
 
-// refreshSession — POST /v1/auth/refresh (sliding session). Mirrors the
-// login response; requires only a currently-valid token.
-export const refreshSession = () => api.post<LoginResponse>('/auth/refresh', {});
+// refreshSession — POST /v1/auth/refresh (sliding session). Returns the
+// /v1/auth/* consumer shape (access_token + nested user), NOT the flat
+// recorder/login shape; requires only a currently-valid token.
+export interface RefreshResponse {
+  access_token: string;
+  expires_at: string;
+  user: { id: string; username: string; role: string };
+}
+export const refreshSession = () => api.post<RefreshResponse>('/auth/refresh', {});
 
 /**
  * Keeps the stored session alive by refreshing the token when its
@@ -850,7 +856,7 @@ export function startSessionRefresh(): () => void {
       const remaining = new Date(exp).getTime() - Date.now();
       if (remaining > REFRESH_UNDER_MS) return;
       const res = await refreshSession();
-      setStoredToken(res.token, res.expires_at, res.username);
+      setStoredToken(res.access_token, res.expires_at, res.user.username);
     } catch {
       /* 401 handled globally; transient errors retried next tick */
     }
