@@ -11,6 +11,8 @@ import { isConsoleRoute, type ConsoleRoute } from './console/routes';
 import { useTheme } from './console/theme';
 import { LiveView } from './console/LiveView';
 import { Playback } from './console/Playback';
+import { Search } from './console/Search';
+import { AlertsFeed, AlertsPanel } from './console/Alerts';
 import { CameraPanel, type Tour } from './console/CameraPanel';
 import { Icon } from './components/Icon';
 import {
@@ -169,7 +171,7 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
           />
         );
       case 'search':
-        return <Placeholder name="Event Search" />;
+        return <Search onOpenPlayback={openPlayback} />;
       case 'devices':
         return <Placeholder name="Devices" />;
       case 'storage':
@@ -179,7 +181,7 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
       case 'health':
         return <Placeholder name="System Health" />;
       case 'alerts':
-        return <Placeholder name="Alerts" />;
+        return <AlertsFeed onOpenPlayback={openPlayback} />;
       case 'settings':
         return <Placeholder name="Settings" />;
     }
@@ -225,6 +227,12 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
           </button>
         )}
         {screen}
+        <AlertsPanel
+          open={alertsPanelOpen}
+          onClose={() => setAlertsPanelOpen(false)}
+          onOpenFull={() => { setAlertsPanelOpen(false); navigate('alerts'); }}
+          onOpenPlayback={openPlayback}
+        />
       </div>
       <FooterStrip
         health={health}
@@ -232,7 +240,6 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
         onOpenHealth={() => navigate('health')}
         onOpenStorage={() => navigate('storage')}
       />
-      {alertsPanelOpen && <div />}
     </div>
   );
 }
