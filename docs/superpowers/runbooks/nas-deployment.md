@@ -153,7 +153,10 @@ CI publishes a ready-made image to GHCR on every `v*` tag
 source after the first migration to the pull-based compose:
 
 ```bash
-cd ~/raikada && ./update.sh          # pull → restart → prune → prints running version
+# The script cd's to its own directory, so the full path alone works.
+# On the Flower_Cloud NAS the repo tarball lives under
+# ~/raikada/NVR-consumer-foundation:
+~/raikada/NVR-consumer-foundation/docker/update.sh   # pull → restart → prune → prints running version
 ```
 
 (update.sh wraps `docker compose -f docker-compose.nas.yml pull && up -d`.)
