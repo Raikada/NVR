@@ -1158,6 +1158,12 @@ func (p *Core) createResources(initial bool) error {
 
 			// SP4: media URL signer (key lives in the identity dir).
 			Signer: p.mediaSigner,
+
+			// Same-origin media proxy so the (typically HTTPS) console
+			// reaches the plain-HTTP media listeners without mixed
+			// content. Only wired for unencrypted local listeners.
+			HLSProxyTarget:      localProxyTarget(p.conf.HLS && !p.conf.HLSEncryption, p.conf.HLSAddress),
+			PlaybackProxyTarget: localProxyTarget(p.conf.Playback && !p.conf.PlaybackEncryption, p.conf.PlaybackAddress),
 		}
 		err = i.Initialize()
 		if err != nil {
@@ -1796,6 +1802,20 @@ func (p *Core) APIConfigSet(conf *conf.Conf) {
 	case p.chAPIConfigSet <- conf:
 	case <-p.ctx.Done():
 	}
+}
+
+// localProxyTarget maps a listener address (":8888" or "host:8888")
+// onto a loopback "host:port" target for the API's same-origin media
+// proxy, or "" when the listener is disabled/encrypted.
+func localProxyTarget(enabled bool, address string) string {
+	if !enabled || address == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return ""
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 // parseAPIPort extracts the port number from an APIAddress like

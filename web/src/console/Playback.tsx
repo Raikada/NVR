@@ -381,7 +381,7 @@ function playbackURL(path: string, startMs: number): string {
     duration: String(CHUNK_SECS),
     format: 'fmp4',
   });
-  return `${window.location.protocol}//${window.location.hostname}:9996/get?${qs}`;
+  return `/playback/get?${qs}`;
 }
 
 function PlaybackVideo({ path, pos, playing, speed, gap }: {

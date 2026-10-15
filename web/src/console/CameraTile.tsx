@@ -26,7 +26,10 @@ export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !path) return;
-    const url = `${window.location.protocol}//${window.location.hostname}:8888/${encodeURIComponent(path)}/index.m3u8`;
+    // Same-origin proxy: the API reverse-proxies /hls/* to the HLS
+    // listener, so HTTPS consoles avoid mixed content and the session
+    // cookie authenticates the stream.
+    const url = `/hls/${encodeURIComponent(path)}/index.m3u8`;
     let cancelled = false;
     let hls: Hls | null = null;
     onState?.('loading');
