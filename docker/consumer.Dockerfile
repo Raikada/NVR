@@ -30,22 +30,13 @@ COPY web/ ./
 RUN npm run build
 
 #################################################################
-FROM debian:bookworm-slim AS ffmpeg
-
-ARG FFMPEG_VERSION
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential nasm pkg-config curl ca-certificates xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -o /tmp/ffmpeg.tar.xz \
-    && mkdir -p /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
-# Shared libs only, no programs/docs; demux/remux + jpeg encode is all
-# the recorder needs from libav (no x264 — we never encode video).
-RUN cd /tmp/ffmpeg && ./configure \
-      --prefix=/opt/ffmpeg \
-      --enable-shared --disable-static \
-      --disable-programs --disable-doc \
-      --disable-debug \
-    && make -j"$(nproc)" && make install
+# ffmpeg comes prebuilt from ghcr.io/raikada/nvr-ffmpeg (built once by
+# .github/workflows/ffmpeg-base.yml). This replaces a ~5-6 min
+# from-source compile on every release with a cached pull, cutting the
+# appliance build to ~2-3 min. Rebuild the base only when
+# FFMPEG_VERSION changes; FFMPEG_BASE can be overridden to pin a repo.
+ARG FFMPEG_BASE=ghcr.io/raikada/nvr-ffmpeg:8.0
+FROM ${FFMPEG_BASE} AS ffmpeg
 
 #################################################################
 FROM golang:1.25-bookworm AS build
