@@ -147,3 +147,74 @@ func (a *API) onV1EventsGetDB(ctx *gin.Context) {
 	w := a.eventDBWireFromRow(ctx, ev)
 	ctx.JSON(http.StatusOK, &w)
 }
+
+// ----- Phase A B3: acknowledge-all + bookmarks ----------------------
+
+type ackAllRequest struct {
+	CameraID string     `json:"camera_id"`
+	Before   *time.Time `json:"before"`
+}
+
+// onV1EventsAcknowledgeAll handles POST /v1/events/acknowledge-all.
+func (a *API) onV1EventsAcknowledgeAll(ctx *gin.Context) {
+	if a.EventsService == nil {
+		a.writeError(ctx, http.StatusServiceUnavailable, errors.New("events service not wired"))
+		return
+	}
+	var req ackAllRequest
+	_ = ctx.ShouldBindJSON(&req) // empty body = ack everything
+	var before time.Time
+	if req.Before != nil {
+		before = *req.Before
+	}
+	n, err := a.EventsService.AcknowledgeAll(ctx.Request.Context(), req.CameraID, before, a.localUserSub(ctx))
+	if err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"acknowledged": n})
+}
+
+type bookmarkRequest struct {
+	Time *time.Time `json:"time"`
+	Note string     `json:"note"`
+}
+
+// onV1CameraBookmarkPost handles POST /v1/cameras/:id/bookmarks —
+// bookmarks are plain events of the seeded `bookmark` type, so the
+// timeline, retention, and export machinery inherit them for free.
+func (a *API) onV1CameraBookmarkPost(ctx *gin.Context) {
+	if a.EventsService == nil || a.Store == nil {
+		a.writeError(ctx, http.StatusServiceUnavailable, errors.New("events service not wired"))
+		return
+	}
+	camID := ctx.Param("id")
+	if _, err := a.Store.Cameras.GetByID(ctx.Request.Context(), camID); err != nil {
+		a.writeError(ctx, http.StatusNotFound, errors.New("camera not found"))
+		return
+	}
+	var req bookmarkRequest
+	_ = ctx.ShouldBindJSON(&req)
+	at := time.Now().UTC()
+	if req.Time != nil {
+		at = req.Time.UTC()
+	}
+	payload, _ := json.Marshal(map[string]string{"note": req.Note})
+	ev := &events.Event{
+		CameraID:    camID,
+		TypeID:      "bookmark",
+		Source:      "user",
+		OccurredAt:  at,
+		Severity:    "info",
+		PayloadJSON: payload,
+	}
+	if err := a.EventsService.Insert(ctx.Request.Context(), ev); err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+	a.emitMutationAudit(ctx, "event.bookmark_created", "event", ev.ID, map[string]string{
+		"camera_id": camID,
+	})
+	w := a.eventDBWireFromRow(ctx, ev)
+	ctx.JSON(http.StatusCreated, &w)
+}

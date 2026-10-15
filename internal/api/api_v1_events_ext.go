@@ -32,6 +32,8 @@ import (
 func (a *API) registerV1EventsExtensions(r gin.IRouter) {
 	r.POST("/events/:id/acknowledge", rbac.RequirePerm(rbac.PermEventAck, a.auditEmitter()), a.onV1EventAcknowledge)
 	r.GET("/events/stream", rbac.RequirePerm(rbac.PermEventStream, a.auditEmitter()), a.onV1EventsStream)
+	r.POST("/events/acknowledge-all", rbac.RequirePerm(rbac.PermEventAck, a.auditEmitter()), a.onV1EventsAcknowledgeAll)
+	r.POST("/cameras/:id/bookmarks", rbac.RequirePerm(rbac.PermEventAck, a.auditEmitter()), a.onV1CameraBookmarkPost)
 
 	r.GET("/event-types", rbac.RequirePerm(rbac.PermEventTypeList, a.auditEmitter()), a.onV1EventTypesList)
 	r.POST("/event-types", rbac.RequirePerm(rbac.PermEventTypeCreate, a.auditEmitter()), a.onV1EventTypesCreate)

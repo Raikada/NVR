@@ -156,3 +156,9 @@ func rowToEvent(r *store.Event) *Event {
 	}
 	return ev
 }
+
+// AcknowledgeAll acknowledges every matching unacknowledged event
+// (Phase A B3). Empty cameraID / zero before = no scoping.
+func (s *Service) AcknowledgeAll(ctx context.Context, cameraID string, before time.Time, userID string) (int, error) {
+	return s.events.AcknowledgeAll(ctx, cameraID, before, userID)
+}
