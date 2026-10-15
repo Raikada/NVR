@@ -13,6 +13,9 @@ import { LiveView } from './console/LiveView';
 import { Playback } from './console/Playback';
 import { Search } from './console/Search';
 import { AlertsFeed, AlertsPanel } from './console/Alerts';
+import { Devices } from './console/Devices';
+import { Storage } from './console/Storage';
+import { Users } from './console/Users';
 import { CameraPanel, type Tour } from './console/CameraPanel';
 import { Icon } from './components/Icon';
 import {
@@ -173,11 +176,11 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
       case 'search':
         return <Search onOpenPlayback={openPlayback} />;
       case 'devices':
-        return <Placeholder name="Devices" />;
+        return <Devices onOpenLive={openLive} />;
       case 'storage':
-        return <Placeholder name="Storage & Retention" />;
+        return <Storage />;
       case 'users':
-        return <Placeholder name="Users & Permissions" />;
+        return <Users />;
       case 'health':
         return <Placeholder name="System Health" />;
       case 'alerts':

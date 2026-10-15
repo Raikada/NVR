@@ -93,7 +93,7 @@ export type BadgeKind = StatusBadgeKind;
 
 /* ---------- Foundation entities ---------- */
 
-export type Role = 'admin' | 'viewer';
+export type Role = 'admin' | 'owner' | 'operator' | 'viewer' | 'audit';
 
 export interface User {
   id: string;
