@@ -126,6 +126,26 @@ Non-ONVIF sources: **Add Camera** and paste an RTSP URL manually.
 - **Users** — add `viewer` accounts for household members (read/watch,
   no admin).
 
+## Private image: one-time registry login
+
+The GHCR image is private by choice. Each NAS needs a one-time login
+before its first pull:
+
+1. GitHub → Settings → Developer settings → **Personal access tokens
+   (classic)** → Generate new token. Scope: **read:packages** only.
+   Name it after the device (e.g. `nas-flower-cloud-pull`) — one token
+   per device, so a lost/retired device can be revoked alone.
+2. On the NAS:
+   ```bash
+   echo '<the-token>' | sudo docker login ghcr.io -u <github-username> --password-stdin
+   ```
+   `sudo` matters: the credential lands in root's docker config, which
+   is who runs compose/update.sh. It persists across reboots; you do
+   this once per NAS, and `./update.sh` just works from then on.
+
+Revoke access anytime at github.com → Settings → Developer settings →
+delete that token.
+
 ## 6 — Upgrades (pull-based — the easy way)
 
 CI publishes a ready-made image to GHCR on every `v*` tag
