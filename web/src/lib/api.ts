@@ -831,6 +831,35 @@ export interface LoginResponse {
 export const loginRecorder = (username: string, password: string) =>
   api.post<LoginResponse>("/recorder/login", { username, password });
 
+// refreshSession — POST /v1/auth/refresh (sliding session). Mirrors the
+// login response; requires only a currently-valid token.
+export const refreshSession = () => api.post<LoginResponse>('/auth/refresh', {});
+
+/**
+ * Keeps the stored session alive by refreshing the token when its
+ * remaining lifetime drops under 10 minutes (checked every minute).
+ * Returns a stop function. A failed refresh is left to the global 401
+ * handler (setOnUnauthorized) — the next request bumps to Login.
+ */
+export function startSessionRefresh(): () => void {
+  const REFRESH_UNDER_MS = 10 * 60 * 1000;
+  const tick = async () => {
+    try {
+      const exp = localStorage.getItem(TOKEN_EXP_KEY);
+      if (!exp || !getStoredToken()) return;
+      const remaining = new Date(exp).getTime() - Date.now();
+      if (remaining > REFRESH_UNDER_MS) return;
+      const res = await refreshSession();
+      setStoredToken(res.token, res.expires_at, res.username);
+    } catch {
+      /* 401 handled globally; transient errors retried next tick */
+    }
+  };
+  const id = window.setInterval(tick, 60 * 1000);
+  void tick();
+  return () => window.clearInterval(id);
+}
+
 export const changeRecorderPassword = (
   current_password: string,
   new_password: string,
@@ -1170,6 +1199,10 @@ export function subscribeEventsStream(
   if (filter.cameraId) qs.set('camera_id', filter.cameraId);
   if (filter.severity) qs.set('severity', filter.severity);
   if (filter.kind) qs.set('kind', filter.kind);
+  // EventSource cannot set an Authorization header; the server promotes
+  // ?access_token= to a Bearer header for this route only.
+  const token = getStoredToken();
+  if (token) qs.set('access_token', token);
   const url = `${BASE}/events/stream${qs.toString() ? `?${qs}` : ''}`;
   const es = new EventSource(url, { withCredentials: false });
   es.onmessage = (msg) => {

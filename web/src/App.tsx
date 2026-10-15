@@ -32,6 +32,7 @@ import {
   getStoredToken,
   getStoredUsername,
   setOnUnauthorized,
+  startSessionRefresh,
 } from './lib/api';
 import type { AppState, MeResponse, Route, Toast, ToastInput } from './lib/types';
 import { isRoute } from './lib/types';
@@ -83,6 +84,13 @@ export function App() {
     });
     return () => setOnUnauthorized(null);
   }, []);
+
+  // Sliding session: while authenticated, refresh the JWT as it nears
+  // expiry so long-lived dashboards don't bounce to Login mid-shift.
+  useEffect(() => {
+    if (auth !== 'authenticated') return;
+    return startSessionRefresh();
+  }, [auth]);
 
   const handleLogin = useCallback((mustChangePassword: boolean) => {
     setAuthUser(getStoredUsername() ?? 'admin');
