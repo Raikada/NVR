@@ -16,10 +16,13 @@ import { AlertsFeed, AlertsPanel } from './console/Alerts';
 import { Devices } from './console/Devices';
 import { Storage } from './console/Storage';
 import { Users } from './console/Users';
+import { SystemHealth } from './console/Health';
+import { Settings } from './console/Settings';
+import { Onboarding } from './console/Onboarding';
 import { CameraPanel, type Tour } from './console/CameraPanel';
 import { Icon } from './components/Icon';
 import {
-  clearStoredToken, getMe, getStoredToken, getStoredUsername,
+  clearStoredToken, getMe, getSetupStatus, getStoredToken, getStoredUsername,
   setOnUnauthorized, startSessionRefresh,
 } from './lib/api';
 import type { MeResponse } from './lib/types';
@@ -91,9 +94,13 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
   const [playbackTarget, setPlaybackTarget] = useState<PlaybackTarget | null>(null);
   const [tour, setTour] = useState<Tour | null>(null);
   const [claims, setClaims] = useState<MeResponse | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   useEffect(() => {
     void getMe().then(setClaims).catch(() => {});
+    void getSetupStatus()
+      .then((r) => { if (r.setup_required) setShowOnboarding(true); })
+      .catch(() => {});
   }, []);
 
   const navigate = useCallback((r: ConsoleRoute) => {
@@ -182,15 +189,19 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
       case 'users':
         return <Users />;
       case 'health':
-        return <Placeholder name="System Health" />;
+        return <SystemHealth />;
       case 'alerts':
         return <AlertsFeed onOpenPlayback={openPlayback} />;
       case 'settings':
-        return <Placeholder name="Settings" />;
+        return <Settings theme={theme} setTheme={setTheme} onOpenOnboarding={() => setShowOnboarding(true)} />;
     }
   })();
 
-  void claims; // role-gating lands with the Users screen
+  void claims; // granular role-gating is a follow-up; the API enforces
+
+  if (showOnboarding) {
+    return <Onboarding onComplete={() => setShowOnboarding(false)} />;
+  }
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
@@ -243,15 +254,6 @@ function Console({ username, onLogout }: { username: string; onLogout: () => voi
         onOpenHealth={() => navigate('health')}
         onOpenStorage={() => navigate('storage')}
       />
-    </div>
-  );
-}
-
-function Placeholder({ name }: { name: string }) {
-  return (
-    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10 }}>
-      <span style={{ fontFamily: 'var(--font-sans)', fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{name}</span>
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, color: 'var(--text-muted)' }}>SCREEN UNDER CONSTRUCTION</span>
     </div>
   );
 }
