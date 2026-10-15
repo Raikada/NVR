@@ -13,6 +13,13 @@ apiEncryption: yes   # HTTPS on a self-signed cert; replace via Settings → TLS
 
 rtspAddress: :8554
 
+# Time-range playback (Phase A B4): streams any recorded window as
+# fmp4 — http://<nas>:9996/get?path=<camera>&start=<RFC3339>&duration=<s>.
+# Coverage ranges come from the authed API (GET /v1/cameras/:id/coverage).
+# Same LAN-open posture as the RTSP/HLS media ports.
+playback: yes
+playbackAddress: :9996
+
 # LAN discovery + the _raikada-nvr._tcp advertisement. Requires host
 # networking (multicast); harmless if bridged, discovery just stays empty.
 mdns: true

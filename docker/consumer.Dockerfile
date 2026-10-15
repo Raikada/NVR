@@ -92,7 +92,7 @@ VOLUME ["/data", "/recordings"]
 # API/HLS/RTSP/WebRTC/RTMP/SRT. Use host networking on a NAS so
 # WS-Discovery multicast + mDNS work; these EXPOSEs document the
 # surface for bridge-mode users who forgo discovery.
-EXPOSE 9997 8554 8000/udp 8001/udp 1935 8888 8889 8189/udp 8890/udp
+EXPOSE 9997 9996 8554 8000/udp 8001/udp 1935 8888 8889 8189/udp 8890/udp
 
 ENTRYPOINT ["/usr/local/bin/raikada"]
 CMD ["/etc/raikada/config.yml"]
