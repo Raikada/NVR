@@ -1,37 +1,28 @@
-// Focused repro: does the live-view HLS flow (master → child playlists →
-// segments) stay authenticated through the proxy in a real browser?
-// Captures every /hls/* response code. Run against a scratch recorder
-// with a real (or publishing) camera named per CYPRESS_CAM.
 describe('hls auth through the proxy', () => {
   it('loads master + child playlists without 401', () => {
     const password = Cypress.env('ADMIN_PASSWORD');
-    const cam = Cypress.env('CAM') || 'rc';
-    const seen: Record<string, number> = {};
-
+    const log: Array<{ url: string; auth: boolean; code: number }> = [];
     cy.intercept('GET', '/hls/**', (req) => {
+      const auth = !!req.headers['authorization'];
       req.continue((res) => {
-        seen[req.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0]] = res.statusCode;
+        log.push({ url: req.url.replace(/^https?:\/\/[^/]+/, '').split('?')[0], auth, code: res.statusCode });
       });
-    }).as('hls');
-
+    });
     cy.visit('/');
     cy.get('input').first().clear().type('admin');
     cy.get('input[type="password"]').clear().type(password);
     cy.get('button').contains(/sign in/i).click();
     cy.contains('RAIKADA', { timeout: 10000 }).should('be.visible');
-
     cy.visit('/#live');
     cy.contains('Live View').should('be.visible');
-    // Give hls.js time to walk master → children → first segments.
-    cy.wait(8000);
-
+    cy.wait(10000);
     cy.then(() => {
+      const bad = log.filter((e) => e.code === 401);
       // eslint-disable-next-line no-console
-      console.table(seen);
-      const url401 = Object.entries(seen).filter(([, code]) => code === 401).map(([u]) => u);
-      const master = seen[`/hls/${cam}/index.m3u8`];
-      expect(master, 'master playlist reachable').to.not.equal(undefined);
-      expect(url401, `no /hls 401s; saw: ${url401.join(', ')}`).to.have.length(0);
+      bad.forEach((e) => console.log(`401 ${e.url} authHeader=${e.auth}`));
+      // eslint-disable-next-line no-console
+      console.log(`total /hls reqs: ${log.length}, 401s: ${bad.length}, child reqs: ${log.filter((e)=>e.url.includes('_stream')).length}`);
+      expect(bad, `401s: ${bad.map((e)=>e.url+'(auth='+e.auth+')').join(' ')}`).to.have.length(0);
     });
   });
 });

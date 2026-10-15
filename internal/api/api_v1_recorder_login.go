@@ -98,6 +98,7 @@ func (a *API) onV1RecorderLogin(ctx *gin.Context) {
 		return
 	}
 
+	a.setSessionCookie(ctx, res.Token, res.ExpiresAt)
 	ctx.JSON(http.StatusOK, loginResponse{
 		Token:              res.Token,
 		ExpiresAt:          res.ExpiresAt,
@@ -107,6 +108,20 @@ func (a *API) onV1RecorderLogin(ctx *gin.Context) {
 		MustChangePassword: res.MustChangePassword,
 		Scope:              res.Scope,
 	})
+}
+
+// setSessionCookie writes the recorder-local JWT as the session cookie
+// (HttpOnly, Secure, SameSite=Lax, Path=/) so the browser authenticates
+// the same-origin media proxy (/hls, /playback) on <video> / hls.js
+// requests that can't carry an Authorization header. Mirrors the
+// /v1/auth/* handlers.
+func (a *API) setSessionCookie(ctx *gin.Context, token string, expiresAt time.Time) {
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	ctx.SetSameSite(http.SameSiteLaxMode)
+	ctx.SetCookie(sessionCookieName, token, maxAge, "/", "", true, true)
 }
 
 type changePasswordRequest struct {
@@ -194,6 +209,7 @@ func (a *API) onV1RecorderLocalUsersMePasswordPost(ctx *gin.Context) {
 	// namespace).
 	a.authPasswordChangedEmit(ctx.Request.Context(), res.UserID, res.Username)
 
+	a.setSessionCookie(ctx, res.Token, res.ExpiresAt)
 	ctx.JSON(http.StatusOK, loginResponse{
 		Token:              res.Token,
 		ExpiresAt:          res.ExpiresAt,

@@ -81,6 +81,20 @@ func TestLogin_HappyPathWithBootstrapAdmin(t *testing.T) {
 	require.True(t, out.MustChangePassword)
 	require.True(t, out.IsAdmin)
 	require.NotEmpty(t, out.Scope)
+
+	// The login must also set the session cookie so the browser can
+	// authenticate the same-origin media proxy (/hls, /playback) on
+	// <video>/hls.js requests that can't carry an Authorization header.
+	var sess *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == sessionCookieName {
+			sess = c
+		}
+	}
+	require.NotNil(t, sess, "login must set the %s cookie", sessionCookieName)
+	require.Equal(t, out.Token, sess.Value)
+	require.True(t, sess.HttpOnly)
+	require.Greater(t, sess.MaxAge, 0)
 }
 
 func TestLogin_BadCredentialsReturns401(t *testing.T) {
