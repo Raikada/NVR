@@ -69,7 +69,7 @@ func TestMigrations_SeedRows(t *testing.T) {
 		expected int
 		desc     string
 	}{
-		{"SELECT COUNT(*) FROM roles", 2, "roles seeded with admin + viewer"},
+		{"SELECT COUNT(*) FROM roles", 5, "roles seeded with five tiers (Phase A B2)"},
 		{"SELECT COUNT(*) FROM recording_policies WHERE id='policy_default'", 1, "default policy seeded"},
 		{"SELECT COUNT(*) FROM event_types", 12, "event types seeded"},
 		{"SELECT COUNT(*) FROM event_retention WHERE type_id='__default__'", 1, "default retention seeded"},

@@ -106,13 +106,13 @@ type API struct {
 	// Phase 5 wiring: foundation services. Set by Core (Phase 6) via direct
 	// struct initialization. May be nil during early bootstrap or in tests
 	// — handlers must defensively check before use.
-	Store           *store.Store
-	CamerasService  *cameras.Service
-	EventsService   *events.Service
+	Store            *store.Store
+	CamerasService   *cameras.Service
+	EventsService    *events.Service
 	ScheduleResolver *schedule.Resolver
-	NotifDispatcher *notifications.Dispatcher
-	RetentionMgr    *retention.Manager
-	Vault           *cameracred.Vault
+	NotifDispatcher  *notifications.Dispatcher
+	RetentionMgr     *retention.Manager
+	Vault            *cameracred.Vault
 
 	// SP2 wiring: LAN discovery cache + ONVIF capability probe.
 	// ProbeCapabilitiesFn defaults to onvif.ProbeCapabilities when nil;
@@ -614,6 +614,36 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	// Method set) which maps to a service-account principal with
 	// empty Scope; the JWT path produces a real ADR 0011 D2 principal.
 	principal := principalFromAuthClaims(claims, a.globalPIIReadGrant())
+
+	// Phase A B2: when the auth manager authenticates but projects no
+	// JWT claims (legacy internal auth, harnesses), and the request
+	// carries a recorder-local bearer, adopt the token's own verified
+	// claims — sub + scope — so role-based enforcement is exact
+	// instead of the legacy synthetic-admin service account.
+	if principal.Sub == "" && a.LocalAuth != nil {
+		if raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer "); raw != "" && raw != ctx.GetHeader("Authorization") {
+			if mc, verr := a.LocalAuth.VerifyToken(raw); verr == nil {
+				sub, _ := mc["sub"].(string)
+				if sub != "" {
+					var scope []string
+					if rawScope, ok := mc["scope"].([]any); ok {
+						for _, s := range rawScope {
+							if str, ok := s.(string); ok {
+								scope = append(scope, str)
+							}
+						}
+					}
+					tenant, _ := mc["tenant_id"].(string)
+					principal = &Principal{
+						Sub:           sub,
+						TenantID:      tenant,
+						PrincipalKind: defs.AuditActorKindLocalUser,
+						Scope:         scope,
+					}
+				}
+			}
+		}
+	}
 
 	// ADR 0010 D6 amendment scope_kind validation: when the JWT
 	// presents a scope_kind + scope_target_id, validate against the

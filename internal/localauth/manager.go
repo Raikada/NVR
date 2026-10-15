@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bluenviron/mediamtx/internal/auth"
+	"github.com/bluenviron/mediamtx/internal/rbac"
 	"github.com/bluenviron/mediamtx/internal/store"
 )
 
@@ -46,12 +47,12 @@ type AuditEmitter func(action, outcome, actorKind, actorID string, attrs map[str
 // seeding on first start, login (POST /v1/recorder/login), forced
 // password change, and JWT issuance + validation.
 type Manager struct {
-	store      *store.Store
-	signingKey *SigningKey
+	store       *store.Store
+	signingKey  *SigningKey
 	identityDir string
-	tenantID   string
-	recorderID string
-	emit       AuditEmitter
+	tenantID    string
+	recorderID  string
+	emit        AuditEmitter
 }
 
 // New constructs a Manager. tenantID is the recorder's bootstrap tenantId
@@ -174,10 +175,10 @@ type LoginResult struct {
 
 // Sentinel login errors.
 var (
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrAccountLocked       = errors.New("account locked")
-	ErrAccountInactive     = errors.New("account inactive")
-	ErrPasswordTooShort    = errors.New("password too short")
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrAccountLocked      = errors.New("account locked")
+	ErrAccountInactive    = errors.New("account inactive")
+	ErrPasswordTooShort   = errors.New("password too short")
 )
 
 // MinPasswordLength is the recorder-local minimum.
@@ -389,12 +390,21 @@ func AdminPermissions() []string {
 func (m *Manager) issueToken(user *store.LocalUser) (string, time.Time, []string, error) {
 	now := time.Now().UTC()
 	exp := now.Add(AccessTokenTTL)
-	scope := AdminPermissions() // recorder-local users are always bootstrap admin in v1
-	if !user.IsAdmin {
-		// Defensive: if a non-admin user ever exists, issue a viewer-
-		// only token. Future slices may grow this surface; for v1 the
-		// bootstrap admin is the only path.
-		scope = []string{"camera.list", "camera.read", "health.read"}
+	// Phase A B2: scope derives from the user's role row. Admin and
+	// owner carry the full set; operator/audit/viewer carry their
+	// rbac-defined subsets. IsAdmin remains an override for the
+	// bootstrap admin whose RoleID predates the five-role migration.
+	var scope []string
+	if user.IsAdmin {
+		scope = AdminPermissions()
+	} else {
+		role := rbac.RoleFromID(user.RoleID)
+		for _, p := range rbac.AllPermissionsFor(role) {
+			scope = append(scope, string(p))
+		}
+		if len(scope) == 0 {
+			scope = []string{"camera.list", "camera.read", "health.read"}
+		}
 	}
 
 	jti := uuid.NewString()
@@ -492,9 +502,9 @@ func (m *Manager) emitSuccess(userID, username, sourceIP string) {
 		return
 	}
 	m.emit("auth.session_started", "success", "local_user", userID, map[string]string{
-		"username":   username,
-		"source_ip":  sourceIP,
-		"issuer":     "recorder/" + m.recorderID,
+		"username":  username,
+		"source_ip": sourceIP,
+		"issuer":    "recorder/" + m.recorderID,
 	})
 }
 

@@ -71,10 +71,15 @@ func claimsFromPrincipal(p *Principal) rbac.Claims {
 	if p.PrincipalKind == defs.AuditActorKindServiceAccount {
 		// Pre-ADR-0011 internal/HTTP auth — treat as admin.
 		role = rbac.RoleAdmin
+	} else if len(p.Scope) > 0 {
+		// Phase A B2: scopes are issued as exactly a role's permission
+		// set, so set-matching is deterministic (owner resolves to
+		// admin here — identical enforcement; display role comes from
+		// the user row).
+		role = rbac.RoleForScope(p.Scope)
 	}
-	// Heuristic: if the principal carries any ADR 0010 admin permission,
-	// treat them as admin. The recorder's bootstrap admin always carries
-	// the full admin permission set; viewer scopes are a strict subset.
+	// Legacy heuristic retained for tokens predating role-shaped
+	// scopes: any ADR 0010 admin marker upgrades to admin.
 	for _, s := range p.Scope {
 		if s == "user.invite" || s == "user.manage" || s == "role.assign" || s == "role.manage" {
 			role = rbac.RoleAdmin

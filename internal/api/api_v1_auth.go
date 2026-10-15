@@ -178,6 +178,14 @@ func (a *API) onV1AuthPassword(ctx *gin.Context) {
 func (a *API) onV1AuthMe(ctx *gin.Context) {
 	principal := principalFromContext(ctx)
 	if principal.Sub == "" {
+		// Phase A B2: resolve recorder-local bearers even when the
+		// auth manager didn't project claims, so role reporting is
+		// exact rather than the legacy synthetic admin.
+		if sub := a.localUserSub(ctx); sub != "" {
+			principal = &Principal{Sub: sub, PrincipalKind: principal.PrincipalKind}
+		}
+	}
+	if principal.Sub == "" {
 		// Pre-OQ10 service-account path; surface a synthetic admin
 		// principal so legacy callers don't 401.
 		claims, _ := ctx.Get(rbac.ClaimsContextKey)
@@ -205,8 +213,8 @@ func (a *API) onV1AuthMe(ctx *gin.Context) {
 		a.writeError(ctx, http.StatusInternalServerError, err)
 		return
 	}
-	role := rbac.RoleViewer
-	if user.IsAdmin || user.RoleID == string(rbac.RoleAdmin) {
+	role := rbac.RoleFromID(user.RoleID)
+	if user.IsAdmin {
 		role = rbac.RoleAdmin
 	}
 	ctx.JSON(http.StatusOK, authMeResponse{
@@ -251,6 +259,29 @@ func (a *API) authPasswordChangedEmit(_ context.Context, userID, username string
 	})
 }
 
+// localUserSub resolves the authenticated local user's id. Prefers the
+// middleware principal; when the auth manager didn't project JWT
+// claims (legacy internal auth, test harnesses), verifies the bearer
+// with the localauth signer directly — it minted it.
+func (a *API) localUserSub(ctx *gin.Context) string {
+	if p := principalFromContext(ctx); p.Sub != "" {
+		return p.Sub
+	}
+	if a.LocalAuth == nil {
+		return ""
+	}
+	raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer ")
+	if raw == "" || raw == ctx.GetHeader("Authorization") {
+		return ""
+	}
+	claims, err := a.LocalAuth.VerifyToken(raw)
+	if err != nil {
+		return ""
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
+}
+
 // onV1AuthRefresh handles POST /v1/auth/refresh — the sliding-session
 // primitive (Phase A B1). The still-valid bearer token proves
 // identity; the response carries a fresh token with a full TTL. Kept
@@ -264,19 +295,7 @@ func (a *API) onV1AuthRefresh(ctx *gin.Context) {
 		})
 		return
 	}
-	principal := principalFromContext(ctx)
-	sub := principal.Sub
-	if sub == "" {
-		// Auth-manager paths that don't project JWT claims (legacy
-		// internal auth, test harnesses): verify the bearer with the
-		// localauth signer directly — it minted it.
-		raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer ")
-		if raw != "" && raw != ctx.GetHeader("Authorization") {
-			if claims, verr := a.LocalAuth.VerifyToken(raw); verr == nil {
-				sub, _ = claims["sub"].(string)
-			}
-		}
-	}
+	sub := a.localUserSub(ctx)
 	if sub == "" {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
 			Status: defs.APIErrorStatusError,

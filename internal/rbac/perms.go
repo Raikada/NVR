@@ -13,6 +13,16 @@ const (
 	RoleAdmin Role = "admin"
 	// RoleViewer grants the read-only / live-view subset.
 	RoleViewer Role = "viewer"
+	// RoleOwner is the account-holder tier: everything admin has.
+	// Distinct so a future cloud/ownership model can diverge them
+	// without a migration.
+	RoleOwner Role = "owner"
+	// RoleOperator is viewer + day-to-day actions: acknowledge events,
+	// export clips, drive PTZ. No configuration mutation.
+	RoleOperator Role = "operator"
+	// RoleAudit is the compliance tier: read logs/metadata, no media
+	// surfaces, no mutations.
+	RoleAudit Role = "audit"
 )
 
 // Permission is a string enum used by the API middleware to gate
@@ -34,6 +44,11 @@ const (
 	PermCameraCredentialsWrite Permission = "camera.credentials.write"
 	// camera.live.view is preserved from existing api.go usage.
 	PermCameraLiveView Permission = "camera.live.view"
+
+	// Phase A B5 surfaces, declared with the role work (B2) so the
+	// role sets reference real constants.
+	PermCameraPTZ    Permission = "camera.ptz"
+	PermCameraReboot Permission = "camera.reboot"
 
 	// camera_group.* — new in foundation.
 	PermCameraGroupList   Permission = "camera_group.list"
@@ -147,6 +162,7 @@ var allPermissions = []Permission{
 	PermNotificationTargetDelete, PermNotificationTargetTest,
 	PermNotificationSubscriptionList, PermNotificationSubscriptionCreate, PermNotificationSubscriptionDelete,
 	PermNotificationOutboxList, PermNotificationOutboxRetry,
+	PermCameraPTZ, PermCameraReboot,
 	PermClipCreate, PermClipList, PermClipRead, PermClipDelete, PermClipDownload,
 	PermStorageList, PermStorageRead,
 	PermUserList, PermUserRead, PermUserCreate, PermUserUpdate, PermUserDelete,
@@ -175,18 +191,49 @@ var viewerPermissions = []Permission{
 	PermAuditRead,
 }
 
-// roleGrants is the in-code role->permission map. Admin has every
-// permission; viewer has the read-only / playback / live-view subset.
+// operatorExtras are the day-to-day actions an operator has beyond a
+// viewer: acknowledge, export, PTZ. No configuration mutation.
+var operatorExtras = []Permission{
+	PermEventAck, PermClipCreate, PermClipDownload, PermCameraPTZ,
+}
+
+// auditPermissions is the compliance subset: logs and metadata reads,
+// no media surfaces (live view, playback, downloads), no mutations.
+var auditPermissions = []Permission{
+	PermAuditRead,
+	PermCameraList, PermCameraRead,
+	PermCameraGroupList, PermCameraGroupRead,
+	PermPolicyList, PermPolicyRead, PermPolicyScheduleRead,
+	PermEventList, PermEventRead, PermEventTypeList, PermEventRetentionRead,
+	PermUserList, PermUserRead,
+	PermSystemSettingsRead,
+	PermStorageList, PermStorageRead,
+}
+
+// roleGrants is the in-code role->permission map (fail-closed for
+// unknown roles). owner mirrors admin; operator = viewer + extras;
+// audit is the compliance subset.
 var roleGrants = func() map[Role]map[Permission]struct{} {
 	m := map[Role]map[Permission]struct{}{
-		RoleAdmin:  make(map[Permission]struct{}, len(allPermissions)),
-		RoleViewer: make(map[Permission]struct{}, len(viewerPermissions)),
+		RoleAdmin:    make(map[Permission]struct{}, len(allPermissions)),
+		RoleOwner:    make(map[Permission]struct{}, len(allPermissions)),
+		RoleViewer:   make(map[Permission]struct{}, len(viewerPermissions)),
+		RoleOperator: make(map[Permission]struct{}, len(viewerPermissions)+len(operatorExtras)),
+		RoleAudit:    make(map[Permission]struct{}, len(auditPermissions)),
 	}
 	for _, p := range allPermissions {
 		m[RoleAdmin][p] = struct{}{}
+		m[RoleOwner][p] = struct{}{}
 	}
 	for _, p := range viewerPermissions {
 		m[RoleViewer][p] = struct{}{}
+		m[RoleOperator][p] = struct{}{}
+	}
+	for _, p := range operatorExtras {
+		m[RoleOperator][p] = struct{}{}
+	}
+	for _, p := range auditPermissions {
+		m[RoleAudit][p] = struct{}{}
 	}
 	return m
 }()
@@ -215,4 +262,65 @@ func AllPermissionsFor(role Role) []Permission {
 		out = append(out, p)
 	}
 	return out
+}
+
+// RoleFromID maps a roles-table id (role_admin, role_operator, …) to
+// the rbac Role. Unknown ids return RoleViewer (fail toward least
+// privilege).
+func RoleFromID(roleID string) Role {
+	switch roleID {
+	case "role_admin":
+		return RoleAdmin
+	case "role_owner":
+		return RoleOwner
+	case "role_operator":
+		return RoleOperator
+	case "role_audit":
+		return RoleAudit
+	case "role_viewer":
+		return RoleViewer
+	}
+	return RoleViewer
+}
+
+// RoleForScope infers the role from a token's scope set. Issued scopes
+// are exactly AllPermissionsFor(role), so exact set-matching is
+// deterministic; owner and admin share a set and resolve to admin at
+// the claims layer (identical enforcement — display-layer role comes
+// from the user row). Unrecognized shapes fall to viewer.
+func RoleForScope(scope []string) Role {
+	set := make(map[Permission]struct{}, len(scope))
+	for _, s := range scope {
+		set[Permission(s)] = struct{}{}
+	}
+	matches := func(role Role) bool {
+		grants := roleGrants[role]
+		if len(grants) != len(set) {
+			return false
+		}
+		for p := range grants {
+			if _, ok := set[p]; !ok {
+				return false
+			}
+		}
+		return true
+	}
+	for _, r := range []Role{RoleAdmin, RoleOperator, RoleAudit, RoleViewer} {
+		if matches(r) {
+			return r
+		}
+	}
+	// Superset of admin (legacy tokens with extra strings) → admin.
+	admin := roleGrants[RoleAdmin]
+	all := true
+	for p := range admin {
+		if _, ok := set[p]; !ok {
+			all = false
+			break
+		}
+	}
+	if all {
+		return RoleAdmin
+	}
+	return RoleViewer
 }
