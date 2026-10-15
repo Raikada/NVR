@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,4 +105,45 @@ func TestProbeCapabilitiesBadCredentials(t *testing.T) {
 
 	_, err := ProbeCapabilities(context.Background(), srv.URL, "admin", "wrong")
 	require.ErrorIs(t, err, ErrUnauthorized)
+}
+
+// Phase A B7: the probe also resolves the smallest profile's stream
+// URI so the recorder can register a low-res grid path.
+func TestProbeCapabilitiesResolvesSubStream(t *testing.T) {
+	// Second GetStreamUri response (for the sub profile).
+	const fixtureSubStreamURI = `<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema">
+<s:Body><trt:GetStreamUriResponse><trt:MediaUri>
+<tt:Uri>rtsp://192.168.1.110:554/cam/realmonitor?channel=1&amp;subtype=1</tt:Uri>
+</trt:MediaUri></trt:GetStreamUriResponse></s:Body></s:Envelope>`
+
+	calls := 0
+	srv, _ := fixtureServerFn(t, func(body string) (string, bool) {
+		switch {
+		case strings.Contains(body, "GetDeviceInformation"):
+			return fixtureDeviceInfoAmcrest, true
+		case strings.Contains(body, "GetCapabilities"):
+			return fixtureGetCapabilities, true
+		case strings.Contains(body, "GetProfiles"):
+			return fixtureGetProfiles, true
+		case strings.Contains(body, "GetSnapshotUri"):
+			return fixtureGetSnapshotURI, true
+		case strings.Contains(body, "GetStreamUri"):
+			calls++
+			if strings.Contains(body, "MediaProfile001") {
+				return fixtureSubStreamURI, true
+			}
+			return fixtureGetStreamURI, true
+		}
+		return "", false
+	})
+
+	report, err := ProbeCapabilities(context.Background(), srv.URL, "admin", "pw")
+	require.NoError(t, err)
+	require.Equal(t, "MediaProfile000", report.SelectedToken)
+	require.Equal(t, "MediaProfile001", report.SubStreamToken)
+	require.Equal(t,
+		"rtsp://192.168.1.110:554/cam/realmonitor?channel=1&subtype=1",
+		report.SubStreamURI)
+	require.Equal(t, 2, calls, "one GetStreamUri per selected profile")
 }

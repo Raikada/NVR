@@ -26,6 +26,11 @@ type CapabilityReport struct {
 	StreamURI     string            `json:"stream_uri"`
 	SnapshotURI   string            `json:"snapshot_uri"`
 
+	// Sub-stream (Phase A B7): the smallest distinct profile, for
+	// low-bandwidth grid views. Empty when the camera has one profile.
+	SubStreamToken string `json:"sub_stream_token,omitempty"`
+	SubStreamURI   string `json:"sub_stream_uri,omitempty"`
+
 	HasAudio   bool `json:"has_audio"`
 	HasPTZ     bool `json:"has_ptz"`
 	HasMotion  bool `json:"has_motion"`
@@ -81,18 +86,29 @@ func ProbeCapabilities(ctx context.Context, xaddr, username, password string) (*
 		snapshotURI = ""
 	}
 
+	// Sub-stream (Phase A B7): smallest-area distinct profile,
+	// best-effort like the snapshot URI.
+	subToken, subURI := "", ""
+	if sub := selectSubProfile(profiles, selected.Token); sub != nil {
+		if uri, serr := mc.GetStreamURI(ctx, sub.Token); serr == nil {
+			subToken, subURI = sub.Token, uri
+		}
+	}
+
 	return &CapabilityReport{
-		Device:        device,
-		Profiles:      profiles,
-		SelectedToken: selected.Token,
-		StreamURI:     streamURI,
-		SnapshotURI:   snapshotURI,
-		HasAudio:      selected.HasAudio,
-		HasPTZ:        caps.HasPTZ,
-		HasMotion:     caps.EventsXAddr != "",
-		HasIO:         caps.HasIO,
-		HasImaging:    caps.HasImaging,
-		EventsXAddr:   caps.EventsXAddr,
+		Device:         device,
+		Profiles:       profiles,
+		SelectedToken:  selected.Token,
+		StreamURI:      streamURI,
+		SnapshotURI:    snapshotURI,
+		HasAudio:       selected.HasAudio,
+		HasPTZ:         caps.HasPTZ,
+		HasMotion:      caps.EventsXAddr != "",
+		HasIO:          caps.HasIO,
+		HasImaging:     caps.HasImaging,
+		EventsXAddr:    caps.EventsXAddr,
+		SubStreamToken: subToken,
+		SubStreamURI:   subURI,
 	}, nil
 }
 
@@ -134,4 +150,20 @@ func classifyProbeError(stage string, err error) error {
 		return fmt.Errorf("%s: %w", stage, ErrUnauthorized)
 	}
 	return fmt.Errorf("%s: %w", stage, err)
+}
+
+// selectSubProfile picks the smallest-area profile other than the
+// selected one. Nil when no distinct smaller profile exists.
+func selectSubProfile(profiles []MediaProfile, selectedToken string) *MediaProfile {
+	var best *MediaProfile
+	for i := range profiles {
+		p := &profiles[i]
+		if p.Token == selectedToken {
+			continue
+		}
+		if best == nil || p.Width*p.Height < best.Width*best.Height {
+			best = p
+		}
+	}
+	return best
 }

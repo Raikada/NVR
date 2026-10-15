@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,8 +36,8 @@ const sessionCookieName = "raikada_session"
 // login response's user block plus the resolved permission set so the
 // SPA can hide/show controls without a separate round trip.
 type authMeResponse struct {
-	User        authMeUser         `json:"user"`
-	Permissions []rbac.Permission  `json:"permissions"`
+	User        authMeUser        `json:"user"`
+	Permissions []rbac.Permission `json:"permissions"`
 }
 
 type authMeUser struct {
@@ -177,6 +178,14 @@ func (a *API) onV1AuthPassword(ctx *gin.Context) {
 func (a *API) onV1AuthMe(ctx *gin.Context) {
 	principal := principalFromContext(ctx)
 	if principal.Sub == "" {
+		// Phase A B2: resolve recorder-local bearers even when the
+		// auth manager didn't project claims, so role reporting is
+		// exact rather than the legacy synthetic admin.
+		if sub := a.localUserSub(ctx); sub != "" {
+			principal = &Principal{Sub: sub, PrincipalKind: principal.PrincipalKind}
+		}
+	}
+	if principal.Sub == "" {
 		// Pre-OQ10 service-account path; surface a synthetic admin
 		// principal so legacy callers don't 401.
 		claims, _ := ctx.Get(rbac.ClaimsContextKey)
@@ -204,8 +213,8 @@ func (a *API) onV1AuthMe(ctx *gin.Context) {
 		a.writeError(ctx, http.StatusInternalServerError, err)
 		return
 	}
-	role := rbac.RoleViewer
-	if user.IsAdmin || user.RoleID == string(rbac.RoleAdmin) {
+	role := rbac.RoleFromID(user.RoleID)
+	if user.IsAdmin {
 		role = rbac.RoleAdmin
 	}
 	ctx.JSON(http.StatusOK, authMeResponse{
@@ -247,5 +256,78 @@ func (a *API) authPasswordChangedEmit(_ context.Context, userID, username string
 		ResourceKind: "local_user",
 		ResourceID:   userID,
 		Attributes:   map[string]string{"username": username},
+	})
+}
+
+// localUserSub resolves the authenticated local user's id. Prefers the
+// middleware principal; when the auth manager didn't project JWT
+// claims (legacy internal auth, test harnesses), verifies the bearer
+// with the localauth signer directly — it minted it.
+func (a *API) localUserSub(ctx *gin.Context) string {
+	if p := principalFromContext(ctx); p.Sub != "" {
+		return p.Sub
+	}
+	if a.LocalAuth == nil {
+		return ""
+	}
+	raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer ")
+	if raw == "" || raw == ctx.GetHeader("Authorization") {
+		return ""
+	}
+	claims, err := a.LocalAuth.VerifyToken(raw)
+	if err != nil {
+		return ""
+	}
+	sub, _ := claims["sub"].(string)
+	return sub
+}
+
+// onV1AuthRefresh handles POST /v1/auth/refresh — the sliding-session
+// primitive (Phase A B1). The still-valid bearer token proves
+// identity; the response carries a fresh token with a full TTL. Kept
+// permission-free (like /auth/password) so must-change-password users
+// can also stay alive through the change flow.
+func (a *API) onV1AuthRefresh(ctx *gin.Context) {
+	if a.LocalAuth == nil {
+		ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "local auth not initialized",
+		})
+		return
+	}
+	sub := a.localUserSub(ctx)
+	if sub == "" {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "authentication error",
+		})
+		return
+	}
+	res, err := a.LocalAuth.Refresh(ctx.Request.Context(), sub)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "authentication error",
+		})
+		return
+	}
+
+	maxAge := int(time.Until(res.ExpiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	ctx.SetSameSite(http.SameSiteLaxMode)
+	ctx.SetCookie(sessionCookieName, res.Token, maxAge, "/", "", true, true)
+
+	ctx.JSON(http.StatusOK, authLoginResponse{
+		AccessToken: res.Token,
+		ExpiresAt:   res.ExpiresAt,
+		User: authMeUser{
+			ID:                 res.UserID,
+			Username:           res.Username,
+			Role:               roleNameForLogin(res.IsAdmin),
+			IsActive:           true,
+			MustChangePassword: res.MustChangePassword,
+		},
 	})
 }

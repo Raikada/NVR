@@ -106,13 +106,13 @@ type API struct {
 	// Phase 5 wiring: foundation services. Set by Core (Phase 6) via direct
 	// struct initialization. May be nil during early bootstrap or in tests
 	// — handlers must defensively check before use.
-	Store           *store.Store
-	CamerasService  *cameras.Service
-	EventsService   *events.Service
+	Store            *store.Store
+	CamerasService   *cameras.Service
+	EventsService    *events.Service
 	ScheduleResolver *schedule.Resolver
-	NotifDispatcher *notifications.Dispatcher
-	RetentionMgr    *retention.Manager
-	Vault           *cameracred.Vault
+	NotifDispatcher  *notifications.Dispatcher
+	RetentionMgr     *retention.Manager
+	Vault            *cameracred.Vault
 
 	// SP2 wiring: LAN discovery cache + ONVIF capability probe.
 	// ProbeCapabilitiesFn defaults to onvif.ProbeCapabilities when nil;
@@ -123,6 +123,10 @@ type API struct {
 	// SP4 wiring: HMAC signer for short-TTL media URLs (snapshots,
 	// clip downloads).
 	Signer *mediasign.Signer
+
+	// Phase A B5 test seams: PTZ client + reboot call injection.
+	NewPTZClientFn func(xaddr, username, password string) PTZController
+	RebootCameraFn func(ctx context.Context, xaddr, username, password string) (string, error)
 
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
@@ -222,6 +226,7 @@ func (a *API) Initialize() error {
 	group.POST("/auth/login", a.onV1AuthLogin)
 	group.POST("/auth/logout", a.onV1AuthLogout)
 	group.POST("/auth/password", a.onV1AuthPassword)
+	group.POST("/auth/refresh", a.onV1AuthRefresh)
 	group.GET("/auth/me", a.onV1AuthMe)
 
 	// Phase 5 Task 5.2: per-camera credentials, probe, health,
@@ -234,6 +239,12 @@ func (a *API) Initialize() error {
 
 	// SP4: signed media fetch + event-to-clip.
 	a.registerV1Media(group)
+
+	// Phase A B5: PTZ + camera reboot.
+	a.registerV1PTZ(group)
+
+	// Phase A B6: camera stats + per-user UI prefs.
+	a.registerV1StatsPrefs(group)
 
 	// Phase 5 Task 5.3: camera groups CRUD.
 	a.registerV1CameraGroups(group)
@@ -537,6 +548,17 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		return
 	}
 
+	// Phase A B1: EventSource cannot send Authorization headers, so
+	// the SSE route — and ONLY that route — accepts the bearer token
+	// as ?access_token=. Promote it into the header before the normal
+	// credential extraction; all other routes stay header/cookie-only.
+	if ctx.Request.URL.Path == "/v1/events/stream" &&
+		ctx.Request.Header.Get("Authorization") == "" {
+		if qt := ctx.Query("access_token"); qt != "" {
+			ctx.Request.Header.Set("Authorization", "Bearer "+qt)
+		}
+	}
+
 	req := &auth.Request{
 		Action:      conf.AuthActionAPI,
 		Query:       ctx.Request.URL.RawQuery,
@@ -602,6 +624,36 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 	// Method set) which maps to a service-account principal with
 	// empty Scope; the JWT path produces a real ADR 0011 D2 principal.
 	principal := principalFromAuthClaims(claims, a.globalPIIReadGrant())
+
+	// Phase A B2: when the auth manager authenticates but projects no
+	// JWT claims (legacy internal auth, harnesses), and the request
+	// carries a recorder-local bearer, adopt the token's own verified
+	// claims — sub + scope — so role-based enforcement is exact
+	// instead of the legacy synthetic-admin service account.
+	if principal.Sub == "" && a.LocalAuth != nil {
+		if raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer "); raw != "" && raw != ctx.GetHeader("Authorization") {
+			if mc, verr := a.LocalAuth.VerifyToken(raw); verr == nil {
+				sub, _ := mc["sub"].(string)
+				if sub != "" {
+					var scope []string
+					if rawScope, ok := mc["scope"].([]any); ok {
+						for _, s := range rawScope {
+							if str, ok := s.(string); ok {
+								scope = append(scope, str)
+							}
+						}
+					}
+					tenant, _ := mc["tenant_id"].(string)
+					principal = &Principal{
+						Sub:           sub,
+						TenantID:      tenant,
+						PrincipalKind: defs.AuditActorKindLocalUser,
+						Scope:         scope,
+					}
+				}
+			}
+		}
+	}
 
 	// ADR 0010 D6 amendment scope_kind validation: when the JWT
 	// presents a scope_kind + scope_target_id, validate against the

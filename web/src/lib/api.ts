@@ -831,6 +831,41 @@ export interface LoginResponse {
 export const loginRecorder = (username: string, password: string) =>
   api.post<LoginResponse>("/recorder/login", { username, password });
 
+// refreshSession — POST /v1/auth/refresh (sliding session). Returns the
+// /v1/auth/* consumer shape (access_token + nested user), NOT the flat
+// recorder/login shape; requires only a currently-valid token.
+export interface RefreshResponse {
+  access_token: string;
+  expires_at: string;
+  user: { id: string; username: string; role: string };
+}
+export const refreshSession = () => api.post<RefreshResponse>('/auth/refresh', {});
+
+/**
+ * Keeps the stored session alive by refreshing the token when its
+ * remaining lifetime drops under 10 minutes (checked every minute).
+ * Returns a stop function. A failed refresh is left to the global 401
+ * handler (setOnUnauthorized) — the next request bumps to Login.
+ */
+export function startSessionRefresh(): () => void {
+  const REFRESH_UNDER_MS = 10 * 60 * 1000;
+  const tick = async () => {
+    try {
+      const exp = localStorage.getItem(TOKEN_EXP_KEY);
+      if (!exp || !getStoredToken()) return;
+      const remaining = new Date(exp).getTime() - Date.now();
+      if (remaining > REFRESH_UNDER_MS) return;
+      const res = await refreshSession();
+      setStoredToken(res.access_token, res.expires_at, res.user.username);
+    } catch {
+      /* 401 handled globally; transient errors retried next tick */
+    }
+  };
+  const id = window.setInterval(tick, 60 * 1000);
+  void tick();
+  return () => window.clearInterval(id);
+}
+
 export const changeRecorderPassword = (
   current_password: string,
   new_password: string,
@@ -1170,6 +1205,10 @@ export function subscribeEventsStream(
   if (filter.cameraId) qs.set('camera_id', filter.cameraId);
   if (filter.severity) qs.set('severity', filter.severity);
   if (filter.kind) qs.set('kind', filter.kind);
+  // EventSource cannot set an Authorization header; the server promotes
+  // ?access_token= to a Bearer header for this route only.
+  const token = getStoredToken();
+  if (token) qs.set('access_token', token);
   const url = `${BASE}/events/stream${qs.toString() ? `?${qs}` : ''}`;
   const es = new EventSource(url, { withCredentials: false });
   es.onmessage = (msg) => {
@@ -1256,4 +1295,90 @@ export interface EventClipResponse {
 // swept and no segments cover the event window.
 export const createEventClip = (id: string, body?: EventClipBody) =>
   api.post<EventClipResponse>(`/events/${id}/clip`, body ?? {});
+
+// Clip export is asynchronous: the POST returns {clip, download_url}
+// with state "preparing"; the download URL 409s until state is
+// "ready". waitForClip polls the clip row until it settles.
+export interface ClipRow {
+  id: string;
+  state: string;
+  size_bytes?: number;
+  [k: string]: unknown;
+}
+export const getClip = (id: string) => api.get<ClipRow>(`/clips/${id}`);
+
+export async function waitForClip(id: string, timeoutMs = 30_000): Promise<ClipRow> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const c = await getClip(id);
+    if (c.state === 'ready') return c;
+    if (c.state === 'failed') throw new Error('clip export failed');
+    if (Date.now() > deadline) throw new Error('clip export timed out');
+    await new Promise((r) => window.setTimeout(r, 700));
+  }
+}
+
+/* ---------- Phase A (v1.4.0) console surface ---------- */
+
+// Coverage — merged recorded ranges for the playback timeline.
+export interface CoverageEntry {
+  start: string; // RFC3339
+  duration: number; // seconds
+}
+export const getCameraCoverage = (id: string, from?: string, to?: string) => {
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  return api
+    .get<{ items: CoverageEntry[] }>(`/cameras/${id}/coverage${qs.toString() ? `?${qs}` : ''}`)
+    .then((r) => r.items ?? []);
+};
+
+// PTZ — continuous move (velocities -1..1); stop ends the motion.
+export const ptzMove = (id: string, pan: number, tilt: number, zoom = 0) =>
+  api.post<{ status: string }>(`/cameras/${id}/ptz/move`, { pan, tilt, zoom });
+export const ptzStop = (id: string) => api.post<{ status: string }>(`/cameras/${id}/ptz/stop`, {});
+export const ptzHome = (id: string) => api.post<{ status: string }>(`/cameras/${id}/ptz/home`, {});
+export interface PTZPreset {
+  token: string;
+  name: string;
+}
+export const ptzPresets = (id: string) =>
+  api.get<{ items: PTZPreset[] }>(`/cameras/${id}/ptz/presets`).then((r) => r.items ?? []);
+export const ptzPresetGoto = (id: string, token: string) =>
+  api.post<{ status: string }>(`/cameras/${id}/ptz/presets/${encodeURIComponent(token)}/goto`, {});
+export const ptzPresetSave = (id: string, name: string) =>
+  api.post<{ token: string; name: string }>(`/cameras/${id}/ptz/presets`, { name });
+export const rebootCamera = (id: string) =>
+  api.post<{ message: string }>(`/cameras/${id}/reboot`, {});
+
+// Per-camera stream stats (availability-based online flag).
+export interface CameraStats {
+  online: boolean;
+  online_since?: string;
+  bytes_received: number;
+  bytes_sent: number;
+  frames_in_error: number;
+  readers: number;
+  tracks: string[];
+  ts: string;
+}
+export const getCameraStats = (id: string) => api.get<CameraStats>(`/cameras/${id}/stats`);
+
+// Per-user UI prefs — opaque JSON values, merge-upsert by key.
+export type MyPrefs = Record<string, unknown>;
+export const getMyPrefs = () => api.get<MyPrefs>('/me/prefs');
+export const putMyPrefs = (patch: MyPrefs) => api.put<MyPrefs>('/me/prefs', patch);
+
+// Acknowledge-all + bookmarks.
+export const ackAllEvents = (cameraID?: string, before?: string) =>
+  api.post<{ acknowledged: number }>('/events/acknowledge-all', {
+    ...(cameraID ? { camera_id: cameraID } : null),
+    ...(before ? { before } : null),
+  });
+export const createBookmark = (cameraID: string, note?: string, time?: string) =>
+  api.post<EventRecord>(`/cameras/${cameraID}/bookmarks`, {
+    ...(note ? { note } : null),
+    ...(time ? { time } : null),
+  });
 

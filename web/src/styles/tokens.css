@@ -17,11 +17,11 @@
   /* ---------- Color: brand accent ---------- */
   --accent:        #F97316; /* Primary amber/orange */
   --accent-hover:  #EA580C; /* Pressed/active accent */
-  --accent-7:  rgba(249,115,22,0.07); /* tint backgrounds */
-  --accent-13: rgba(249,115,22,0.13);
-  --accent-20: rgba(249,115,22,0.20);
-  --accent-27: rgba(249,115,22,0.27);
-  --accent-40: rgba(249,115,22,0.40);
+  --accent-7:  color-mix(in srgb, var(--accent) 7%, transparent); /* tint backgrounds */
+  --accent-13: color-mix(in srgb, var(--accent) 13%, transparent);
+  --accent-20: color-mix(in srgb, var(--accent) 20%, transparent);
+  --accent-27: color-mix(in srgb, var(--accent) 27%, transparent);
+  --accent-40: color-mix(in srgb, var(--accent) 40%, transparent);
 
   /* ---------- Color: status ---------- */
   --success: #22C55E;
@@ -40,6 +40,10 @@
   --text-primary:   #E5E5E5;
   --text-secondary: #737373;
   --text-muted:     #404040;
+  --on-accent:      #0A0A0A;  /* text on solid accent/status fills */
+  --bg-panel:       #0E0E0E;  /* slide-out panels */
+  --scrim:          rgba(0,0,0,0.6);
+  --on-video:       #E5E5E5;  /* overlays on footage — same in both themes */
 
   /* ---------- Typography: families ---------- */
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -81,9 +85,9 @@
   --sp-10: 40px;
 
   /* ---------- Shadows / glows ---------- */
-  --glow-accent-sm: 0 0 6px rgba(249,115,22,0.45);
-  --glow-accent-md: 0 0 12px rgba(249,115,22,0.55);
-  --glow-accent-lg: 0 0 24px rgba(249,115,22,0.45);
+  --glow-accent-sm: 0 0 6px color-mix(in srgb, var(--accent) 45%, transparent);
+  --glow-accent-md: 0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
+  --glow-accent-lg: 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent);
   --glow-success:   0 0 6px rgba(34,197,94,0.65);
   --glow-danger:    0 0 6px rgba(239,68,68,0.65);
   --glow-warning:   0 0 6px rgba(234,179,8,0.65);
@@ -182,3 +186,23 @@ html, body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
+
+/* ---------- Light theme ---------- */
+[data-theme="light"] {
+  --bg-primary:   #F4F3F0;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary:  #ECEAE5;
+  --bg-panel:     #FAFAF8;
+  --border:       #D9D6CF;
+  --text-primary:   #171513;
+  --text-secondary: #5E5B55;
+  --text-muted:     #9A968E;
+  --on-accent:    #FFFFFF;
+  --scrim:        rgba(23,21,19,0.45);
+  --accent-hover: #C2410C;
+  --glow-accent-sm: 0 0 0 transparent;
+  --glow-accent-md: 0 0 0 transparent;
+  --glow-accent-lg: 0 0 0 transparent;
+  color-scheme: light;
+}
+[data-theme="light"] body { background: var(--bg-primary); color: var(--text-primary); }

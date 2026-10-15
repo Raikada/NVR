@@ -42,6 +42,30 @@ Most x86 NAS boxes are `linux/amd64`; ARM models (many QNAPs, Pis) are
 `linux/arm64`. `uname -m` on the NAS tells you (`x86_64` → amd64,
 `aarch64` → arm64).
 
+## Synology quickstart (DSM 7.2+, x86 models)
+
+Verified against the real target (DS at 192.168.1.220, x86_64):
+
+1. **Package Center → Container Manager → Install** (Synology's Docker;
+   gives you `docker` + `docker compose`, used with `sudo`).
+2. **Control Panel → Terminal & SNMP → Enable SSH** if not already on.
+3. DSM has no git — copy the repo from your workstation instead:
+   ```bash
+   rsync -a --exclude node_modules --exclude .git \
+     <repo-checkout>/ <user>@<nas-ip>:~/raikada/
+   ```
+4. File Station: create `docker/raikada/data` on volume1 and a shared
+   folder for footage (e.g. `surveillance`), then edit
+   `~/raikada/docker/docker-compose.yml` to bind-mount them (see §2).
+5. ```bash
+   cd ~/raikada/docker && sudo docker compose up -d --build
+   sudo docker logs raikada-nvr 2>&1 | grep -A6 "BOOTSTRAP ADMIN"
+   ```
+6. Browse to `https://<nas-ip>:9997`, sign in, adopt cameras.
+
+First build compiles ffmpeg from source — 10–30 min on NAS-class CPUs;
+subsequent rebuilds reuse the cached stage.
+
 ## 2 — Storage layout (edit docker-compose.yml before `up`)
 
 Two volumes, different lifecycles:
@@ -102,16 +126,50 @@ Non-ONVIF sources: **Add Camera** and paste an RTSP URL manually.
 - **Users** — add `viewer` accounts for household members (read/watch,
   no admin).
 
-## 6 — Upgrades
+## Private image: one-time registry login
+
+The GHCR image is private by choice. Each NAS needs a one-time login
+before its first pull:
+
+1. GitHub → Settings → Developer settings → **Personal access tokens
+   (classic)** → Generate new token. Scope: **read:packages** only.
+   Name it after the device (e.g. `nas-flower-cloud-pull`) — one token
+   per device, so a lost/retired device can be revoked alone.
+2. On the NAS:
+   ```bash
+   echo '<the-token>' | sudo docker login ghcr.io -u <github-username> --password-stdin
+   ```
+   `sudo` matters: the credential lands in root's docker config, which
+   is who runs compose/update.sh. It persists across reboots; you do
+   this once per NAS, and `./update.sh` just works from then on.
+
+Revoke access anytime at github.com → Settings → Developer settings →
+delete that token.
+
+## 6 — Upgrades (pull-based — the easy way)
+
+CI publishes a ready-made image to GHCR on every `v*` tag
+(`.github/workflows/consumer-image.yml`), so the NAS never builds from
+source after the first migration to the pull-based compose:
 
 ```bash
-cd raikada && git pull
-cd docker && docker compose up -d --build
+# The script cd's to its own directory, so the full path alone works.
+# On the Flower_Cloud NAS the repo tarball lives under
+# ~/raikada/NVR-consumer-foundation:
+~/raikada/NVR-consumer-foundation/docker/update.sh   # pull → restart → prune → prints running version
 ```
 
-`/data` and `/recordings` live on volumes, so state (cameras, users,
-events, footage) survives rebuilds. Watch
-`docker logs raikada-nvr` for the schema migrations applying.
+(update.sh wraps `docker compose -f docker-compose.nas.yml pull && up -d`.)
+To release: `git tag v1.4.0 && git push origin v1.4.0` — CI builds and
+publishes; every NAS updates with the one command above. Pin a version
+by using `:v1.3.0` instead of `:latest` in docker-compose.nas.yml.
+
+`/data` and `/recordings` live on mounts, so state (cameras, users,
+events, footage) survives updates; schema migrations apply at boot —
+watch `docker logs raikada-nvr` the first start after an update.
+
+Building from source on the NAS (this page's Option A) remains the
+fallback when testing unreleased changes.
 
 ## Troubleshooting
 

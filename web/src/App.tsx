@@ -1,96 +1,56 @@
-// Top-level app shell: TopBar + IconRail + active route + SetupWizard
-// overlay + Toast stack. Route resolution is hash-based per the design
-// (window.location.hash → Route enum).
-//
-// Commit 2 ships shell + Overview + SetupWizard. Subsequent commits
-// land Cameras (3), the remaining five routes (4), and the Go embed
-// wiring (5). Routes not yet ported render a placeholder card.
-
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { TopBar } from './components/TopBar';
-import { IconRail } from './components/IconRail';
-import { ToastStack } from './components/Toast';
-import { SetupWizard } from './components/SetupWizard';
-import { Overview } from './routes/Overview';
-import { Cameras } from './routes/Cameras';
-import { Events } from './routes/Events';
-import { Policies } from './routes/Policies';
-import { Storage } from './routes/Storage';
-import { Network } from './routes/Network';
-import { Logs } from './routes/Logs';
-import { Diagnostics } from './routes/Diagnostics';
-import { Settings } from './routes/Settings';
-import { Users } from './routes/Users';
-import { Notifications } from './routes/Notifications';
+// Operator console shell — auth gates (Login / forced password change),
+// then the console chrome: TopBar, IconRail, active screen, AlertsPanel
+// slide-out, FooterStrip. Hash-routed (#live, #playback, …).
+import { useCallback, useEffect, useState } from 'react';
 import { Login } from './routes/Login';
 import { PasswordChange } from './routes/PasswordChange';
-import { INITIAL_CAMERAS } from './lib/mockdata';
+import { ConsoleProvider, useConsole } from './lib/console';
+import { ConsoleTopBar, FooterStrip, useChromeStats } from './console/Shell';
+import { IconRail } from './console/IconRail';
+import { isConsoleRoute, type ConsoleRoute } from './console/routes';
+import { useTheme } from './console/theme';
+import { LiveView } from './console/LiveView';
+import { Playback } from './console/Playback';
+import { Search } from './console/Search';
+import { AlertsFeed, AlertsPanel } from './console/Alerts';
+import { Devices } from './console/Devices';
+import { Storage } from './console/Storage';
+import { Users } from './console/Users';
+import { SystemHealth } from './console/Health';
+import { Settings } from './console/Settings';
+import { Onboarding } from './console/Onboarding';
+import { CameraPanel, type Tour } from './console/CameraPanel';
+import { Icon } from './components/Icon';
 import {
-  clearStoredToken,
-  getMe,
-  getSetupStatus,
-  getStoredToken,
-  getStoredUsername,
-  setOnUnauthorized,
+  clearStoredToken, getMe, getSetupStatus, getStoredToken, getStoredUsername,
+  setOnUnauthorized, startSessionRefresh,
 } from './lib/api';
-import type { AppState, MeResponse, Route, Toast, ToastInput } from './lib/types';
-import { isRoute } from './lib/types';
+import type { MeResponse } from './lib/types';
 
-function readHashRoute(): Route {
+function readHashRoute(): ConsoleRoute {
   const h = window.location.hash.slice(1);
-  return isRoute(h) ? h : 'overview';
+  return isConsoleRoute(h) ? h : 'live';
 }
 
-// AuthState — what the App is rendering with respect to the recorder-
-// local JWT.
-//   - "loading":           initial render before localStorage was inspected.
-//   - "anonymous":         no valid token; render <Login>.
-//   - "must_change_password": token valid but the user is on the
-//                          bootstrap initial password; render <PasswordChange>.
-//   - "authenticated":     normal SPA.
-type AuthState = 'loading' | 'anonymous' | 'must_change_password' | 'authenticated';
+type AuthState = 'anonymous' | 'must_change_password' | 'authenticated';
 
 export function App() {
-  const [route, setRoute] = useState<Route>(() => readHashRoute());
-  // Wizard visibility is gated on /v1/system/setup-status. Default
-  // hidden so existing recorders don't suddenly see a wizard; we
-  // flip it open after the first authenticated setup-status fetch
-  // returns setup_required:true.
-  const [showWizard, setShowWizard] = useState(false);
-
-  // Auth gate (pre-pairing auth slice 2026-05-06). The recorder no
-  // longer accepts anonymous /v1/* requests by default, so the SPA
-  // surfaces a login screen until a recorder-local JWT is present in
-  // localStorage. The default Login → SetupWizard → operator UI flow:
-  //   1. App mounts, finds no token → render <Login>.
-  //   2. Operator submits credentials → /v1/recorder/login returns JWT.
-  //      If must_change_password=true → render <PasswordChange>.
-  //   3. After password change → render normal SPA + first-run
-  //      SetupWizard overlay so pairing can proceed.
-  const [auth, setAuth] = useState<AuthState>(() => {
-    const t = getStoredToken();
-    return t ? 'authenticated' : 'anonymous';
-  });
+  const [auth, setAuth] = useState<AuthState>(() => (getStoredToken() ? 'authenticated' : 'anonymous'));
   const [authUser, setAuthUser] = useState<string>(() => getStoredUsername() ?? 'admin');
-  const [claims, setClaims] = useState<MeResponse | null>(null);
-  const isAdmin = claims?.user?.role === 'admin';
 
-  // Wire the api.ts 401 handler so an expired-token request bumps the
-  // SPA back to the Login screen instead of cascading hard errors.
   useEffect(() => {
-    setOnUnauthorized(() => {
-      setAuth('anonymous');
-    });
+    setOnUnauthorized(() => setAuth('anonymous'));
     return () => setOnUnauthorized(null);
   }, []);
+
+  useEffect(() => {
+    if (auth !== 'authenticated') return;
+    return startSessionRefresh();
+  }, [auth]);
 
   const handleLogin = useCallback((mustChangePassword: boolean) => {
     setAuthUser(getStoredUsername() ?? 'admin');
     setAuth(mustChangePassword ? 'must_change_password' : 'authenticated');
-  }, []);
-
-  const handlePasswordChanged = useCallback(() => {
-    setAuth('authenticated');
   }, []);
 
   const handleLogout = useCallback(() => {
@@ -98,173 +58,202 @@ export function App() {
     setAuth('anonymous');
   }, []);
 
-  const [state, setState] = useState<AppState>({
-    hostname: 'rec-warehouse-a-01',
-    serial: 'RKD-7B3A-2024',
-    firmware: '3.1.2',
-    ip: '10.0.1.31',
-    gateway: '10.0.1.1',
-    cameraCount: INITIAL_CAMERAS.length,
-    recordingCount: INITIAL_CAMERAS.filter((c) => c.status === 'online').length,
-    cameras: INITIAL_CAMERAS,
-  });
-
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const i = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(i);
-  }, []);
-
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const addToast = useCallback((t: ToastInput) => {
-    const id = 'tst' + Date.now() + Math.random().toString(36).slice(2, 6);
-    setToasts((prev) => [...prev, { ...t, id }]);
-    window.setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 4500);
-  }, []);
-  const removeToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((x) => x.id !== id));
-  }, []);
-
-  // Load /v1/me claims (role + permissions) once authenticated so
-  // admin-gated routes (Users, Notifications) can reveal themselves.
-  useEffect(() => {
-    if (auth !== 'authenticated') return;
-    let cancelled = false;
-    void getMe()
-      .then((m) => {
-        if (cancelled) return;
-        setClaims(m);
-      })
-      .catch(() => {
-        // Endpoint absent on older builds; treat as non-admin.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [auth]);
-
-  // Once authenticated, ask the recorder whether first-run setup is
-  // still pending. setup-status returns {setup_required:true} until
-  // the wizard's "Done" path persists setup_complete=true.
-  useEffect(() => {
-    if (auth !== 'authenticated') return;
-    let cancelled = false;
-    void getSetupStatus()
-      .then((r) => {
-        if (cancelled) return;
-        if (r.setup_required) setShowWizard(true);
-      })
-      .catch(() => {
-        // Endpoint absent on older builds; leave the wizard hidden.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [auth]);
-
-  const go = useCallback((r: Route) => {
-    setRoute(r);
-    window.location.hash = r;
-  }, []);
-
-  useEffect(() => {
-    const h = () => {
-      const v = window.location.hash.slice(1);
-      if (isRoute(v)) setRoute(v);
-    };
-    window.addEventListener('hashchange', h);
-    return () => window.removeEventListener('hashchange', h);
-  }, []);
-
-  const recordingCount = state.cameras.filter((c) => c.status === 'online').length;
-  const serverHeader = useMemo(
-    () => ({ ...state, recordingCount, cameraCount: state.cameras.length }),
-    [state, recordingCount],
-  );
-
-  const main = (() => {
-    switch (route) {
-      case 'overview':
-        return (
-          <Overview
-            state={state}
-            setState={setState}
-            go={go}
-            addToast={addToast}
-            setShowWizard={setShowWizard}
-          />
-        );
-      case 'cameras':
-        return <Cameras state={state} setState={setState} addToast={addToast} />;
-      case 'events':
-        return <Events addToast={addToast} />;
-      case 'policies':
-        return <Policies addToast={addToast} />;
-      case 'storage':
-        return <Storage />;
-      case 'network':
-        return <Network state={state} />;
-      case 'logs':
-        return <Logs addToast={addToast} />;
-      case 'diagnostics':
-        return <Diagnostics state={state} addToast={addToast} />;
-      case 'settings':
-        return <Settings state={state} addToast={addToast} />;
-      case 'users':
-        return isAdmin ? <Users addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
-      case 'notifications':
-        return isAdmin ? <Notifications addToast={addToast} /> : <Overview state={state} setState={setState} go={go} addToast={addToast} setShowWizard={setShowWizard} />;
-    }
-  })();
-
-  // Auth gate renders the appropriate top-level screen before the
-  // operator UI mounts. SetupWizard, identity poll, and toasts all
-  // hang off the post-auth tree.
-  if (auth === 'anonymous') {
-    return <Login onLogin={handleLogin} />;
-  }
+  if (auth === 'anonymous') return <Login onLogin={handleLogin} />;
   if (auth === 'must_change_password') {
     return (
       <PasswordChange
         username={authUser}
-        onChanged={handlePasswordChanged}
+        onChanged={() => setAuth('authenticated')}
         onLogout={handleLogout}
       />
     );
   }
 
   return (
-    <>
-      <TopBar
-        server={serverHeader}
-        now={now}
-        username={authUser}
-        onLogout={handleLogout}
-      />
-      <div className="shell">
-        <IconRail route={route} go={go} isAdmin={isAdmin} />
-        {main}
-      </div>
-      {showWizard && (
-        <SetupWizard
-          state={state}
-          setState={setState}
-          addToast={addToast}
-          onDone={() => {
-            setShowWizard(false);
-            go('overview');
-            addToast({
-              kind: 'success',
-              title: 'SETUP COMPLETE',
-              body: 'Recorder is operational',
-              icon: 'check-circle',
-            });
-          }}
-          onDismiss={() => setShowWizard(false)}
-        />
-      )}
-      <ToastStack toasts={toasts} remove={removeToast} />
-    </>
+    <ConsoleProvider>
+      <Console username={authUser} onLogout={handleLogout} />
+    </ConsoleProvider>
   );
 }
 
+// PlaybackTarget — camera + position a screen asked Playback to open at.
+export interface PlaybackTarget {
+  camId: string;
+  at?: Date;
+  key: number;
+}
+
+function Console({ username, onLogout }: { username: string; onLogout: () => void }) {
+  const data = useConsole();
+  const [theme, setTheme] = useTheme();
+  const { health, volumes } = useChromeStats();
+  const [route, setRoute] = useState<ConsoleRoute>(() => readHashRoute());
+  const [camPanelOpen, setCamPanelOpen] = useState(true);
+  const [alertsPanelOpen, setAlertsPanelOpen] = useState(false);
+  const [focusCamId, setFocusCamId] = useState<string | null>(null);
+  const [playbackTarget, setPlaybackTarget] = useState<PlaybackTarget | null>(null);
+  const [tour, setTour] = useState<Tour | null>(null);
+  const [claims, setClaims] = useState<MeResponse | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  useEffect(() => {
+    void getMe().then(setClaims).catch(() => {});
+    void getSetupStatus()
+      .then((r) => { if (r.setup_required) setShowOnboarding(true); })
+      .catch(() => {});
+  }, []);
+
+  const navigate = useCallback((r: ConsoleRoute) => {
+    setRoute(r);
+    window.location.hash = r;
+    setFocusCamId(null);
+    setTour(null);
+  }, []);
+
+  useEffect(() => {
+    const h = () => {
+      const v = window.location.hash.slice(1);
+      if (isConsoleRoute(v)) setRoute(v);
+    };
+    window.addEventListener('hashchange', h);
+    return () => window.removeEventListener('hashchange', h);
+  }, []);
+
+  const openPlayback = useCallback((camId: string, at?: Date) => {
+    setPlaybackTarget({ camId, at, key: Date.now() });
+    setRoute('playback');
+    window.location.hash = 'playback';
+    setFocusCamId(null);
+    setAlertsPanelOpen(false);
+  }, []);
+
+  const openLive = useCallback((camId: string) => {
+    setRoute('live');
+    window.location.hash = 'live';
+    setFocusCamId(camId);
+  }, []);
+
+  // Global shortcuts: / search, s alerts, c camera panel, 1/2/3 nav, esc back.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const k = e.key.toLowerCase();
+      if (e.key === '/') { e.preventDefault(); navigate('search'); }
+      else if (k === 's') setAlertsPanelOpen((o) => !o);
+      else if (k === 'c') setCamPanelOpen((o) => !o);
+      else if (e.key === 'Escape') { setFocusCamId(null); setAlertsPanelOpen(false); }
+      else if (e.key === '1') navigate('live');
+      else if (e.key === '2') navigate('playback');
+      else if (e.key === '3') navigate('search');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navigate]);
+
+  const startTour = useCallback((t: Tour | null) => {
+    if (!t) { setTour(null); setFocusCamId(null); return; }
+    setRoute('live');
+    window.location.hash = 'live';
+    setTour(t);
+  }, []);
+
+  const sidePanel = route === 'live' || route === 'playback';
+
+  const screen = (() => {
+    switch (route) {
+      case 'live':
+        return (
+          <LiveView
+            focusId={focusCamId}
+            setFocusId={setFocusCamId}
+            onOpenPlayback={openPlayback}
+            tour={tour}
+            onStopTour={() => setTour(null)}
+          />
+        );
+      case 'playback':
+        return (
+          <Playback
+            key={playbackTarget?.key ?? 'pb'}
+            camera={playbackTarget ? data.getCam(playbackTarget.camId) ?? null : null}
+            initialAt={playbackTarget?.at}
+          />
+        );
+      case 'search':
+        return <Search onOpenPlayback={openPlayback} />;
+      case 'devices':
+        return <Devices onOpenLive={openLive} />;
+      case 'storage':
+        return <Storage />;
+      case 'users':
+        return <Users />;
+      case 'health':
+        return <SystemHealth />;
+      case 'alerts':
+        return <AlertsFeed onOpenPlayback={openPlayback} />;
+      case 'settings':
+        return <Settings theme={theme} setTheme={setTheme} onOpenOnboarding={() => setShowOnboarding(true)} />;
+    }
+  })();
+
+  void claims; // granular role-gating is a follow-up; the API enforces
+
+  if (showOnboarding) {
+    return <Onboarding onComplete={() => setShowOnboarding(false)} />;
+  }
+
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg-primary)' }}>
+      <ConsoleTopBar
+        username={username}
+        theme={theme}
+        setTheme={setTheme}
+        health={health}
+        onOpenHealth={() => navigate('health')}
+        onOpenUsers={() => navigate('users')}
+        onLogout={onLogout}
+      />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <IconRail
+          active={route}
+          onNavigate={navigate}
+          onAlerts={() => setAlertsPanelOpen((o) => !o)}
+          alertsCount={data.unreadCount}
+        />
+        {sidePanel && (
+          <CameraPanel
+            open={camPanelOpen}
+            onClose={() => setCamPanelOpen(false)}
+            onPick={(c) => { if (route === 'playback') openPlayback(c.id); else openLive(c.id); }}
+            activeId={focusCamId || playbackTarget?.camId || null}
+            onStartTour={startTour}
+            activeTour={tour}
+          />
+        )}
+        {sidePanel && !camPanelOpen && (
+          <button
+            onClick={() => setCamPanelOpen(true)}
+            title="Show cameras (C)"
+            style={{ width: 20, background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', borderTop: 'none', borderBottom: 'none', borderLeft: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Icon name="panel-left-open" size={12} />
+          </button>
+        )}
+        {screen}
+        <AlertsPanel
+          open={alertsPanelOpen}
+          onClose={() => setAlertsPanelOpen(false)}
+          onOpenFull={() => { setAlertsPanelOpen(false); navigate('alerts'); }}
+          onOpenPlayback={openPlayback}
+        />
+      </div>
+      <FooterStrip
+        health={health}
+        volumes={volumes}
+        onOpenHealth={() => navigate('health')}
+        onOpenStorage={() => navigate('storage')}
+      />
+    </div>
+  );
+}

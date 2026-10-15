@@ -1,0 +1,30 @@
+# Synology deployment variant — bind mounts on volume1 instead of
+# named volumes, so footage lands on the storage pool and the identity
+# dir sits in the usual DSM docker folder.
+#
+# Prep (once):
+#   - DSM Control Panel → Shared Folder → create "surveillance"
+#   - ssh: sudo mkdir -p /volume1/docker/raikada/data
+#
+# Run:
+#   cd ~/raikada/docker
+#   sudo docker compose -f docker-compose.synology.yml up -d --build
+services:
+  raikada-nvr:
+    build:
+      context: ..
+      dockerfile: docker/consumer.Dockerfile
+      args:
+        VERSION: v1.3.0
+    image: raikada-nvr:latest
+    container_name: raikada-nvr
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # Identity: keys, SQLite DB, TLS. SMALL — back this folder up;
+      # losing it means re-adopting cameras and re-creating users.
+      - /volume1/docker/raikada/data:/data
+      # Footage: segments, snapshots, clip exports.
+      - /volume1/surveillance:/recordings
+    environment:
+      - TZ=America/Chicago

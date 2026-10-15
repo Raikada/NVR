@@ -253,10 +253,11 @@ func (a *API) onV1CameraCapabilitiesGet(ctx *gin.Context) {
 // probed that has no dedicated column. SP4 reads snapshot_uri from
 // here.
 type vendorCapabilities struct {
-	Device      onvif.DeviceInformation `json:"device"`
-	SnapshotURI string                  `json:"snapshot_uri,omitempty"`
-	EventsXAddr string                  `json:"events_xaddr,omitempty"`
-	OnvifXAddr  string                  `json:"onvif_xaddr"`
+	Device       onvif.DeviceInformation `json:"device"`
+	SnapshotURI  string                  `json:"snapshot_uri,omitempty"`
+	EventsXAddr  string                  `json:"events_xaddr,omitempty"`
+	OnvifXAddr   string                  `json:"onvif_xaddr"`
+	SubStreamURI string                  `json:"sub_stream_uri,omitempty"`
 }
 
 func capabilitiesRowFromReport(cameraID, xaddr string, r *onvif.CapabilityReport, now time.Time) (*store.CameraCapabilities, error) {
@@ -265,10 +266,11 @@ func capabilitiesRowFromReport(cameraID, xaddr string, r *onvif.CapabilityReport
 		return nil, err
 	}
 	vendor, err := json.Marshal(vendorCapabilities{
-		Device:      r.Device,
-		SnapshotURI: r.SnapshotURI,
-		EventsXAddr: r.EventsXAddr,
-		OnvifXAddr:  xaddr,
+		Device:       r.Device,
+		SnapshotURI:  r.SnapshotURI,
+		EventsXAddr:  r.EventsXAddr,
+		OnvifXAddr:   xaddr,
+		SubStreamURI: r.SubStreamURI,
 	})
 	if err != nil {
 		return nil, err

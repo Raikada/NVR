@@ -49,10 +49,10 @@ type userWire struct {
 }
 
 func userToWire(u *store.LocalUser) userWire {
-	role := string(rbac.RoleViewer)
-	// roles table seeds id values "role_admin" / "role_viewer"; the wire
-	// shape carries the role name (admin / viewer) for client clarity.
-	if u.IsAdmin || u.RoleID == "role_admin" {
+	// The wire shape carries the role name; ids live in the roles
+	// table. IsAdmin overrides for the pre-migration bootstrap admin.
+	role := string(rbac.RoleFromID(u.RoleID))
+	if u.IsAdmin {
 		role = string(rbac.RoleAdmin)
 	}
 	return userWire{
@@ -71,6 +71,12 @@ func roleIDForName(role string) string {
 		return "role_admin"
 	case "viewer":
 		return "role_viewer"
+	case "owner":
+		return "role_owner"
+	case "operator":
+		return "role_operator"
+	case "audit":
+		return "role_audit"
 	}
 	return ""
 }
@@ -137,8 +143,8 @@ func (a *API) onV1UsersCreate(ctx *gin.Context) {
 	if req.Role == "" {
 		req.Role = string(rbac.RoleViewer)
 	}
-	if req.Role != string(rbac.RoleAdmin) && req.Role != string(rbac.RoleViewer) {
-		a.writeError(ctx, http.StatusBadRequest, errors.New("role must be 'admin' or 'viewer'"))
+	if roleIDForName(req.Role) == "" {
+		a.writeError(ctx, http.StatusBadRequest, errors.New("role must be one of admin, owner, operator, viewer, audit"))
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
@@ -218,8 +224,8 @@ func (a *API) onV1UsersUpdate(ctx *gin.Context) {
 	}
 	if req.Role != nil {
 		role := *req.Role
-		if role != string(rbac.RoleAdmin) && role != string(rbac.RoleViewer) {
-			a.writeError(ctx, http.StatusBadRequest, errors.New("role must be 'admin' or 'viewer'"))
+		if roleIDForName(role) == "" {
+			a.writeError(ctx, http.StatusBadRequest, errors.New("role must be one of admin, owner, operator, viewer, audit"))
 			return
 		}
 		if err := a.Store.LocalUsers.SetRole(ctx.Request.Context(), id, roleIDForName(role)); err != nil {
@@ -270,7 +276,7 @@ func (a *API) onV1UsersSetRole(ctx *gin.Context) {
 		return
 	}
 	if req.Role != string(rbac.RoleAdmin) && req.Role != string(rbac.RoleViewer) {
-		a.writeError(ctx, http.StatusBadRequest, errors.New("role must be 'admin' or 'viewer'"))
+		a.writeError(ctx, http.StatusBadRequest, errors.New("role must be one of admin, owner, operator, viewer, audit"))
 		return
 	}
 	if err := a.Store.LocalUsers.SetRole(ctx.Request.Context(), id, roleIDForName(req.Role)); err != nil {

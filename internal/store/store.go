@@ -46,6 +46,7 @@ type Store struct {
 	CameraCredentials  *CameraCredentialsRepo
 	CameraCapabilities *CameraCapabilitiesRepo
 	CameraHealth       *CameraHealthRepo
+	UserPrefs          *UserPrefsRepo
 	RecordingPolicies  *RecordingPoliciesRepo
 	RecordingSchedules *RecordingSchedulesRepo
 	EventTypes         *EventTypesRepo
@@ -101,6 +102,7 @@ func Open(path string) (*Store, error) {
 	s.CameraCredentials = &CameraCredentialsRepo{db: db}
 	s.CameraCapabilities = &CameraCapabilitiesRepo{db: db}
 	s.CameraHealth = &CameraHealthRepo{db: db}
+	s.UserPrefs = &UserPrefsRepo{db: db}
 	s.RecordingPolicies = &RecordingPoliciesRepo{db: db}
 	s.RecordingSchedules = &RecordingSchedulesRepo{db: db}
 	s.EventTypes = &EventTypesRepo{db: db}

@@ -51,7 +51,17 @@ func TestRoles_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(got) != 2 {
-		t.Errorf("expected 2 roles, got %d", len(got))
+	// Phase A B2 grew the seed set to five tiers.
+	if len(got) != 5 {
+		t.Errorf("expected 5 roles, got %d", len(got))
+	}
+	names := map[string]bool{}
+	for _, r := range got {
+		names[r.Name] = true
+	}
+	for _, want := range []string{"admin", "viewer", "owner", "operator", "audit"} {
+		if !names[want] {
+			t.Errorf("missing seeded role %q", want)
+		}
 	}
 }

@@ -267,3 +267,26 @@ func scanEvent(row rowScanner) (*Event, error) {
 	e.ExpiresAt = t
 	return &e, nil
 }
+
+// AcknowledgeAll marks every unacknowledged event acknowledged,
+// optionally scoped to a camera and/or an occurred-at cutoff (Phase A
+// B3). Returns the number of rows acknowledged.
+func (r *EventsRepo) AcknowledgeAll(ctx context.Context, cameraID string, before time.Time, userID string) (int, error) {
+	q := `UPDATE events SET acknowledged_at = ?, acknowledged_by = NULLIF(?, '')
+	      WHERE acknowledged_at IS NULL`
+	args := []any{Now(), userID}
+	if cameraID != "" {
+		q += ` AND camera_id = ?`
+		args = append(args, cameraID)
+	}
+	if !before.IsZero() {
+		q += ` AND occurred_at <= ?`
+		args = append(args, FormatTime(before))
+	}
+	res, err := r.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}

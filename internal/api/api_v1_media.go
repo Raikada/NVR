@@ -21,7 +21,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/playback"
 	"github.com/bluenviron/mediamtx/internal/rbac"
 )
 
@@ -38,6 +40,7 @@ func (a *API) registerV1Media(r gin.IRouter) {
 	r.GET("/media/snapshots/:event_id/:kind", a.onV1MediaSnapshot)
 	r.GET("/media/clips/:clip_id", a.onV1MediaClip)
 	r.POST("/events/:id/clip", rbac.RequirePerm(rbac.PermClipCreate, a.auditEmitter()), a.onV1EventClipPost)
+	r.GET("/cameras/:id/coverage", rbac.RequirePerm(rbac.PermRecordingList, a.auditEmitter()), a.onV1CameraCoverage)
 }
 
 // signedMediaURL builds a relative signed URL for a media path.
@@ -209,4 +212,70 @@ func (a *API) GrabLiveJPEG(ctx context.Context, pathName string) ([]byte, error)
 		return nil, err
 	}
 	return snapshotJPEGFromFragment(ctx, data)
+}
+
+// onV1CameraCoverage handles GET /v1/cameras/:id/coverage?from&to —
+// the timeline's footage bars and gaps (Phase A B4). Durations are
+// parsed from the fmp4 parts by the playback package, so ranges are
+// true coverage, not filename guesses.
+func (a *API) onV1CameraCoverage(ctx *gin.Context) {
+	camID := ctx.Param("id")
+
+	a.mutex.RLock()
+	c := a.Conf
+	a.mutex.RUnlock()
+	if c == nil {
+		a.writeError(ctx, http.StatusInternalServerError, errors.New("recorder configuration not loaded"))
+		return
+	}
+
+	// Camera id → on-disk path name, mirroring the clips flow
+	// (registry walk first, static reverse lookup second).
+	pathName := ""
+	a.synthesize()
+	reg := a.recordingRegistry()
+	reg.mu.Lock()
+	if reg.pathNameByCameraID != nil {
+		pathName = reg.pathNameByCameraID[camID]
+	}
+	reg.mu.Unlock()
+	if pathName == "" {
+		if name, ok := pathNameFromCameraID(c.Paths, camID); ok {
+			pathName = name
+		}
+	}
+	if pathName == "" {
+		a.writeError(ctx, http.StatusNotFound, errors.New("camera not found"))
+		return
+	}
+
+	var from, to time.Time
+	if v := ctx.Query("from"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			a.writeError(ctx, http.StatusBadRequest, errors.New("from must be RFC3339"))
+			return
+		}
+		from = t
+	}
+	if v := ctx.Query("to"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			a.writeError(ctx, http.StatusBadRequest, errors.New("to must be RFC3339"))
+			return
+		}
+		to = t
+	}
+
+	pathConf, _, err := conf.FindPathConf(c.Paths, pathName)
+	if err != nil {
+		a.writeError(ctx, http.StatusNotFound, errors.New("camera not found"))
+		return
+	}
+	items, err := playback.Coverage(pathConf, pathName, from, to)
+	if err != nil {
+		a.writeError(ctx, http.StatusInternalServerError, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"items": items})
 }

@@ -38,6 +38,9 @@ type Change struct {
 type CameraPathSpec struct {
 	Name      string
 	SourceURL string
+	// NoRecord marks auxiliary paths (e.g. the low-res "<name>_sub"
+	// grid stream) that must stream but never hit the recorder.
+	NoRecord bool
 }
 
 // HealthSnapshot is the per-camera health view returned by Service.Health.

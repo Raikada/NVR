@@ -2,6 +2,7 @@ package cameras
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/bluenviron/mediamtx/internal/cameracred"
@@ -132,6 +133,40 @@ func (s *Service) MaterializeRTSPURL(ctx context.Context, cameraID string) (stri
 		return "", err
 	}
 	return cameracred.MaterializeRTSPURL(cam.SourceURL, creds.Username, string(plain)), nil
+}
+
+// SubStreamURL returns the camera's low-res sub-stream URL (from the
+// probed capabilities' vendor JSON) with credentials inlined, or ""
+// when the camera has no sub-stream. Callers must NEVER log the result.
+func (s *Service) SubStreamURL(ctx context.Context, cameraID string) (string, error) {
+	caps, err := s.store.CameraCapabilities.Get(ctx, cameraID)
+	if errors.Is(err, store.ErrCameraCapabilitiesNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if caps.VendorCapabilitiesJSON == "" {
+		return "", nil
+	}
+	var vendor struct {
+		SubStreamURI string `json:"sub_stream_uri"`
+	}
+	if err := json.Unmarshal([]byte(caps.VendorCapabilitiesJSON), &vendor); err != nil || vendor.SubStreamURI == "" {
+		return "", nil //nolint:nilerr // malformed vendor JSON degrades to "no sub-stream"
+	}
+	creds, err := s.store.CameraCredentials.Get(ctx, cameraID)
+	if errors.Is(err, store.ErrCameraCredentialsNotFound) {
+		return vendor.SubStreamURI, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	plain, err := s.vault.Decrypt(creds.PasswordCiphertext, creds.PasswordNonce)
+	if err != nil {
+		return "", err
+	}
+	return cameracred.MaterializeRTSPURL(vendor.SubStreamURI, creds.Username, string(plain)), nil
 }
 
 // PlaintextCredentials decrypts and returns the camera's stored RTSP

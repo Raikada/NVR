@@ -171,3 +171,25 @@ func TestMediaClientAuthFailure(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "authentication")
 }
+
+// fixtureServerFn is fixtureServer with a function matcher — needed
+// when the same SOAP action must return different fixtures by body
+// content (e.g. per-profile GetStreamUri).
+func fixtureServerFn(t *testing.T, match func(body string) (string, bool)) (*httptest.Server, *[]string) {
+	t.Helper()
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1<<20)
+		n, _ := r.Body.Read(buf)
+		body := string(buf[:n])
+		bodies = append(bodies, body)
+		if resp, ok := match(body); ok {
+			w.Header().Set("Content-Type", "application/soap+xml")
+			_, _ = w.Write([]byte(resp))
+			return
+		}
+		http.Error(w, "no fixture for request", http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}

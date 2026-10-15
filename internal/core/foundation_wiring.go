@@ -138,11 +138,20 @@ func cameraSpecToConfPath(spec cameras.CameraPathSpec, base *conf.Path, tmpl *co
 		p.SetDefaults()
 	}
 	p.Name = spec.Name
-	p.Source = spec.SourceURL
+	// Publish-type cameras have no source URL; keep the base/template
+	// Source ("publisher"). An empty Source would route into the
+	// static-source handler and panic the path goroutine.
+	if spec.SourceURL != "" {
+		p.Source = spec.SourceURL
+	}
 	// Record fields: leave as-is from base; the per-camera RecordingPolicy
 	// is materialized into mediamtx.yml separately by the existing
 	// /v1/cameras flow. The pathBridge's job is just to keep the source
-	// URL fresh after a credential rotation.
+	// URL fresh after a credential rotation. Exception: NoRecord specs
+	// (the "<name>_sub" grid streams) must never reach the recorder.
+	if spec.NoRecord {
+		p.Record = false
+	}
 	return &p
 }
 
