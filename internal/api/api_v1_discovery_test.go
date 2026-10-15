@@ -157,6 +157,39 @@ func TestAdoptHappyPath(t *testing.T) {
 	require.True(t, caps.HasMotion)
 }
 
+// Phase A B7: an adopt whose probe resolved a sub-stream must persist
+// its URI into the vendor capabilities JSON so the path bridge can
+// register the "<name>_sub" grid path.
+func TestAdoptPersistsSubStreamURI(t *testing.T) {
+	_, hc, st, _ := startDiscoveryAPI(t,
+		func(_ context.Context, _, _, _ string) (*onvif.CapabilityReport, error) {
+			r := amcrestReport()
+			r.SubStreamToken = "sub"
+			r.SubStreamURI = "rtsp://192.168.1.110:554/cam/realmonitor?channel=1&subtype=1"
+			return r, nil
+		})
+
+	body := `{"endpoint_reference":"urn:uuid:cam-110","name":"front_sub","rtsp_username":"admin","rtsp_password":"pw"}`
+	res, err := hc.Post("http://localhost:9997/v1/discovery/adopt", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	var out struct {
+		Camera struct {
+			ID string `json:"id"`
+		} `json:"camera"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+
+	caps, err := st.CameraCapabilities.Get(context.Background(), out.Camera.ID)
+	require.NoError(t, err)
+	var vendor struct {
+		SubStreamURI string `json:"sub_stream_uri"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(caps.VendorCapabilitiesJSON), &vendor))
+	require.Equal(t, "rtsp://192.168.1.110:554/cam/realmonitor?channel=1&subtype=1", vendor.SubStreamURI)
+}
+
 func TestAdoptBadCredentialsReturns400(t *testing.T) {
 	_, hc, st, _ := startDiscoveryAPI(t,
 		func(_ context.Context, _, _, _ string) (*onvif.CapabilityReport, error) {
