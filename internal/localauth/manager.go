@@ -285,6 +285,36 @@ func (m *Manager) ChangePassword(ctx context.Context, userID, currentPassword, n
 	}, nil
 }
 
+// Refresh issues a fresh token for an already-authenticated user —
+// the sliding-session primitive (Phase A B1). The caller proves
+// identity by presenting a still-valid token at the API layer; this
+// re-checks the account is active before extending.
+func (m *Manager) Refresh(ctx context.Context, userID string) (*LoginResult, error) {
+	user, err := m.store.LocalUsers.GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrInvalidCredentials
+		}
+		return nil, err
+	}
+	if !user.IsActive {
+		return nil, ErrAccountInactive
+	}
+	tok, exp, scope, err := m.issueToken(user)
+	if err != nil {
+		return nil, err
+	}
+	return &LoginResult{
+		Token:              tok,
+		ExpiresAt:          exp,
+		UserID:             user.ID,
+		Username:           user.Username,
+		IsAdmin:            user.IsAdmin,
+		MustChangePassword: user.MustChangePassword,
+		Scope:              scope,
+	}, nil
+}
+
 // AdminPermissions is the permission set the bootstrap admin's JWT
 // carries — the full ADR 0010 admin role. Mirrors
 // management/internal/auth.RoleAdmin permissions exactly because the

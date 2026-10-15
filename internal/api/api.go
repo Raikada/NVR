@@ -222,6 +222,7 @@ func (a *API) Initialize() error {
 	group.POST("/auth/login", a.onV1AuthLogin)
 	group.POST("/auth/logout", a.onV1AuthLogout)
 	group.POST("/auth/password", a.onV1AuthPassword)
+	group.POST("/auth/refresh", a.onV1AuthRefresh)
 	group.GET("/auth/me", a.onV1AuthMe)
 
 	// Phase 5 Task 5.2: per-camera credentials, probe, health,
@@ -535,6 +536,17 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		setPrincipalOnContext(ctx, unauthenticatedPrincipal())
 		ctx.Next()
 		return
+	}
+
+	// Phase A B1: EventSource cannot send Authorization headers, so
+	// the SSE route — and ONLY that route — accepts the bearer token
+	// as ?access_token=. Promote it into the header before the normal
+	// credential extraction; all other routes stay header/cookie-only.
+	if ctx.Request.URL.Path == "/v1/events/stream" &&
+		ctx.Request.Header.Get("Authorization") == "" {
+		if qt := ctx.Query("access_token"); qt != "" {
+			ctx.Request.Header.Set("Authorization", "Bearer "+qt)
+		}
 	}
 
 	req := &auth.Request{

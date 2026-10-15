@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -35,8 +36,8 @@ const sessionCookieName = "raikada_session"
 // login response's user block plus the resolved permission set so the
 // SPA can hide/show controls without a separate round trip.
 type authMeResponse struct {
-	User        authMeUser         `json:"user"`
-	Permissions []rbac.Permission  `json:"permissions"`
+	User        authMeUser        `json:"user"`
+	Permissions []rbac.Permission `json:"permissions"`
 }
 
 type authMeUser struct {
@@ -247,5 +248,67 @@ func (a *API) authPasswordChangedEmit(_ context.Context, userID, username string
 		ResourceKind: "local_user",
 		ResourceID:   userID,
 		Attributes:   map[string]string{"username": username},
+	})
+}
+
+// onV1AuthRefresh handles POST /v1/auth/refresh — the sliding-session
+// primitive (Phase A B1). The still-valid bearer token proves
+// identity; the response carries a fresh token with a full TTL. Kept
+// permission-free (like /auth/password) so must-change-password users
+// can also stay alive through the change flow.
+func (a *API) onV1AuthRefresh(ctx *gin.Context) {
+	if a.LocalAuth == nil {
+		ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "local auth not initialized",
+		})
+		return
+	}
+	principal := principalFromContext(ctx)
+	sub := principal.Sub
+	if sub == "" {
+		// Auth-manager paths that don't project JWT claims (legacy
+		// internal auth, test harnesses): verify the bearer with the
+		// localauth signer directly — it minted it.
+		raw := strings.TrimPrefix(ctx.GetHeader("Authorization"), "Bearer ")
+		if raw != "" && raw != ctx.GetHeader("Authorization") {
+			if claims, verr := a.LocalAuth.VerifyToken(raw); verr == nil {
+				sub, _ = claims["sub"].(string)
+			}
+		}
+	}
+	if sub == "" {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "authentication error",
+		})
+		return
+	}
+	res, err := a.LocalAuth.Refresh(ctx.Request.Context(), sub)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusUnauthorized, &defs.APIError{
+			Status: defs.APIErrorStatusError,
+			Error:  "authentication error",
+		})
+		return
+	}
+
+	maxAge := int(time.Until(res.ExpiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	ctx.SetSameSite(http.SameSiteLaxMode)
+	ctx.SetCookie(sessionCookieName, res.Token, maxAge, "/", "", true, true)
+
+	ctx.JSON(http.StatusOK, authLoginResponse{
+		AccessToken: res.Token,
+		ExpiresAt:   res.ExpiresAt,
+		User: authMeUser{
+			ID:                 res.UserID,
+			Username:           res.Username,
+			Role:               roleNameForLogin(res.IsAdmin),
+			IsActive:           true,
+			MustChangePassword: res.MustChangePassword,
+		},
 	})
 }
