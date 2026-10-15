@@ -1296,3 +1296,67 @@ export interface EventClipResponse {
 export const createEventClip = (id: string, body?: EventClipBody) =>
   api.post<EventClipResponse>(`/events/${id}/clip`, body ?? {});
 
+/* ---------- Phase A (v1.4.0) console surface ---------- */
+
+// Coverage — merged recorded ranges for the playback timeline.
+export interface CoverageEntry {
+  start: string; // RFC3339
+  duration: number; // seconds
+}
+export const getCameraCoverage = (id: string, from?: string, to?: string) => {
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  return api
+    .get<{ items: CoverageEntry[] }>(`/cameras/${id}/coverage${qs.toString() ? `?${qs}` : ''}`)
+    .then((r) => r.items ?? []);
+};
+
+// PTZ — continuous move (velocities -1..1); stop ends the motion.
+export const ptzMove = (id: string, pan: number, tilt: number, zoom = 0) =>
+  api.post<{ status: string }>(`/cameras/${id}/ptz/move`, { pan, tilt, zoom });
+export const ptzStop = (id: string) => api.post<{ status: string }>(`/cameras/${id}/ptz/stop`, {});
+export const ptzHome = (id: string) => api.post<{ status: string }>(`/cameras/${id}/ptz/home`, {});
+export interface PTZPreset {
+  token: string;
+  name: string;
+}
+export const ptzPresets = (id: string) =>
+  api.get<{ items: PTZPreset[] }>(`/cameras/${id}/ptz/presets`).then((r) => r.items ?? []);
+export const ptzPresetGoto = (id: string, token: string) =>
+  api.post<{ status: string }>(`/cameras/${id}/ptz/presets/${encodeURIComponent(token)}/goto`, {});
+export const ptzPresetSave = (id: string, name: string) =>
+  api.post<{ token: string; name: string }>(`/cameras/${id}/ptz/presets`, { name });
+export const rebootCamera = (id: string) =>
+  api.post<{ message: string }>(`/cameras/${id}/reboot`, {});
+
+// Per-camera stream stats (availability-based online flag).
+export interface CameraStats {
+  online: boolean;
+  online_since?: string;
+  bytes_received: number;
+  bytes_sent: number;
+  frames_in_error: number;
+  readers: number;
+  tracks: string[];
+  ts: string;
+}
+export const getCameraStats = (id: string) => api.get<CameraStats>(`/cameras/${id}/stats`);
+
+// Per-user UI prefs — opaque JSON values, merge-upsert by key.
+export type MyPrefs = Record<string, unknown>;
+export const getMyPrefs = () => api.get<MyPrefs>('/me/prefs');
+export const putMyPrefs = (patch: MyPrefs) => api.put<MyPrefs>('/me/prefs', patch);
+
+// Acknowledge-all + bookmarks.
+export const ackAllEvents = (cameraID?: string, before?: string) =>
+  api.post<{ acknowledged: number }>('/events/acknowledge-all', {
+    ...(cameraID ? { camera_id: cameraID } : null),
+    ...(before ? { before } : null),
+  });
+export const createBookmark = (cameraID: string, note?: string, time?: string) =>
+  api.post<EventRecord>(`/cameras/${cameraID}/bookmarks`, {
+    ...(note ? { note } : null),
+    ...(time ? { time } : null),
+  });
+

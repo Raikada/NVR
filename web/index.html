@@ -4,8 +4,15 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/assets/logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Raikada — Recording Server</title>
+    <title>Raikada — Operator Console</title>
     <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      try {
+        var t = localStorage.getItem('rk.theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    </script>
     <style>
       html, body, #root { height: 100%; margin: 0; }
       body { background: var(--bg-primary); overflow: hidden; }
@@ -20,7 +27,14 @@
       .pulse-dot { animation: pulse 1.2s ease-in-out infinite; }
       @keyframes scanline { 0% { transform: translateX(0); } 100% { transform: translateX(100%); } }
       .scanline { animation: scanline 1.4s linear infinite; }
-      button, input { font-family: inherit; }
+      @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+      @keyframes slidein { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: none; } }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+      button, input, select { font-family: inherit; }
+      a { color: var(--accent); }
+      a:hover { color: var(--accent-hover); }
+      input::placeholder { color: var(--text-muted); }
     </style>
   </head>
   <body>
