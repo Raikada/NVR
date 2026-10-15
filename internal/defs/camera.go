@@ -69,6 +69,13 @@ type Camera struct {
 	RecordingServerID string `json:"recording_server_id"`
 	Name              string `json:"name"`
 
+	// DisplayName is the operator-editable label. Name doubles as the
+	// recorder's stream path (ADR 0009) and keys the on-disk recording
+	// directory, so it is immutable after creation; DisplayName is the
+	// rename surface. Lives on the store row, not the conf path; the
+	// API overlays it on reads and accepts it via PATCH.
+	DisplayName string `json:"display_name,omitempty"`
+
 	SourceType     CameraSourceType `json:"source_type"`
 	SourceURL      string           `json:"source_url"`
 	CredentialsRef *string          `json:"credentials_ref,omitempty"`

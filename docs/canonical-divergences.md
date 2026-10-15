@@ -1039,3 +1039,51 @@ adjacent on disk but invisible to that regex.
 
 The cascading recording delete also removes the sidecar so meta
 files don't outlive the segment they document.
+
+### D20. Camera `display_name` is the rename surface; `name` is immutable
+
+Added 2026-10-15 (console-polish slice). The canonical Camera has a
+single `name`. On the recorder, `name` doubles as the stream path
+(ADR 0009) and keys the on-disk recording directory
+(`recordPath: .../%path/...`), so renaming it would orphan existing
+footage from the timeline and break live URLs — `PATCH /v1/cameras/:id`
+has always silently ignored `name`.
+
+The consumer console needs a rename that owners can use safely, so
+the store row's existing `display_name` column is now surfaced on the
+wire: returned (when set) on camera GET/list, accepted via PATCH
+(presence-gated; explicit `""` clears back to the path name). The
+console shows `display_name || name` everywhere and uses `name`
+exclusively for media URLs. Resolving this against the canonical model
+(either canonicalizing `display_name` or making `name` label-only)
+needs a platform ADR; until then this entry tracks the gap.
+
+### D21. Same-origin media proxies `/hls/*`, `/playback/*` + session cookie
+
+The console is served from the API listener, HTTPS by default. The
+HLS (`:8888`) and playback (`:9996`) listeners are plain HTTP, so
+browser fetches from the console either fail the TLS handshake
+(same-scheme URL) or are blocked as mixed content (hardcoded
+`http://`), and NAS deployments may publish only the API port. The
+recorder therefore reverse-proxies both listeners through its own
+origin (`media_proxy.go`, shipped on the v1.5.1–v1.5.6 hotfix line):
+
+- `GET /hls/<path>/...` → HLS server (manifests + segments)
+- `GET /playback/get?path&start&duration&format` → playback server
+
+The proxies are AUTHENTICATED: login sets the recorder-local JWT as
+an HttpOnly session cookie, middlewareAuth promotes cookie or
+`?access_token=` to a bearer on these paths (video elements can't
+send Authorization headers), and the proxy carries the query token
+across the HLS cookieCheck redirect for Safari's native player.
+Neither the cookie nor the proxy routes exist in the canonical model;
+tracked here until an ADR either canonicalizes a media-proxy surface
+or moves media delivery behind the API listener outright.
+
+Console thumbnails use the pre-existing JWT-gated
+`GET /v1/recorder/cameras/:id/snapshot` (`camera.live.view`), fetched
+with the bearer token and rendered as a blob URL — no new snapshot
+endpoint was added (console-polish slice, 2026-10-15). The same slice
+fixed `GET /v1/recordings/:id/playback` to return the relative
+`/playback/get?...` URL (it previously emitted `scheme://:9996/get`
+with an empty hostname, unusable by any client).

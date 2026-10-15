@@ -25,6 +25,7 @@ import (
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
+	"github.com/bluenviron/mediamtx/internal/store"
 )
 
 // cameraListResponse is the paginated list shape returned by GET
@@ -109,12 +110,28 @@ func (a *API) onV1CamerasList(ctx *gin.Context) {
 	out := &cameraListResponse{
 		Items: make([]defs.Camera, 0, len(names)),
 	}
+	// Store-row-only fields (display_name, event_channel) in one query
+	// rather than a per-camera Get.
+	rowByID := map[string]*store.Camera{}
+	if a.CamerasService != nil {
+		if rows, err := a.CamerasService.List(ctx.Request.Context(), store.ListCamerasFilter{Limit: 500}); err == nil {
+			for _, r := range rows {
+				rowByID[r.ID] = r
+			}
+		}
+	}
+
 	for _, name := range names {
 		p := c.Paths[name]
 		if p == nil {
 			continue
 		}
-		out.Items = append(out.Items, a.cameraFromConfPath(c, p))
+		cam := a.cameraFromConfPath(c, p)
+		if row, ok := rowByID[cam.ID]; ok {
+			cam.EventChannel = row.EventChannel
+			cam.DisplayName = row.DisplayName
+		}
+		out.Items = append(out.Items, cam)
 	}
 
 	out.ItemCount = len(out.Items)
@@ -151,8 +168,8 @@ func (a *API) onV1CamerasGet(ctx *gin.Context) {
 }
 
 // overlayStoreFields folds store-row-only camera fields (event_channel,
-// SP3) onto a conf-path-derived wire object. Best-effort: a missing row
-// leaves the fields zero.
+// SP3; display_name) onto a conf-path-derived wire object. Best-effort:
+// a missing row leaves the fields zero.
 func (a *API) overlayStoreFields(ctx *gin.Context, cam *defs.Camera) {
 	if a.CamerasService == nil || cam.ID == "" {
 		return
@@ -162,6 +179,7 @@ func (a *API) overlayStoreFields(ctx *gin.Context, cam *defs.Camera) {
 		return
 	}
 	cam.EventChannel = row.EventChannel
+	cam.DisplayName = row.DisplayName
 }
 
 // decodeCamera reads a Camera body for POST/PUT/PATCH. Tenant scoping
@@ -434,6 +452,9 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	}
 	// Phase 5: PATCH must reject the `credentials` field; operators
 	// rotate via the dedicated PUT /v1/cameras/:id/credentials.
+	// display_name needs a presence probe too: "" is a valid value
+	// (clear back to the path name) and omitempty can't express it.
+	var displayName *string
 	{
 		var probe map[string]json.RawMessage
 		if err := json.Unmarshal(body, &probe); err == nil {
@@ -441,6 +462,18 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 				a.writeError(ctx, http.StatusBadRequest,
 					fmt.Errorf("credentials cannot be set via PATCH; use PUT /v1/cameras/{id}/credentials"))
 				return
+			}
+			if raw, has := probe["display_name"]; has {
+				var v string
+				if err := json.Unmarshal(raw, &v); err != nil {
+					a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("display_name must be a string"))
+					return
+				}
+				if len(v) > 120 {
+					a.writeError(ctx, http.StatusBadRequest, fmt.Errorf("display_name too long (max 120)"))
+					return
+				}
+				displayName = &v
 			}
 		}
 	}
@@ -560,6 +593,19 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		return
 	}
 
+	// display_name is store-row-only (the rename surface: Name is the
+	// immutable stream path). Presence-gated so an omitted field
+	// preserves, while an explicit "" clears back to the path name.
+	if displayName != nil && a.CamerasService != nil {
+		if row, err := a.CamerasService.Get(ctx.Request.Context(), id); err == nil {
+			row.DisplayName = *displayName
+			if err := a.CamerasService.Update(ctx.Request.Context(), row); err != nil {
+				a.writeError(ctx, http.StatusInternalServerError, err)
+				return
+			}
+		}
+	}
+
 	a.Conf = newConf
 	a.Parent.APIConfigSet(newConf)
 
@@ -577,6 +623,7 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 	a.emitConfigAppliedLocked("camera", id, "update", map[string]string{"camera_id": id})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	a.overlayStoreFields(ctx, &cam2)
 	ctx.JSON(http.StatusOK, &cam2)
 }
 
@@ -677,6 +724,7 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	a.emitConfigAppliedLocked("camera", id, "replace", map[string]string{"camera_id": id})
 
 	cam2 := a.cameraFromConfPath(newConf, newConf.Paths[name])
+	a.overlayStoreFields(ctx, &cam2)
 	ctx.JSON(http.StatusOK, &cam2)
 }
 
