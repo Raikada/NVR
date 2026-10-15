@@ -126,16 +126,27 @@ Non-ONVIF sources: **Add Camera** and paste an RTSP URL manually.
 - **Users** — add `viewer` accounts for household members (read/watch,
   no admin).
 
-## 6 — Upgrades
+## 6 — Upgrades (pull-based — the easy way)
+
+CI publishes a ready-made image to GHCR on every `v*` tag
+(`.github/workflows/consumer-image.yml`), so the NAS never builds from
+source after the first migration to the pull-based compose:
 
 ```bash
-cd raikada && git pull
-cd docker && docker compose up -d --build
+cd ~/raikada && ./update.sh          # pull → restart → prune → prints running version
 ```
 
-`/data` and `/recordings` live on volumes, so state (cameras, users,
-events, footage) survives rebuilds. Watch
-`docker logs raikada-nvr` for the schema migrations applying.
+(update.sh wraps `docker compose -f docker-compose.nas.yml pull && up -d`.)
+To release: `git tag v1.4.0 && git push origin v1.4.0` — CI builds and
+publishes; every NAS updates with the one command above. Pin a version
+by using `:v1.3.0` instead of `:latest` in docker-compose.nas.yml.
+
+`/data` and `/recordings` live on mounts, so state (cameras, users,
+events, footage) survives updates; schema migrations apply at boot —
+watch `docker logs raikada-nvr` the first start after an update.
+
+Building from source on the NAS (this page's Option A) remains the
+fallback when testing unreleased changes.
 
 ## Troubleshooting
 

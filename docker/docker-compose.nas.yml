@@ -1,0 +1,29 @@
+# NAS deployment, pull-based — the recommended way to run and update.
+# No source tree or toolchain needed on the NAS; CI publishes the image
+# to GHCR on every v* tag.
+#
+# First install, on the NAS (only these two files are needed):
+#   mkdir -p ~/raikada && cd ~/raikada
+#   curl -fsSLO https://raw.githubusercontent.com/Raikada/NVR/main/docker/docker-compose.nas.yml
+#   curl -fsSLO https://raw.githubusercontent.com/Raikada/NVR/main/docker/update.sh && chmod +x update.sh
+#   sudo mkdir -p /volume1/docker/raikada/data
+#   sudo docker compose -f docker-compose.nas.yml up -d
+#
+# Update (or just run ./update.sh):
+#   sudo docker compose -f docker-compose.nas.yml pull
+#   sudo docker compose -f docker-compose.nas.yml up -d
+#
+# Pin a specific version by replacing :latest with a tag, e.g. :v1.3.0.
+services:
+  raikada-nvr:
+    image: ghcr.io/raikada/nvr:latest
+    container_name: raikada-nvr
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # Identity: keys, SQLite DB, TLS. SMALL — back this folder up.
+      - /volume1/docker/raikada/data:/data
+      # Footage: segments, snapshots, clip exports.
+      - /volume1/surveillance:/recordings
+    environment:
+      - TZ=America/Chicago
