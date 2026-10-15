@@ -70,8 +70,8 @@ func TestEventRetention_List(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	// 7 seeded rows.
-	if len(got) != 7 {
+	// 7 foundation rows + bookmark (Phase A B3).
+	if len(got) != 8 {
 		t.Errorf("list count: %d", len(got))
 	}
 }

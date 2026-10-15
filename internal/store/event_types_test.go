@@ -24,8 +24,9 @@ func TestEventTypes_SeededRowsExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(all) != 12 {
-		t.Errorf("expected 12 seeded types; got %d", len(all))
+	// 12 foundation types + bookmark (Phase A B3).
+	if len(all) != 13 {
+		t.Errorf("expected 13 seeded types; got %d", len(all))
 	}
 }
 
