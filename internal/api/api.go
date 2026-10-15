@@ -128,6 +128,12 @@ type API struct {
 	NewPTZClientFn func(xaddr, username, password string) PTZController
 	RebootCameraFn func(ctx context.Context, xaddr, username, password string) (string, error)
 
+	// Same-origin media proxy targets ("host:port" of the local HLS /
+	// playback listeners). Empty disables the respective proxy. See
+	// media_proxy.go.
+	HLSProxyTarget      string
+	PlaybackProxyTarget string
+
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
 	networkProbe *networkProbe
@@ -428,6 +434,12 @@ func (a *API) Initialize() error {
 	group.POST("/onvif/event-subscriptions", a.requirePermission("event.read"), a.onV1OnvifEventSubscriptionsPost)
 	group.DELETE("/onvif/event-subscriptions/:id", a.requirePermission("event.read"), a.onV1OnvifEventSubscriptionsDelete)
 
+	// Same-origin media proxy (/hls/*, /playback/*) so the HTTPS
+	// console can reach the plain-HTTP media listeners without mixed
+	// content. Authenticated like /v1 (bearer, or the session cookie
+	// promoted in middlewareAuth).
+	a.registerMediaProxies(router)
+
 	// Static SPA bundle. Registered AFTER the /v1 group so the API
 	// surface takes precedence; gin's NoRoute catches every other
 	// GET and serves the SPA's index.html so hash-routed deep links
@@ -572,6 +584,20 @@ func (a *API) middlewareAuth(ctx *gin.Context) {
 		ctx.Request.Header.Get("Authorization") == "" {
 		if qt := ctx.Query("access_token"); qt != "" {
 			ctx.Request.Header.Set("Authorization", "Bearer "+qt)
+		}
+	}
+
+	// Media proxy paths: native <video> elements can't set an
+	// Authorization header. hls.js sets one per-request (preferred,
+	// always-fresh token); the <video src> paths fall back to
+	// ?access_token= or the login session cookie. Promote whichever is
+	// present for these routes only.
+	if isMediaProxyPath(ctx.Request.URL.Path) &&
+		ctx.Request.Header.Get("Authorization") == "" {
+		if qt := ctx.Query("access_token"); qt != "" {
+			ctx.Request.Header.Set("Authorization", "Bearer "+qt)
+		} else if ck, err := ctx.Request.Cookie(sessionCookieName); err == nil && ck.Value != "" {
+			ctx.Request.Header.Set("Authorization", "Bearer "+ck.Value)
 		}
 	}
 
