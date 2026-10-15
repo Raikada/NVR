@@ -124,6 +124,10 @@ type API struct {
 	// clip downloads).
 	Signer *mediasign.Signer
 
+	// Phase A B5 test seams: PTZ client + reboot call injection.
+	NewPTZClientFn func(xaddr, username, password string) PTZController
+	RebootCameraFn func(ctx context.Context, xaddr, username, password string) (string, error)
+
 	httpServer   *httpp.Server
 	mutex        sync.RWMutex
 	networkProbe *networkProbe
@@ -235,6 +239,9 @@ func (a *API) Initialize() error {
 
 	// SP4: signed media fetch + event-to-clip.
 	a.registerV1Media(group)
+
+	// Phase A B5: PTZ + camera reboot.
+	a.registerV1PTZ(group)
 
 	// Phase 5 Task 5.3: camera groups CRUD.
 	a.registerV1CameraGroups(group)
