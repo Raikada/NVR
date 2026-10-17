@@ -160,7 +160,10 @@ export function CameraTile({
         </>
       )}
       <Brackets />
-      {offline && (
+      {/* Offline overlay only when this tile would be showing live —
+          when the caller supplies a media layer (playback) the camera
+          being offline is irrelevant: its recordings still play. */}
+      {offline && media === undefined && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: 'rgba(10,10,10,0.5)' }}>
           <Icon name="wifi-off" size={28} color="var(--danger)" />
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: 1, color: 'var(--danger)' }}>OFFLINE · RETRYING</span>

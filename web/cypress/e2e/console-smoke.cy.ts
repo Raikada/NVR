@@ -101,7 +101,9 @@ describe('operator console smoke', () => {
     cy.visit('/#devices');
     cy.contains(camName, { timeout: 15000 }).click();
     cy.contains('HARDWARE').should('be.visible');
-    cy.contains('Reboot').should('be.visible');
+    // The flyout scrolls (rename row + STREAM PATH grew it past short
+    // viewports) — bring the action row into view before asserting.
+    cy.contains('Reboot').scrollIntoView().should('be.visible');
   });
 
   it('storage shows tiers and users shows roles', () => {

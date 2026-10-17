@@ -11,12 +11,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Icon } from '../components/Icon';
 import { Btn, FormRow, Segmented, Slider, TxtInput, chip, pageTitle } from '../components/ui';
 import {
-  createBookmark, createEventClip, getCameraCoverage, getStoredToken, listEvents, waitForClip,
+  createBookmark, createEventClip, fetchCameraSnapshot, getCameraCoverage, getStoredToken,
+  listEvents, waitForClip,
   type CoverageEntry, type EventRecord,
 } from '../lib/api';
 import { fmtAgo, fmtDate, fmtDelta, fmtTime } from '../lib/format';
 import { useConsole, type ConsoleCamera } from '../lib/console';
 import { CameraTile, LiveVideo } from './CameraTile';
+import { PlaybackEngine, mseSupported, type EngineState } from './playbackEngine';
 
 const ZOOMS = [5, 10, 30, 60, 180, 360, 1440]; // minutes in view
 const MAX_AGO = 7 * 1440; // minutes — matches the 7d coverage fetch
@@ -112,6 +114,10 @@ export function Playback({ camera, initialAt }: {
   /* ----- coverage + per-track events ----- */
   const [coverage, setCoverage] = useState<Record<string, CoverageEntry[]>>({});
   const [trackEvents, setTrackEvents] = useState<Record<string, EventRecord[]>>({});
+  const coverageRef = useRef(coverage);
+  coverageRef.current = coverage;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
   useEffect(() => {
     let dead = false;
     const load = () => {
@@ -203,12 +209,11 @@ export function Playback({ camera, initialAt }: {
     return () => window.clearInterval(t);
   }, [playing, speed]);
 
-  // The driver's media ran out before the requested chunk length — the
-  // server returns only what exists (always the case near the live
-  // edge). Jump the clock to the end of the returned media (the sender
-  // already floors it past the chunk start, so a sliver response can't
-  // replay the same frames in a loop); catching up to "now" hands off
-  // to live.
+  // The driver's media ran out — the server returns only what exists.
+  // Near "now" that's the live edge: hand off to the live stream.
+  // Mid-history it's the end of a coverage island: jump straight to the
+  // next recorded range (or live when nothing's ahead) instead of
+  // stalling at the boundary.
   const onMediaEnded = useCallback((endMs: number) => {
     if (!playingRef.current) return;
     const now = Date.now();
@@ -217,8 +222,18 @@ export function Playback({ camera, initialAt }: {
       setAbsMs(now); // caught up — go live
       return;
     }
-    setAbsMs((a) => Math.max(a, endMs));
-  }, []);
+    const entries = coverageRef.current[activeIdRef.current] ?? [];
+    let next = Infinity;
+    for (const e of entries) {
+      const s = new Date(e.start).getTime();
+      if (s > endMs + 500 && s < next) next = s;
+    }
+    if (next !== Infinity) {
+      seekAbs(next + 250);
+    } else {
+      setAbsMs(now); // nothing recorded ahead — go live
+    }
+  }, [seekAbs]);
 
   // Playing into a gap: skip ahead to the next recorded range on the
   // active track rather than crawling through dead air.
@@ -512,7 +527,7 @@ function playbackURL(path: string, startMs: number): string {
   return `/playback/get?${qs}`;
 }
 
-function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime, onMediaState, onMediaEnded }: {
+interface PlaybackVideoProps {
   path: string;
   absMs: number; // absolute playhead (epoch ms)
   live: boolean;
@@ -524,7 +539,95 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime,
   onTime: (ms: number) => void;
   onMediaState: (s: DriverMediaState) => void;
   onMediaEnded: (endMs: number) => void;
+}
+
+// PlaybackVideo — route to the right media layer: live HLS at the
+// edge, nothing in coverage gaps, and for recorded footage the MSE
+// engine (instant in-buffer seeks, small window fetches) with the
+// progressive <video src> as fallback where MSE isn't available or a
+// stream's codec defeats it.
+function PlaybackVideo(props: PlaybackVideoProps) {
+  const [mseFailed, setMseFailed] = useState(false);
+  const { live, gap, driver, onMediaState } = props;
+
+  // While showing live / a gap there is no recorded driver media —
+  // report 'none' so the shared clock may free-run.
+  useEffect(() => {
+    if (driver && (live || gap)) onMediaState('none');
+  }, [driver, live, gap, onMediaState]);
+
+  if (live) {
+    return <LiveVideo path={props.path} />;
+  }
+  if (gap) {
+    return <div style={{ position: 'absolute', inset: 0, background: '#07060a' }} />;
+  }
+  if (mseSupported() && !mseFailed) {
+    return <EngineVideo {...props} onFatal={() => setMseFailed(true)} />;
+  }
+  return <ProgressiveVideo {...props} />;
+}
+
+// EngineVideo — recorded playback through PlaybackEngine (MSE).
+function EngineVideo({ path, absMs, playing, speed, driver, onTime, onMediaState, onMediaEnded, onFatal }: PlaybackVideoProps & {
+  onFatal: () => void;
 }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const engineRef = useRef<PlaybackEngine | null>(null);
+  // Engine callbacks read these refs so a tile promoted to driver (or
+  // a paused transport) takes effect without rebuilding the engine.
+  const driverRef = useRef(driver);
+  driverRef.current = driver;
+  const absMsRef = useRef(absMs);
+  absMsRef.current = absMs;
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const engine = new PlaybackEngine(v, path, absMsRef.current, {
+      onTime: (ms) => { if (driverRef.current) onTime(ms); },
+      onState: (s: EngineState) => {
+        if (!driverRef.current) return;
+        // buffering freezes the shared clock the same as loading.
+        onMediaState(s === 'idle' ? 'none' : s === 'buffering' ? 'loading' : s);
+      },
+      onEndOfFootage: (endMs) => { if (driverRef.current) onMediaEnded(endMs); },
+      onFatal,
+    });
+    engineRef.current = engine;
+    return () => {
+      engine.destroy();
+      engineRef.current = null;
+      if (driverRef.current) onMediaState('none');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  // External seeks (timeline, keyboard, events) move absMs away from
+  // the engine's own position; small differences are the engine's own
+  // reports echoing back. Followers track the driver the same way.
+  useEffect(() => {
+    const e = engineRef.current;
+    if (!e) return;
+    if (Math.abs(e.positionMs() - absMs) > 600) e.seek(absMs);
+  }, [absMs]);
+
+  useEffect(() => { engineRef.current?.setPlaying(playing); }, [playing]);
+  useEffect(() => { engineRef.current?.setRate(speed); }, [speed]);
+
+  return (
+    <video
+      ref={videoRef}
+      muted
+      playsInline
+      autoPlay
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
+    />
+  );
+}
+
+// ProgressiveVideo — chunked <video src> fallback (no MSE).
+function ProgressiveVideo({ path, absMs, live, playing, speed, gap, driver, onTime, onMediaState, onMediaEnded }: PlaybackVideoProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [chunk, setChunk] = useState<{ startMs: number; url: string } | null>(null);
   const [failed, setFailed] = useState(false);
@@ -754,6 +857,63 @@ function SpeedSelect({ value, onChange }: { value: number; onChange: (v: number)
   );
 }
 
+/* ---------- scrub preview (trick play) ---------- */
+
+// Recorded-frame stills from GET /v1/recorder/cameras/:id/snapshot?at=
+// shown while hovering/dragging the timeline — the user sees the target
+// frame before any video fetch completes. Cached as object URLs in 10s
+// buckets; fetches are debounced so a fast drag only resolves where the
+// pointer settles.
+const scrubThumbCache = new Map<string, string>();
+
+function ScrubThumb({ camId, atMs }: { camId: string; atMs: number }) {
+  const bucket = Math.round(atMs / 10_000) * 10_000;
+  const key = `${camId}:${bucket}`;
+  const [url, setUrl] = useState<string | null>(() => scrubThumbCache.get(key) ?? null);
+
+  useEffect(() => {
+    const cached = scrubThumbCache.get(key);
+    if (cached) {
+      setUrl(cached);
+      return;
+    }
+    setUrl(null);
+    let dead = false;
+    const t = window.setTimeout(() => {
+      fetchCameraSnapshot(camId, new Date(bucket).toISOString())
+        .then((blob) => {
+          if (dead) return;
+          const u = URL.createObjectURL(blob);
+          scrubThumbCache.set(key, u);
+          if (scrubThumbCache.size > 120) {
+            const oldest = scrubThumbCache.keys().next().value as string;
+            const ou = scrubThumbCache.get(oldest);
+            if (ou) URL.revokeObjectURL(ou);
+            scrubThumbCache.delete(oldest);
+          }
+          setUrl(u);
+        })
+        .catch(() => { /* no footage / offline — no preview */ });
+    }, 120);
+    return () => {
+      dead = true;
+      window.clearTimeout(t);
+    };
+  }, [key, camId, bucket]);
+
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt=""
+      style={{
+        display: 'block', width: 176, height: 99, objectFit: 'cover',
+        border: '1px solid var(--border)', background: '#000', marginBottom: 4,
+      }}
+    />
+  );
+}
+
 /* ---------- Timeline ---------- */
 
 function Timeline({ tracks, activeId, setActiveId, pos, viewLen, viewEnd, setViewEnd, onSeek, onZoom, inOut, coverage, trackEvents, agoOf }: {
@@ -793,8 +953,16 @@ function Timeline({ tracks, activeId, setActiveId, pos, viewLen, viewEnd, setVie
     setDrag(mode);
     if (mode === 'seek') onSeek(mAt(e.clientX));
     const move = (ev: globalThis.MouseEvent) => {
-      if (mode === 'seek') onSeek(mAt(ev.clientX));
-      else {
+      if (mode === 'seek') {
+        onSeek(mAt(ev.clientX));
+        // Keep the hover readout (time + preview frame) tracking the
+        // drag even when the pointer leaves the strip.
+        const el = ref.current;
+        if (el) {
+          const r = el.getBoundingClientRect();
+          setHover({ x: Math.max(0, Math.min(r.width, ev.clientX - r.left)), m: mAt(ev.clientX) });
+        }
+      } else {
         const el = ref.current;
         if (!el) return;
         const r = el.getBoundingClientRect();
@@ -928,11 +1096,14 @@ function Timeline({ tracks, activeId, setActiveId, pos, viewLen, viewEnd, setVie
           {inX != null && inX >= 0 && inX <= 1 && <Flag x={inX} label="START" />}
           {outX != null && outX >= 0 && outX <= 1 && <Flag x={outX} label="END" right />}
 
-          {hover && !drag && (
+          {hover && drag !== 'pan' && (
             <div style={{ position: 'absolute', left: hover.x, top: 0, bottom: 2, width: 1, background: 'var(--text-secondary)', pointerEvents: 'none', zIndex: 2 }}>
-              <span style={{ position: 'absolute', top: -22, left: 0, transform: `translateX(${hover.x < 40 ? '0' : hover.x > (ref.current?.clientWidth ?? 0) - 40 ? '-100%' : '-50%'})`, padding: '2px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                {fmtTime(new Date(nowMs - hover.m * 60000))}
-              </span>
+              <div style={{ position: 'absolute', bottom: '100%', left: 0, transform: `translateX(${hover.x < 90 ? '0' : hover.x > (ref.current?.clientWidth ?? 0) - 90 ? '-100%' : '-50%'})`, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingBottom: 2 }}>
+                <ScrubThumb camId={activeId} atMs={nowMs - hover.m * 60000} />
+                <span style={{ padding: '2px 6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                  {fmtTime(new Date(nowMs - hover.m * 60000))}
+                </span>
+              </div>
             </div>
           )}
 

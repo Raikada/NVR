@@ -124,7 +124,13 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   const refreshCameras = useCallback(() => {
     void fetchCameras(0, 200)
       .then((r) => {
-        const items = r.items ?? [];
+        // Wildcard catch-all conf paths (all / all_others / ~regex)
+        // surface from /v1/cameras but aren't operator cameras — a
+        // console that shows them picks "all_others" as the default
+        // playback/live camera. Hide them everywhere.
+        const items = (r.items ?? []).filter(
+          (c) => c.name !== 'all' && c.name !== 'all_others' && !c.name.startsWith('~'),
+        );
         setRawCams(items);
         setCamerasLoaded(true);
         // Health per camera (parallel, tolerant).
