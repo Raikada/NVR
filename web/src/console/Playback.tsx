@@ -20,10 +20,19 @@ import { CameraTile, LiveVideo } from './CameraTile';
 
 const ZOOMS = [5, 10, 30, 60, 180, 360, 1440]; // minutes in view
 const MAX_AGO = 7 * 1440; // minutes — matches the 7d coverage fetch
-const CHUNK_SECS = 600;
+// Chunk length per /playback/get fetch. The browser downloads the whole
+// response, so every seek costs up to a full chunk of NAS mux + transfer
+// — 3 minutes keeps that bounded while boundary refetches stay rare.
+const CHUNK_SECS = 180;
 // Within this distance of "now" the playhead rides the live edge and the
 // tiles switch to the HLS live stream.
 const LIVE_EDGE_MS = 3000;
+// Playing forward to within this distance of "now" hands off to live.
+const CATCHUP_LIVE_MS = 15_000;
+
+// What the active track's <video> is doing — drives whether the shared
+// clock may free-run (gap/failed) or must wait for the video (buffering).
+type DriverMediaState = 'none' | 'loading' | 'playing' | 'failed';
 
 function clsColor(typeId: string): string {
   if (typeId.includes('person')) return 'var(--accent)';
@@ -78,6 +87,14 @@ export function Playback({ camera, initialAt }: {
   // Stamped on each video-driven clock update; the ticker only advances
   // the clock when the video hasn't reported recently.
   const lastDriveRef = useRef(0);
+  // Driver media state (state for the BUFFERING badge, ref for the
+  // ticker, which must read it inside setInterval without re-arming).
+  const [driverMedia, setDriverMedia] = useState<DriverMediaState>('none');
+  const driverMediaRef = useRef<DriverMediaState>('none');
+  const onMediaState = useCallback((s: DriverMediaState) => {
+    driverMediaRef.current = s;
+    setDriverMedia(s);
+  }, []);
 
   // Keep track list sane when cameras load after mount.
   useEffect(() => {
@@ -163,7 +180,11 @@ export function Playback({ camera, initialAt }: {
   }, []);
 
   // Wall-clock ticker: rides the live edge, and advances through
-  // coverage gaps / stalled fetches when no video is driving.
+  // coverage gaps / failed fetches when no video is driving. A driver
+  // that is loading or stalled mid-play is BUFFERING, not a gap — hold
+  // the clock so timeline and frames can't diverge (running ahead here
+  // is what caused the repeated-frames/forced-seek loop on slow NAS
+  // muxes); the video resumes driving when data arrives.
   useEffect(() => {
     if (!playing) return;
     let prev = Date.now();
@@ -174,11 +195,30 @@ export function Playback({ camera, initialAt }: {
       setAbsMs((a) => {
         if (now - a < LIVE_EDGE_MS) return now; // live: follow the clock
         if (now - lastDriveRef.current < 1200) return a; // video is driving
-        return Math.min(now, a + dt * speed);
+        const st = driverMediaRef.current;
+        if (st === 'loading' || st === 'playing') return a; // buffering — wait
+        return Math.min(now, a + dt * speed); // gap / failed / no media
       });
     }, 500);
     return () => window.clearInterval(t);
   }, [playing, speed]);
+
+  // The driver's media ran out before the requested chunk length — the
+  // server returns only what exists (always the case near the live
+  // edge). Jump the clock to the end of the returned media (the sender
+  // already floors it past the chunk start, so a sliver response can't
+  // replay the same frames in a loop); catching up to "now" hands off
+  // to live.
+  const onMediaEnded = useCallback((endMs: number) => {
+    if (!playingRef.current) return;
+    const now = Date.now();
+    lastDriveRef.current = 0;
+    if (now - endMs < CATCHUP_LIVE_MS) {
+      setAbsMs(now); // caught up — go live
+      return;
+    }
+    setAbsMs((a) => Math.max(a, endMs));
+  }, []);
 
   // Playing into a gap: skip ahead to the next recorded range on the
   // active track rather than crawling through dead air.
@@ -279,6 +319,11 @@ export function Playback({ camera, initialAt }: {
 
   const currentEvent = camEvents.find((e) => Math.abs(new Date(e.occurred_at).getTime() - absMs) < 12_000);
   const dayLabel = fmtDate(phTime) === fmtDate(data.now) ? 'Today' : fmtDate(phTime);
+  // Driver is loading a chunk, or claims to play but hasn't published a
+  // clock tick recently (stalled decoder) — surface it as buffering.
+  const buffering = playing && !live && !inGap(activeId, pos) &&
+    (driverMedia === 'loading' ||
+      (driverMedia === 'playing' && data.now.getTime() - lastDriveRef.current > 1500));
   const rangeSecs = inOut.startMs != null && inOut.endMs != null
     ? Math.round((inOut.endMs - inOut.startMs) / 1000)
     : null;
@@ -315,6 +360,9 @@ export function Playback({ camera, initialAt }: {
             inGap={inGap}
             trackEvents={trackEvents}
             onTime={onTime}
+            onMediaState={onMediaState}
+            onMediaEnded={onMediaEnded}
+            buffering={buffering}
           />
         </div>
         <aside style={{ width: 272, flexShrink: 0, borderLeft: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -464,7 +512,7 @@ function playbackURL(path: string, startMs: number): string {
   return `/playback/get?${qs}`;
 }
 
-function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime }: {
+function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime, onMediaState, onMediaEnded }: {
   path: string;
   absMs: number; // absolute playhead (epoch ms)
   live: boolean;
@@ -474,10 +522,22 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime 
   // The active track drives the shared playhead clock from its <video>.
   driver: boolean;
   onTime: (ms: number) => void;
+  onMediaState: (s: DriverMediaState) => void;
+  onMediaEnded: (endMs: number) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [chunk, setChunk] = useState<{ startMs: number; url: string } | null>(null);
   const [failed, setFailed] = useState(false);
+  // Only the driver reports media state to the shared clock.
+  const report = (s: DriverMediaState) => { if (driver) onMediaState(s); };
+
+  // No recorded media mounted (live / gap / driver handoff) → 'none' so
+  // the clock may free-run; also resets on unmount.
+  useEffect(() => {
+    if (!driver) return;
+    if (live || gap) onMediaState('none');
+    return () => onMediaState('none');
+  }, [driver, live, gap, onMediaState]);
 
   // (Re)load a chunk when the playhead falls outside the current one.
   useEffect(() => {
@@ -486,7 +546,17 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime 
     if (chunk && offset >= 0 && offset < CHUNK_SECS - 2) return;
     setFailed(false);
     setChunk({ startMs: absMs, url: playbackURL(path, absMs) });
+    if (driver) onMediaState('loading');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [absMs, path, live, gap, chunk]);
+
+  // A failed chunk (transient mux error, expired token refreshed on the
+  // next build) retries from the current playhead after a beat.
+  useEffect(() => {
+    if (!failed) return;
+    const t = window.setTimeout(() => { setFailed(false); setChunk(null); }, 3000);
+    return () => window.clearTimeout(t);
+  }, [failed]);
 
   // Driver publishes its clock: the shared playhead follows the actual
   // decoded position, so timeline and footage cannot drift apart.
@@ -501,12 +571,15 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime 
 
   // Keep the element aligned with the shared playhead. The driver only
   // corrects gross jumps (external seeks); followers track tightly.
+  // Never correct a video that hasn't buffered to the target yet
+  // (readyState < 2) — seeking an unbuffered, non-range stream just
+  // forces a re-stall.
   useEffect(() => {
     const v = videoRef.current;
     if (!v || live || gap || !chunk) return;
     const want = (absMs - chunk.startMs) / 1000;
     const tolerance = driver && playing ? 1.5 : 0.35;
-    if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - want) > tolerance) {
+    if (v.readyState >= 2 && Number.isFinite(v.currentTime) && Math.abs(v.currentTime - want) > tolerance) {
       try { v.currentTime = Math.max(0, want); } catch { /* not seekable yet */ }
     }
     v.playbackRate = speed;
@@ -529,8 +602,22 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime 
         muted
         playsInline
         autoPlay
-        onError={() => setFailed(true)}
-        onEnded={() => setChunk(null)} // media ran out before CHUNK_SECS — fetch from the playhead
+        preload="auto"
+        onWaiting={() => report('loading')}
+        onPlaying={() => report('playing')}
+        onError={() => { setFailed(true); report('failed'); }}
+        onEnded={(e) => {
+          // Media ran out before CHUNK_SECS — the server only returns
+          // what exists. Tell the clock where the media actually ended
+          // (it jumps forward / goes live), then fetch from there. The
+          // 1.5s floor past the chunk start guarantees the next fetch
+          // moves forward even on a sliver/empty response — without it
+          // a short response replays the same frames in a loop.
+          const v = e.currentTarget;
+          const playedSecs = Number.isFinite(v.duration) ? v.duration : v.currentTime;
+          if (driver && chunk) onMediaEnded(chunk.startMs + Math.max(1500, playedSecs * 1000));
+          setChunk(null);
+        }}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
       />
       {failed && (
@@ -544,7 +631,7 @@ function PlaybackVideo({ path, absMs, live, playing, speed, gap, driver, onTime 
 
 /* ---------- synced multi-track grid ---------- */
 
-function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, speed, phTime, inGap, trackEvents, onTime }: {
+function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, speed, phTime, inGap, trackEvents, onTime, onMediaState, onMediaEnded, buffering }: {
   tracks: string[];
   activeId: string;
   setActiveId: (id: string) => void;
@@ -557,6 +644,9 @@ function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, 
   inGap: (tid: string, m: number) => boolean;
   trackEvents: Record<string, EventRecord[]>;
   onTime: (ms: number) => void;
+  onMediaState: (s: DriverMediaState) => void;
+  onMediaEnded: (endMs: number) => void;
+  buffering: boolean;
 }) {
   const data = useConsole();
   const n = tracks.length;
@@ -595,6 +685,8 @@ function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, 
                     gap={gap}
                     driver={isMain}
                     onTime={onTime}
+                    onMediaState={onMediaState}
+                    onMediaEnded={onMediaEnded}
                   />
                 }
               />
@@ -607,6 +699,7 @@ function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, 
                 </div>
               )}
               {isMain && !playing && <div style={badge({ top: 44, left: 12, color: 'var(--warning)' })}>PAUSED</div>}
+              {isMain && playing && buffering && <div style={badge({ top: 44, left: 12, color: 'var(--warning)' })}>BUFFERING</div>}
               {ev && <div style={badge({ top: 44, right: 12, color: clsColor(ev.type_id), borderColor: clsColor(ev.type_id), textTransform: 'uppercase' })}>{ev.type_id} EVENT</div>}
             </div>
           </div>
