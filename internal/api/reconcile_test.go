@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/bluenviron/mediamtx/internal/defs"
 	"github.com/bluenviron/mediamtx/internal/store"
 )
 
@@ -43,4 +44,39 @@ func TestReconcileStoreCamerasRestoresMissingPaths(t *testing.T) {
 	added, err = ReconcileStoreCameras(ctxpkg.Background(), cnf, st)
 	require.NoError(t, err)
 	require.Equal(t, 0, added)
+}
+
+// A conf path whose policy says record but whose record flag is off —
+// the damage left by the historical PATCH/PUT bug that rebuilt paths
+// without their policy-derived record fields — must be healed at boot.
+func TestReconcileStoreCamerasHealsRecordFlag(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "recorder.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	cnf := tempConf(t, "api: yes\n"+
+		"paths:\n"+
+		"  wounded_cam:\n"+
+		"    source: rtsp://192.0.2.9:554/main\n"+
+		"    recordingPolicyId: 00000000-0000-0000-0000-000000000001\n"+
+		"    record: false\n")
+	require.False(t, cnf.Paths["wounded_cam"].Record)
+	require.Equal(t, "00000000-0000-0000-0000-000000000001", cnf.Paths["wounded_cam"].RecordingPolicyID,
+		"policy linkage must survive conf load")
+	pc := cnf.RecordingPolicies[cnf.Paths["wounded_cam"].RecordingPolicyID]
+	require.NotNil(t, pc, "default policy must be seeded")
+	pol := defs.RecordingPolicyFromConfig("00000000-0000-0000-0000-000000000001", pc)
+	require.True(t, pol.Enabled)
+	require.Equal(t, defs.RecordingPolicyMode("continuous"), pol.Mode)
+
+	repaired, err := ReconcileStoreCameras(ctxpkg.Background(), cnf, st)
+	require.NoError(t, err)
+	require.Equal(t, 1, repaired)
+	require.True(t, cnf.Paths["wounded_cam"].Record, "policy says record — heal must re-enable it")
+
+	// Idempotent: second run repairs nothing.
+	repaired, err = ReconcileStoreCameras(ctxpkg.Background(), cnf, st)
+	require.NoError(t, err)
+	require.Equal(t, 0, repaired)
 }

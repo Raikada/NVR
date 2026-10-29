@@ -3,6 +3,7 @@ package api //nolint:revive
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/bluenviron/mediamtx/internal/conf"
 	"github.com/bluenviron/mediamtx/internal/defs"
@@ -81,11 +82,45 @@ func ReconcileStoreCameras(ctx context.Context, cnf *conf.Conf, st *store.Store)
 		added++
 	}
 
-	if added == 0 {
+	// Heal pass: a historical PATCH/PUT bug rebuilt camera paths without
+	// their policy-derived record* fields when the recording_policy_id
+	// was unchanged (display_name renames, event_channel edits) —
+	// silently turning recording OFF. Re-apply each path's policy when
+	// the policy says record but the path doesn't, so affected cameras
+	// recover on the next boot without operator action.
+	repaired := 0
+	for name, p := range cnf.Paths {
+		if p == nil || name == "all" || name == "all_others" || strings.HasPrefix(name, "~") {
+			continue
+		}
+		if p.RecordingPolicyID == "" || p.Record {
+			continue
+		}
+		policyCfg := cnf.RecordingPolicies[p.RecordingPolicyID]
+		if policyCfg == nil {
+			continue
+		}
+		pol := defs.RecordingPolicyFromConfig(p.RecordingPolicyID, policyCfg)
+		if !pol.Enabled || pol.Mode == defs.RecordingPolicyModeOff {
+			continue
+		}
+		fixed := *p
+		defs.ApplyPolicyToPath(&fixed, pol)
+		op, err := optionalPathFromConfPath(&fixed)
+		if err != nil {
+			return added + repaired, fmt.Errorf("heal %s: %w", name, err)
+		}
+		if err := cnf.ReplacePath(name, op); err != nil {
+			return added + repaired, fmt.Errorf("heal %s: %w", name, err)
+		}
+		repaired++
+	}
+
+	if added+repaired == 0 {
 		return 0, nil
 	}
 	if err := cnf.Validate(nil); err != nil {
-		return added, fmt.Errorf("validate reconciled conf: %w", err)
+		return added + repaired, fmt.Errorf("validate reconciled conf: %w", err)
 	}
 	// Validate rebuilds Paths; re-stamp the store-derived IDs the same
 	// way the create flow does (deterministic from the name).
@@ -94,5 +129,5 @@ func ReconcileStoreCameras(ctx context.Context, cnf *conf.Conf, st *store.Store)
 			p.ID = row.ID
 		}
 	}
-	return added, nil
+	return added + repaired, nil
 }

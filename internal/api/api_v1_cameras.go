@@ -531,14 +531,14 @@ func (a *API) onV1CamerasPatch(ctx *gin.Context) {
 		return
 	}
 
-	// If the policy linkage is changing (or being newly attached), apply
-	// the policy's record fields to the new path so the runtime
-	// behaviour stays in sync with the canonical surface. When the
-	// policy is unchanged, leave the recording fields alone — the patch
-	// may have intentionally-edited camera fields the recorder still
-	// honors path-side (e.g., source URL).
-	if patch.RecordingPolicyID != nil && resolvedPolicyID != "" &&
-		resolvedPolicyID != existingPath.RecordingPolicyID {
+	// Apply the resolved policy's record fields on EVERY patch.
+	// PathFromCamera never sets record* — those are policy-derived
+	// (camera_translate.go) — so the rebuilt path has recording OFF
+	// until the policy is applied. This used to be gated on a linkage
+	// CHANGE, which silently disabled recording for any patch that
+	// didn't touch recording_policy_id (display_name renames,
+	// event_channel changes).
+	if resolvedPolicyID != "" {
 		if pc := newConf.RecordingPolicies[resolvedPolicyID]; pc != nil {
 			defs.ApplyPolicyToPath(newPath, defs.RecordingPolicyFromConfig(resolvedPolicyID, pc))
 		}
@@ -675,6 +675,13 @@ func (a *API) onV1CamerasPut(ctx *gin.Context) {
 	// clears the linkage.
 	if cam.RecordingPolicyID != nil {
 		newPath.RecordingPolicyID = *cam.RecordingPolicyID
+	}
+	// Same as PATCH: PathFromCamera leaves the record* fields unset, so
+	// the policy must be applied here or a PUT turns recording off.
+	if newPath.RecordingPolicyID != "" {
+		if pc := newConf.RecordingPolicies[newPath.RecordingPolicyID]; pc != nil {
+			defs.ApplyPolicyToPath(newPath, defs.RecordingPolicyFromConfig(newPath.RecordingPolicyID, pc))
+		}
 	}
 	op, err := optionalPathFromConfPath(newPath)
 	if err != nil {
