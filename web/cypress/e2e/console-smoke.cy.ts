@@ -110,6 +110,7 @@ describe('operator console smoke', () => {
     uiLogin();
     cy.visit('/#storage');
     cy.contains('RETENTION TIERS', { timeout: 10000 }).should('be.visible');
+    cy.contains('USAGE BY CAMERA').should('exist');
     cy.visit('/#users');
     cy.contains('admin', { timeout: 10000 }).should('be.visible');
   });

@@ -37,17 +37,43 @@ export function Storage() {
   const dailyWrite = writeBps > 0 ? `${((writeBps * 86400) / 1e9).toFixed(0)} GB` : '—';
 
   // Per-tier on-disk usage: sum the per-camera breakdown through each
-  // camera's policy assignment.
+  // camera's policy assignment. Breakdown entries key by the on-disk
+  // path name, so match against c.path (c.name is the display label
+  // and diverges after a rename).
   const tierUsage = useMemo(() => {
     const m: Record<string, number> = {};
     if (!breakdown) return m;
     for (const bc of breakdown.by_camera) {
-      const cam = data.cameras.find((c) => c.id === bc.camera_id || c.name === bc.camera_id);
+      const cam = data.cameras.find((c) => c.id === bc.camera_id || c.path === bc.camera_id);
       const key = cam?.policyId ?? '';
       m[key] = (m[key] ?? 0) + bc.byte_size;
     }
     return m;
   }, [breakdown, data.cameras]);
+
+  // Per-camera on-disk usage, largest first. Footage whose camera no
+  // longer exists (deleted, awaiting retention) stays visible under its
+  // path name so the bytes are accounted for.
+  const byCamera = useMemo(() => {
+    if (!breakdown) return [];
+    return breakdown.by_camera
+      .map((bc) => {
+        const cam = data.cameras.find((c) => c.id === bc.camera_id || c.path === bc.camera_id);
+        const policy = cam ? data.policies.find((p) => p.id === cam.policyId) : undefined;
+        return {
+          key: bc.camera_id,
+          label: cam?.name ?? bc.camera_id,
+          host: cam?.host ?? '',
+          tier: cam ? (policy?.name ?? 'Default') : 'removed camera',
+          removed: !cam,
+          size: bc.byte_size,
+          segments: bc.segment_count,
+        };
+      })
+      .sort((a, b) => b.size - a.size);
+  }, [breakdown, data.cameras, data.policies]);
+  const byCameraTotal = byCamera.reduce((a, r) => a + r.size, 0);
+  const byCameraMax = byCamera.length ? byCamera[0].size : 0;
 
   const oldest = useMemo(() => {
     // Oldest footage ≈ the longest retention among enabled tiers.
@@ -134,6 +160,43 @@ export function Storage() {
           <div style={{ padding: '12px 14px', fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
             Footage older than a tier's retention window is deleted by the nightly sweep. If the volume fills, the oldest footage goes first regardless of tier.
           </div>
+        </Panel>
+
+        <Panel
+          title="USAGE BY CAMERA"
+          right={
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
+              {byCameraTotal > 0 ? `${(byCameraTotal / 1e9).toFixed(1)} GB RECORDED` : ''}
+            </span>
+          }
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 2fr 90px 110px', padding: '8px 14px', borderBottom: '1px solid var(--border)', fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: 1, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+            <span>CAMERA</span><span>TIER</span><span>SHARE</span><span style={{ textAlign: 'right' }}>SEGMENTS</span><span style={{ textAlign: 'right' }}>ON DISK</span>
+          </div>
+          {byCamera.map((r) => (
+            <div key={r.key} style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 2fr 90px 110px', padding: '10px 14px', borderBottom: '1px solid var(--border)', alignItems: 'center', opacity: r.removed ? 0.6 : 1 }}>
+              <span style={{ fontFamily: r.removed ? 'var(--font-mono)' : 'var(--font-sans)', fontSize: r.removed ? 11 : 13, fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.label}
+                {r.host && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>{r.host}</span>}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.5px', color: r.removed ? 'var(--warning)' : 'var(--text-secondary)', textTransform: 'uppercase' }}>{r.tier}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, height: 8, background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{ width: `${byCameraMax > 0 ? (r.size / byCameraMax) * 100 : 0}%`, height: '100%', background: 'var(--accent)', opacity: 0.8 }} />
+                </div>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', width: 34, textAlign: 'right' }}>
+                  {byCameraTotal > 0 ? `${((r.size / byCameraTotal) * 100).toFixed(0)}%` : '—'}
+                </span>
+              </div>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)', textAlign: 'right' }}>{r.segments}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-primary)', textAlign: 'right' }}>
+                {r.size >= 1e9 ? `${(r.size / 1e9).toFixed(1)} GB` : `${(r.size / 1e6).toFixed(0)} MB`}
+              </span>
+            </div>
+          ))}
+          {byCamera.length === 0 && (
+            <div style={{ padding: 20, fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-muted)' }}>No recorded footage yet.</div>
+          )}
         </Panel>
 
         <Panel title="CAMERA ASSIGNMENT">
