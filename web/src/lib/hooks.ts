@@ -112,6 +112,10 @@ export function useSnapshotURL(camId: string, enabled: boolean, intervalMs = 20_
     if (!enabled || !camId) return;
     let cancelled = false;
     let timer: number | undefined;
+    // Consecutive failures back the poll off (×2 per miss, capped ×8):
+    // a camera with no frame source 503s forever and would otherwise
+    // spam the browser console every interval.
+    let failures = 0;
 
     const tick = async () => {
       if (cancelled) return;
@@ -119,6 +123,7 @@ export function useSnapshotURL(camId: string, enabled: boolean, intervalMs = 20_
         try {
           const blob = await fetchCameraSnapshot(camId);
           if (!cancelled) {
+            failures = 0;
             const next = URL.createObjectURL(blob);
             if (urlRef.current) URL.revokeObjectURL(urlRef.current);
             urlRef.current = next;
@@ -126,9 +131,10 @@ export function useSnapshotURL(camId: string, enabled: boolean, intervalMs = 20_
           }
         } catch {
           // offline camera / no muxer yet — keep whatever we had
+          failures = Math.min(failures + 1, 3);
         }
       }
-      if (!cancelled) timer = window.setTimeout(tick, intervalMs);
+      if (!cancelled) timer = window.setTimeout(tick, intervalMs * 2 ** failures);
     };
 
     timer = window.setTimeout(tick, Math.random() * 2000);

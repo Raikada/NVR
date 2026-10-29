@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -94,10 +95,24 @@ func (a *API) onV1EventsStream(ctx *gin.Context) {
 	_, _ = ctx.Writer.Write([]byte(": ok\n\n"))
 	ctx.Writer.Flush()
 
+	// The server's write-timeout wrapper arms its deadline per Write();
+	// SSE only writes when an event occurs, so on a quiet system the
+	// connection silently exceeds writeTimeout (~10s) and the browser
+	// logs ERR_HTTP2_PROTOCOL_ERROR in an endless reconnect loop. A
+	// periodic comment keeps the deadline fresh (EventSource ignores
+	// comment lines) and doubles as a NAT/proxy keepalive.
+	keepalive := time.NewTicker(5 * time.Second)
+	defer keepalive.Stop()
+
 	for {
 		select {
 		case <-ctx.Request.Context().Done():
 			return
+		case <-keepalive.C:
+			if _, err := ctx.Writer.Write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
+			ctx.Writer.Flush()
 		case ev, ok := <-bus:
 			if !ok {
 				return
