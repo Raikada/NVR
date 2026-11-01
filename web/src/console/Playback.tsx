@@ -75,6 +75,7 @@ export function Playback({ camera, initialAt }: {
   const [exporting, setExporting] = useState(false);
   const [gotoOpen, setGotoOpen] = useState(false);
   const [sidebar, setSidebar] = useState('events');
+  const [audioOn, setAudioOn] = useState(false);
   // pos — minutes behind now; derived, used only for timeline geometry.
   const pos = Math.max(0, (data.now.getTime() - absMs) / 60000);
   const live = data.now.getTime() - absMs < LIVE_EDGE_MS;
@@ -378,6 +379,7 @@ export function Playback({ camera, initialAt }: {
             onMediaState={onMediaState}
             onMediaEnded={onMediaEnded}
             buffering={buffering}
+            audioOn={audioOn}
           />
         </div>
         <aside style={{ width: 272, flexShrink: 0, borderLeft: '1px solid var(--border)', background: 'var(--bg-secondary)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -457,6 +459,13 @@ export function Playback({ camera, initialAt }: {
           <button onClick={nextEvent} title="Next event  ]" style={transBtn}><Icon name="skip-forward" size={13} /></button>
           <span style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 6px' }} />
           <SpeedSelect value={speed} onChange={setSpeed} />
+          <button
+            onClick={() => setAudioOn((a) => !a)}
+            title={audioOn ? 'Mute audio' : 'Play audio from the active camera'}
+            style={{ ...transBtn, color: audioOn ? 'var(--accent)' : 'var(--text-secondary)', borderColor: audioOn ? 'var(--accent-27)' : 'var(--border)', marginLeft: 6 }}
+          >
+            <Icon name={audioOn ? 'volume-2' : 'volume-x'} size={14} />
+          </button>
         </div>
         <button onClick={() => setGotoOpen(true)} title="Go to date & time  G" style={{ justifySelf: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 10px', borderRadius: 4 }}>
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 24, color: 'var(--accent)', fontVariantNumeric: 'tabular-nums', lineHeight: 1 }}>{fmtTime(phTime)}</span>
@@ -536,6 +545,9 @@ interface PlaybackVideoProps {
   gap: boolean;
   // The active track drives the shared playhead clock from its <video>.
   driver: boolean;
+  // When false, this tile plays its audio track (recordings carry AAC);
+  // only the active track is ever unmuted. Defaults muted.
+  muted?: boolean;
   onTime: (ms: number) => void;
   onMediaState: (s: DriverMediaState) => void;
   onMediaEnded: (endMs: number) => void;
@@ -557,7 +569,7 @@ function PlaybackVideo(props: PlaybackVideoProps) {
   }, [driver, live, gap, onMediaState]);
 
   if (live) {
-    return <LiveVideo path={props.path} />;
+    return <LiveVideo path={props.path} muted={props.muted !== false ? true : false} />;
   }
   if (gap) {
     return <div style={{ position: 'absolute', inset: 0, background: '#07060a' }} />;
@@ -569,7 +581,7 @@ function PlaybackVideo(props: PlaybackVideoProps) {
 }
 
 // EngineVideo — recorded playback through PlaybackEngine (MSE).
-function EngineVideo({ path, absMs, playing, speed, driver, onTime, onMediaState, onMediaEnded, onFatal }: PlaybackVideoProps & {
+function EngineVideo({ path, absMs, playing, speed, driver, muted, onTime, onMediaState, onMediaEnded, onFatal }: PlaybackVideoProps & {
   onFatal: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -614,6 +626,10 @@ function EngineVideo({ path, absMs, playing, speed, driver, onTime, onMediaState
 
   useEffect(() => { engineRef.current?.setPlaying(playing); }, [playing]);
   useEffect(() => { engineRef.current?.setRate(speed); }, [speed]);
+  // muted is a DOM property React doesn't fully control via the
+  // attribute; set it imperatively. Unmuting is driven by a user click
+  // (the toggle), so autoplay-with-sound isn't blocked.
+  useEffect(() => { if (videoRef.current) videoRef.current.muted = muted !== false; }, [muted]);
 
   return (
     <video
@@ -627,7 +643,7 @@ function EngineVideo({ path, absMs, playing, speed, driver, onTime, onMediaState
 }
 
 // ProgressiveVideo — chunked <video src> fallback (no MSE).
-function ProgressiveVideo({ path, absMs, live, playing, speed, gap, driver, onTime, onMediaState, onMediaEnded }: PlaybackVideoProps) {
+function ProgressiveVideo({ path, absMs, live, playing, speed, gap, driver, muted, onTime, onMediaState, onMediaEnded }: PlaybackVideoProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [chunk, setChunk] = useState<{ startMs: number; url: string } | null>(null);
   const [failed, setFailed] = useState(false);
@@ -686,12 +702,13 @@ function ProgressiveVideo({ path, absMs, live, playing, speed, gap, driver, onTi
       try { v.currentTime = Math.max(0, want); } catch { /* not seekable yet */ }
     }
     v.playbackRate = speed;
+    v.muted = muted !== false;
     if (playing && v.paused) v.play().catch(() => {});
     if (!playing && !v.paused) v.pause();
-  }, [absMs, playing, speed, chunk, live, gap, driver]);
+  }, [absMs, playing, speed, chunk, live, gap, driver, muted]);
 
   if (live) {
-    return <LiveVideo path={path} />;
+    return <LiveVideo path={path} muted={muted !== false ? true : false} />;
   }
   if (gap) {
     return <div style={{ position: 'absolute', inset: 0, background: '#07060a' }} />;
@@ -734,7 +751,7 @@ function ProgressiveVideo({ path, absMs, live, playing, speed, gap, driver, onTi
 
 /* ---------- synced multi-track grid ---------- */
 
-function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, speed, phTime, inGap, trackEvents, onTime, onMediaState, onMediaEnded, buffering }: {
+function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, speed, phTime, inGap, trackEvents, onTime, onMediaState, onMediaEnded, buffering, audioOn }: {
   tracks: string[];
   activeId: string;
   setActiveId: (id: string) => void;
@@ -750,6 +767,7 @@ function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, 
   onMediaState: (s: DriverMediaState) => void;
   onMediaEnded: (endMs: number) => void;
   buffering: boolean;
+  audioOn: boolean;
 }) {
   const data = useConsole();
   const n = tracks.length;
@@ -787,6 +805,7 @@ function SyncedGrid({ tracks, activeId, setActiveId, absMs, pos, live, playing, 
                     speed={speed}
                     gap={gap}
                     driver={isMain}
+                    muted={!(audioOn && isMain)}
                     onTime={onTime}
                     onMediaState={onMediaState}
                     onMediaEnded={onMediaEnded}

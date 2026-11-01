@@ -105,24 +105,23 @@ func TestAuditBuffer_RingEviction(t *testing.T) {
 	}
 }
 
-// TestAuditBuffer_DegradedMode verifies the 80% threshold semantics.
-func TestAuditBuffer_DegradedMode(t *testing.T) {
+// TestAuditBuffer_NeverDegrades: the in-memory rolling ring must never
+// report degraded, at any fill level. Append evicts the oldest entry
+// when full, so the ring can always accept a new entry — its steady
+// state is "full", and a fill-level gate here would permanently block
+// admin actions once the ring saturated (the bug this fixes). The
+// degraded gate is meaningful only for the finite disk-backed buffer
+// (see TestAuditDiskBuffer_Degraded_AtThreshold).
+func TestAuditBuffer_NeverDegrades(t *testing.T) {
 	buf := NewAuditBuffer(10)
 	require.False(t, buf.IsDegraded(), "empty buffer is not degraded")
 
-	// Fill to 7 (70%) — below threshold.
-	for i := 0; i < 7; i++ {
+	// Fill well past capacity so the ring saturates and evicts.
+	for i := 0; i < 50; i++ {
 		buf.Append(defs.AuditLogEntry{ID: "x"})
+		require.False(t, buf.IsDegraded(), "a rolling ring never degrades")
 	}
-	require.False(t, buf.IsDegraded(), "70%% must not be degraded")
-
-	// Add one more to reach 8 (80%) — at threshold.
-	buf.Append(defs.AuditLogEntry{ID: "x"})
-	require.True(t, buf.IsDegraded(), "80%% must be degraded")
-
-	// Continues past threshold.
-	buf.Append(defs.AuditLogEntry{ID: "x"})
-	require.True(t, buf.IsDegraded(), "above threshold remains degraded")
+	require.Equal(t, 10, len(buf.Snapshot()), "ring stays capped at capacity")
 }
 
 // TestAuditEmitDecision_PopulatesActorAndOutcome verifies the

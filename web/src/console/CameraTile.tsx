@@ -14,14 +14,19 @@ type PlayerState = 'loading' | 'playing' | 'unavailable' | 'error';
 
 // LiveVideo — bare <video> with hls.js lifecycle, no chrome. The tile
 // provides every overlay so the design stays pixel-consistent.
-export function LiveVideo({ path, cover, onState, videoRef: extRef }: {
+export function LiveVideo({ path, cover, onState, videoRef: extRef, muted = true }: {
   path: string;
   cover?: boolean;
   onState?: (s: PlayerState) => void;
   videoRef?: React.RefObject<HTMLVideoElement>;
+  muted?: boolean;
 }) {
   const ownRef = useRef<HTMLVideoElement>(null);
   const videoRef = extRef ?? ownRef;
+
+  // muted is a DOM property; set imperatively (Playback's audio toggle
+  // unmutes the live edge for the active camera via a user gesture).
+  useEffect(() => { if (videoRef.current) videoRef.current.muted = muted; }, [muted, videoRef]);
 
   useEffect(() => {
     const video = videoRef.current;

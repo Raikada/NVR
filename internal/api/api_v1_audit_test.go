@@ -161,13 +161,28 @@ func TestCamerasPOST_EmitsAuditEntry(t *testing.T) {
 func TestCamerasPOST_DegradedModeReturns503(t *testing.T) {
 	resetAuditBufferSingleton(t)
 
-	// Fill the default buffer to the 80% threshold. The default
-	// capacity is 4096; 80% is 3277 (we just over-fill to be sure).
-	buf := defaultAuditBuffer()
-	for i := 0; i < buf.Capacity()*4/5+1; i++ {
-		buf.Append(defs.AuditLogEntry{ID: "x"})
+	// The gate fires only for a sink that can genuinely degrade — the
+	// finite disk-backed buffer (the in-memory ring never degrades; see
+	// TestAuditBuffer_NeverDegrades). Install a tiny disk sink and fill
+	// it past the 80% ceiling so the active sink reports degraded.
+	b, err := OpenAuditDiskBuffer(AuditDiskBufferOptions{
+		Dir:          t.TempDir(),
+		MaxDiskBytes: int64(8 * 1024),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.Close(); uninstallAuditDiskSink() })
+	installAuditDiskSink(b)
+	for i := 0; i < 200 && !b.IsDegraded(); i++ {
+		_, err := defaultAuditChain().Append(defs.AuditLogEntryInput{
+			ActorKind:    defs.AuditActorKindServiceAccount,
+			Action:       "config.applied",
+			Outcome:      defs.AuditOutcomeSuccess,
+			ResourceKind: "camera",
+			ResourceID:   "cam-deadbeef",
+		}, "tenant-1", "")
+		require.NoError(t, err)
 	}
-	require.True(t, buf.IsDegraded())
+	require.True(t, b.IsDegraded())
 
 	cnf := tempConf(t, "api: yes\n")
 	api := &API{Conf: cnf, Parent: &testParent{}}

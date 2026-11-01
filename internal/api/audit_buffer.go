@@ -139,16 +139,22 @@ func (b *AuditBuffer) Capacity() int {
 	return b.capacity
 }
 
-// IsDegraded reports whether the buffer is at or above the 80%
-// high-water threshold per ADR 0006 D6. Admin-action handlers
-// consult this and reject new operations with 503; recording and
-// other media-flow operations never consult it.
+// IsDegraded always reports false for the in-memory ring.
+//
+// The degraded gate (audit_gate.go, ADR 0006 D6) exists to refuse
+// administrative actions when audit entries can no longer be
+// RECORDED — i.e. a finite durable store has filled up. That is a real
+// condition for the disk-backed buffer (AuditDiskBuffer.IsDegraded,
+// size-based). It is NOT a condition for this rolling ring: Append
+// evicts the oldest entry when full, so the ring is ALWAYS able to
+// accept a new entry. Its steady state is "full" (len == capacity by
+// design), so a fill-level threshold here flipped true the moment the
+// ring saturated and then never recovered — permanently blocking every
+// admin action (camera edits, policy changes, config) on any recorder
+// that had simply been running long enough. That was a bug, not a
+// safety feature: a best-effort in-memory ring must never gate.
 func (b *AuditBuffer) IsDegraded() bool {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	// len >= cap * 4/5 ; integer-arithmetic form avoids float drift.
-	return len(b.items)*auditDegradedThresholdDenominator >=
-		b.capacity*auditDegradedThresholdNumerator
+	return false
 }
 
 // Clear empties the buffer. Useful in tests.
