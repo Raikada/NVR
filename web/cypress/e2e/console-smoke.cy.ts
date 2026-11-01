@@ -101,6 +101,7 @@ describe('operator console smoke', () => {
     cy.visit('/#devices');
     cy.contains(camName, { timeout: 15000 }).click();
     cy.contains('HARDWARE').should('be.visible');
+    cy.contains('EVENT DETECTION').should('exist'); // event-channel selector
     // The flyout scrolls (rename row + STREAM PATH grew it past short
     // viewports) — bring the action row into view before asserting.
     cy.contains('Reboot').scrollIntoView().should('be.visible');

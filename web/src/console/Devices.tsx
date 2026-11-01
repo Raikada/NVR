@@ -381,11 +381,31 @@ function DeviceDetail({ c, onClose, onOpenLive }: {
         </div>
 
         <div>
+          <SectionHeader>EVENT DETECTION</SectionHeader>
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Segmented
+              options={[
+                { value: 'auto', label: 'AUTO' },
+                { value: 'onvif', label: 'ONVIF' },
+                { value: 'amcrest', label: 'AMCREST' },
+                { value: 'none', label: 'OFF' },
+              ]}
+              value={c.raw.event_channel || 'auto'}
+              onChange={(v) => act('channel', () => patchCamera(c.id, { event_channel: v }), `event channel → ${v}`)}
+            />
+            <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              How this camera reports motion &amp; person events. AUTO picks per vendor; choose AMCREST for Dahua/Amcrest
+              cameras (including AD410 doorbells) if ONVIF events stop arriving. Changes apply live.
+            </span>
+          </div>
+        </div>
+
+        <div>
           <SectionHeader>RETENTION</SectionHeader>
           <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)' }}>{c.group}</span>
             <span style={{ fontFamily: 'var(--font-sans)', fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Tier assignment and retention windows live under Storage & Retention.
+              Tier assignment and retention windows live under Storage &amp; Retention.
             </span>
           </div>
         </div>
